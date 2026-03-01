@@ -5,11 +5,8 @@ import type { RubricCriterion, RubricLevel, RubricTemplate } from "../../shared/
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import { ChecklistsSection } from "./ChecklistsSection";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
-const WEBLLM_IMPORT_SOURCES = [
-  "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@latest/+esm",
-  "https://esm.run/@mlc-ai/web-llm"
-];
 const AI_GENERATION_TIMEOUT_MS = 180000;
 const RUBRIC_AI_LOG_PREFIX = "[RubricAI]";
 
@@ -82,11 +79,6 @@ function normalizeTemplate(template: RubricTemplate): RubricTemplate {
     description: template.description ?? "",
     criteria
   };
-}
-
-async function dynamicImport(modulePath: string): Promise<any> {
-  const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
-  return importer(modulePath);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -285,6 +277,7 @@ export function RubricsPage() {
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const aiModel = useAppSelector((state) => state.app.aiModel);
   const [activeTool, setActiveTool] = useState<"rubrics" | "checklists">("rubrics");
+  const [checklistsDirty, setChecklistsDirty] = useState(false);
   const [templates, setTemplates] = useState<RubricTemplate[]>([]);
   const [selectedRubricId, setSelectedRubricId] = useState("");
   const [rubricDirty, setRubricDirty] = useState(false);
@@ -299,7 +292,10 @@ export function RubricsPage() {
   const [isModelLoadingOpen, setIsModelLoadingOpen] = useState(false);
   const [modelLoadStatus, setModelLoadStatus] = useState("Preparando modelo...");
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
+  const [showRubricUnsavedModal, setShowRubricUnsavedModal] = useState(false);
+  const [showChecklistUnsavedModal, setShowChecklistUnsavedModal] = useState(false);
   const engineRef = useRef<any>(null);
+  const pendingRubricActionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const loadTemplates = async () => {
     if (!selectedClassId) {
@@ -307,7 +303,7 @@ export function RubricsPage() {
       return;
     }
     const rows = await db.rubricTemplates.where("classId").equals(selectedClassId).toArray();
-    setTemplates(rows.map(normalizeTemplate));
+    setTemplates(rows.filter((item) => !item.taskId).map(normalizeTemplate));
   };
 
   useEffect(() => {
@@ -351,6 +347,8 @@ export function RubricsPage() {
     engineRef.current = null;
   }, [aiModel]);
 
+  useUnsavedChangesGuard(rubricDirty);
+
   const persistRubric = async (): Promise<boolean> => {
     if (!selectedTemplate || !rubricDirty) {
       return true;
@@ -383,6 +381,29 @@ export function RubricsPage() {
     return true;
   };
 
+  const runRubricAction = (action: () => void | Promise<void>): void => {
+    if (!rubricDirty) {
+      void action();
+      return;
+    }
+    pendingRubricActionRef.current = action;
+    setShowRubricUnsavedModal(true);
+  };
+
+  const closeRubricUnsavedModal = (): void => {
+    setShowRubricUnsavedModal(false);
+    pendingRubricActionRef.current = null;
+  };
+
+  const executePendingRubricAction = (): void => {
+    const action = pendingRubricActionRef.current;
+    pendingRubricActionRef.current = null;
+    setShowRubricUnsavedModal(false);
+    if (action) {
+      void action();
+    }
+  };
+
   const createRubric = async (): Promise<void> => {
     if (!selectedClassId) {
       return;
@@ -391,6 +412,7 @@ export function RubricsPage() {
     await db.rubricTemplates.add({
       id,
       classId: selectedClassId,
+      taskId: undefined,
       name: "Nueva rubrica",
       description: "",
       criteria: [],
@@ -438,6 +460,7 @@ export function RubricsPage() {
         await db.rubricTemplates.add({
           id,
           classId: selectedClassId,
+          taskId: undefined,
           name: "Nueva rubrica",
           description: "",
           criteria: [],
@@ -450,16 +473,13 @@ export function RubricsPage() {
       }
 
       let webllm: any = null;
-      for (const source of WEBLLM_IMPORT_SOURCES) {
-        try {
-          logRubricAI("webllm.import.try", { source });
-          webllm = await dynamicImport(source);
-          logRubricAI("webllm.import.ok", { source });
-          break;
-        } catch {
-          logRubricAI("webllm.import.fail", { source });
-          webllm = null;
-        }
+      try {
+        logRubricAI("webllm.import.try", { source: "@mlc-ai/web-llm" });
+        webllm = await import("@mlc-ai/web-llm");
+        logRubricAI("webllm.import.ok", { source: "@mlc-ai/web-llm" });
+      } catch {
+        logRubricAI("webllm.import.fail", { source: "@mlc-ai/web-llm" });
+        webllm = null;
       }
       if (!webllm) {
         logRubricAI("webllm.import.unavailable");
@@ -669,7 +689,13 @@ export function RubricsPage() {
           type="button"
           aria-pressed={activeTool === "rubrics"}
           className={`btn secondary ${activeTool === "rubrics" ? "active" : ""}`}
-          onClick={() => setActiveTool("rubrics")}
+          onClick={() => {
+            if (activeTool === "checklists" && checklistsDirty) {
+              setShowChecklistUnsavedModal(true);
+              return;
+            }
+            setActiveTool("rubrics");
+          }}
         >
           Rubricas
         </button>
@@ -677,7 +703,7 @@ export function RubricsPage() {
           type="button"
           aria-pressed={activeTool === "checklists"}
           className={`btn secondary ${activeTool === "checklists" ? "active" : ""}`}
-          onClick={() => setActiveTool("checklists")}
+          onClick={() => runRubricAction(() => setActiveTool("checklists"))}
         >
           Listas de cotejo
         </button>
@@ -690,7 +716,11 @@ export function RubricsPage() {
           <div className="courses-list-header">
             <strong>Rubricas</strong>
             <div className="actions-cell">
-              <IconButton icon="add" label="Crear rubrica" onClick={async () => void createRubric()} />
+              <IconButton
+                icon="add"
+                label="Crear rubrica"
+                onClick={() => runRubricAction(async () => void createRubric())}
+              />
               <IconButton
                 icon="ai"
                 label="Generar rubrica con IA"
@@ -709,12 +739,7 @@ export function RubricsPage() {
                   role="tab"
                   aria-selected={selectedRubricId === item.id}
                   className={`section-tab ${selectedRubricId === item.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (rubricDirty) {
-                      return;
-                    }
-                    setSelectedRubricId(item.id);
-                  }}
+                  onClick={() => runRubricAction(() => setSelectedRubricId(item.id))}
                 >
                   <span>{item.name}</span>
                   <small>{item.criteria?.length ?? 0} criterios</small>
@@ -725,12 +750,11 @@ export function RubricsPage() {
                 <IconButton
                   icon="delete"
                   label={`Eliminar ${item.name}`}
-                  onClick={async () => {
-                    if (rubricDirty) {
-                      return;
-                    }
-                    await removeRubric(item.id);
-                  }}
+                  onClick={() =>
+                    runRubricAction(async () => {
+                      await removeRubric(item.id);
+                    })
+                  }
                 />
               </div>
             ))}
@@ -966,6 +990,53 @@ export function RubricsPage() {
       </div>
       {rubricDirty ? <p className="hint">Tienes cambios sin guardar en la rubrica actual.</p> : null}
       <Modal
+        open={showRubricUnsavedModal}
+        title="Cambios sin guardar"
+        onClose={closeRubricUnsavedModal}
+      >
+        <p>Hay cambios pendientes en la rubrica actual.</p>
+        <div className="inline-form">
+          <button type="button" className="btn secondary" onClick={closeRubricUnsavedModal}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={() => {
+              setRubricDirty(false);
+              executePendingRubricAction();
+            }}
+          >
+            Descartar y continuar
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={async () => {
+              const saved = await persistRubric();
+              if (!saved) {
+                return;
+              }
+              executePendingRubricAction();
+            }}
+          >
+            Guardar y continuar
+          </button>
+        </div>
+      </Modal>
+      <Modal
+        open={showChecklistUnsavedModal}
+        title="Cambios sin guardar"
+        onClose={() => setShowChecklistUnsavedModal(false)}
+      >
+        <p>Tienes cambios pendientes en listas de cotejo. Guarda esos cambios antes de salir de esa vista.</p>
+        <div className="inline-form">
+          <button type="button" className="btn" onClick={() => setShowChecklistUnsavedModal(false)}>
+            Entendido
+          </button>
+        </div>
+      </Modal>
+      <Modal
         open={isAIModalOpen}
         title="Generar rubrica con IA"
         onClose={() => {
@@ -1014,7 +1085,7 @@ export function RubricsPage() {
       </Modal>
         </>
       ) : (
-        <ChecklistsSection selectedClassId={selectedClassId} />
+        <ChecklistsSection selectedClassId={selectedClassId} onDirtyChange={setChecklistsDirty} />
       )}
     </section>
   );

@@ -1,8 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "../../shared/db/database";
-import type { AttendanceEntry, ScheduleDay, Student, Subject } from "../../shared/db/types";
+import { useAppSelector } from "../../app/hooks";
+import type {
+  AttendanceEntry,
+  ChecklistTemplate,
+  RubricTemplate,
+  ScheduleDay,
+  Student,
+  Subject,
+  SubjectCourseLink,
+  SubjectStudentLink,
+  Task,
+  TaskChecklistAssessment,
+  TaskDailyEvaluationSetting,
+  TaskRubricAssessment,
+  TaskSession,
+  TaskStudentComment
+} from "../../shared/db/types";
 import { getStudentFullName } from "../../shared/utils/student";
 import { IconButton } from "../../shared/ui/IconButton";
+import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 const today = new Date().toISOString().slice(0, 10);
 const WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
@@ -125,12 +143,44 @@ function getNearestSlotKey(slots: SubjectSlot[]): string {
   return best.key;
 }
 
+function rubricDraftKey(studentId: string, criterionId: string): string {
+  return `${studentId}:${criterionId}`;
+}
+
+function checklistDraftKey(studentId: string, itemId: string): string {
+  return `${studentId}:${itemId}`;
+}
+
 export function AttendancePage() {
+  const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [scheduleDays, setScheduleDays] = useState<ScheduleDay[]>([]);
+  const [allStudents, setAllStudents] = useState<Student[]>([]);
+  const [subjectStudentLinks, setSubjectStudentLinks] = useState<SubjectStudentLink[]>([]);
+  const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskSessions, setTaskSessions] = useState<TaskSession[]>([]);
+  const [taskStudentComments, setTaskStudentComments] = useState<TaskStudentComment[]>([]);
+  const [rubricTemplates, setRubricTemplates] = useState<RubricTemplate[]>([]);
+  const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
+  const [taskDailyEvaluationSettings, setTaskDailyEvaluationSettings] = useState<TaskDailyEvaluationSetting[]>([]);
+  const [taskRubricAssessments, setTaskRubricAssessments] = useState<TaskRubricAssessment[]>([]);
+  const [taskChecklistAssessments, setTaskChecklistAssessments] = useState<TaskChecklistAssessment[]>([]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedSlotKey, setSelectedSlotKey] = useState("");
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [activeDiaryTab, setActiveDiaryTab] = useState<"attendance" | "tasks">("attendance");
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [selectedTaskSessionSlotId, setSelectedTaskSessionSlotId] = useState("");
+  const [taskGeneralCommentDraft, setTaskGeneralCommentDraft] = useState("");
+  const [taskStudentCommentDraft, setTaskStudentCommentDraft] = useState<Map<string, string>>(new Map());
+  const [selectedRubricTemplateId, setSelectedRubricTemplateId] = useState("");
+  const [selectedChecklistTemplateId, setSelectedChecklistTemplateId] = useState("");
+  const [taskRubricDraft, setTaskRubricDraft] = useState<Map<string, string>>(new Map());
+  const [taskChecklistDraft, setTaskChecklistDraft] = useState<Map<string, boolean>>(new Map());
+  const [taskDirty, setTaskDirty] = useState(false);
+  const [isSavingTask, setIsSavingTask] = useState(false);
+  const [taskNotice, setTaskNotice] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(() => monthStart(new Date()));
   const [students, setStudents] = useState<Student[]>([]);
   const [attendanceEntries, setAttendanceEntries] = useState<AttendanceEntry[]>([]);
@@ -142,14 +192,54 @@ export function AttendancePage() {
   const [attendanceRecordedByDate, setAttendanceRecordedByDate] = useState<Map<string, number>>(new Map());
   const [attendanceExpectedByDate, setAttendanceExpectedByDate] = useState<Map<string, number>>(new Map());
   const [coverageVersion, setCoverageVersion] = useState(0);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+  const pendingContextChangeRef = useRef<(() => void) | null>(null);
 
   const loadMetadata = async (): Promise<void> => {
-    const [subjectsData, scheduleDaysData] = await Promise.all([
+    const [
+      subjectsData,
+      scheduleDaysData,
+      studentsData,
+      subjectStudentLinksData,
+      subjectCourseLinksData,
+      tasksData,
+      taskSessionsData,
+      taskStudentCommentsData,
+      rubricTemplatesData,
+      checklistTemplatesData,
+      taskDailyEvaluationSettingsData,
+      taskRubricAssessmentsData,
+      taskChecklistAssessmentsData
+    ] = await Promise.all([
       db.subjects.orderBy("name").toArray(),
-      db.scheduleDays.orderBy("dayOfWeek").toArray()
+      db.scheduleDays.orderBy("dayOfWeek").toArray(),
+      db.students.toArray(),
+      db.subjectStudentLinks.toArray(),
+      db.subjectCourseLinks.toArray(),
+      db.tasks.toArray(),
+      db.taskSessions.toArray(),
+      db.taskStudentComments.toArray(),
+      selectedClassId ? db.rubricTemplates.where("classId").equals(selectedClassId).toArray() : Promise.resolve([]),
+      selectedClassId
+        ? db.checklistTemplates.where("classId").equals(selectedClassId).toArray()
+        : Promise.resolve([]),
+      db.taskDailyEvaluationSettings.toArray(),
+      db.taskRubricAssessments.toArray(),
+      db.taskChecklistAssessments.toArray()
     ]);
     setSubjects(subjectsData);
     setScheduleDays(scheduleDaysData);
+    setAllStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
+    setSubjectStudentLinks(subjectStudentLinksData);
+    setSubjectCourseLinks(subjectCourseLinksData);
+    setTasks(tasksData);
+    setTaskSessions(taskSessionsData);
+    setTaskStudentComments(taskStudentCommentsData);
+    setRubricTemplates(rubricTemplatesData);
+    setChecklistTemplates(checklistTemplatesData);
+    setTaskDailyEvaluationSettings(taskDailyEvaluationSettingsData);
+    setTaskRubricAssessments(taskRubricAssessmentsData);
+    setTaskChecklistAssessments(taskChecklistAssessmentsData);
     if (!selectedSubjectId && subjectsData.length > 0) {
       setSelectedSubjectId(subjectsData[0].id);
     }
@@ -278,7 +368,7 @@ export function AttendancePage() {
 
   useEffect(() => {
     void loadMetadata();
-  }, []);
+  }, [selectedClassId]);
 
   useEffect(() => {
     void loadData();
@@ -391,6 +481,227 @@ export function AttendancePage() {
     return map;
   }, [attendanceByStudent, students]);
 
+  const subjectById = useMemo(() => new Map(subjects.map((item) => [item.id, item])), [subjects]);
+  const slotLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const day of scheduleDays) {
+      for (const block of day.blocks) {
+        map.set(block.id, `${day.dayName} ${block.startTime} - ${block.endTime}`);
+      }
+    }
+    return map;
+  }, [scheduleDays]);
+
+  const classSubjectSet = useMemo(() => {
+    if (!selectedClassId) {
+      return null;
+    }
+    return new Set(
+      subjectCourseLinks.filter((item) => item.classId === selectedClassId).map((item) => item.subjectId)
+    );
+  }, [selectedClassId, subjectCourseLinks]);
+
+  const tasksForSelectedDate = useMemo(() => {
+    const sessionRows = taskSessions.filter((item) => item.date === selectedDate);
+    const sessionsByTask = new Map<string, TaskSession[]>();
+    for (const session of sessionRows) {
+      if (!sessionsByTask.has(session.taskId)) {
+        sessionsByTask.set(session.taskId, []);
+      }
+      sessionsByTask.get(session.taskId)?.push(session);
+    }
+
+    const visible = tasks
+      .filter((task) => sessionsByTask.has(task.id))
+      .filter((task) => (classSubjectSet ? classSubjectSet.has(task.subjectId) : true))
+      .map((task) => ({
+        task,
+        sessions: (sessionsByTask.get(task.id) ?? []).sort((a, b) => a.scheduleSlotId.localeCompare(b.scheduleSlotId))
+      }))
+      .sort((a, b) => {
+        const firstA = a.sessions[0]?.scheduleSlotId ?? "";
+        const firstB = b.sessions[0]?.scheduleSlotId ?? "";
+        const labelA = slotLabelById.get(firstA) ?? firstA;
+        const labelB = slotLabelById.get(firstB) ?? firstB;
+        return labelA.localeCompare(labelB) || a.task.title.localeCompare(b.task.title);
+      });
+
+    return visible;
+  }, [classSubjectSet, selectedDate, slotLabelById, taskSessions, tasks]);
+
+  const selectedTaskForDay = useMemo(
+    () => tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.task ?? null,
+    [selectedTaskId, tasksForSelectedDate]
+  );
+  const selectedTaskSessionsForDay = useMemo(
+    () => tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.sessions ?? [],
+    [selectedTaskId, tasksForSelectedDate]
+  );
+  const selectedTaskSessionForDay = useMemo(
+    () =>
+      selectedTaskSessionsForDay.find((item) => item.scheduleSlotId === selectedTaskSessionSlotId) ??
+      selectedTaskSessionsForDay[0] ??
+      null,
+    [selectedTaskSessionSlotId, selectedTaskSessionsForDay]
+  );
+
+  const taskStudents = useMemo(() => {
+    if (!selectedTaskForDay) {
+      return [];
+    }
+    const studentSet = new Set(
+      subjectStudentLinks
+        .filter((link) => link.subjectId === selectedTaskForDay.subjectId)
+        .map((link) => link.studentId)
+    );
+    return allStudents
+      .filter((student) => studentSet.has(student.id))
+      .filter((student) => (selectedClassId ? student.classId === selectedClassId : true));
+  }, [allStudents, selectedClassId, selectedTaskForDay, subjectStudentLinks]);
+
+  const selectedRubricTemplate = useMemo(
+    () => rubricTemplates.find((item) => item.id === selectedRubricTemplateId) ?? null,
+    [rubricTemplates, selectedRubricTemplateId]
+  );
+  const selectedChecklistTemplate = useMemo(
+    () => checklistTemplates.find((item) => item.id === selectedChecklistTemplateId) ?? null,
+    [checklistTemplates, selectedChecklistTemplateId]
+  );
+  const taskHasFixedRubric = Boolean(selectedTaskForDay?.rubricTemplateId);
+  const taskHasFixedChecklist = !taskHasFixedRubric && Boolean(selectedTaskForDay?.checklistTemplateId);
+  const diaryRubricTemplates = useMemo(
+    () => rubricTemplates.filter((item) => !item.taskId || item.taskId === selectedTaskForDay?.id),
+    [rubricTemplates, selectedTaskForDay]
+  );
+  const diaryChecklistTemplates = useMemo(
+    () => checklistTemplates.filter((item) => !item.taskId || item.taskId === selectedTaskForDay?.id),
+    [checklistTemplates, selectedTaskForDay]
+  );
+
+  useEffect(() => {
+    if (tasksForSelectedDate.length === 0) {
+      setSelectedTaskId("");
+      return;
+    }
+    if (!tasksForSelectedDate.some((item) => item.task.id === selectedTaskId)) {
+      setSelectedTaskId(tasksForSelectedDate[0].task.id);
+    }
+  }, [selectedTaskId, tasksForSelectedDate]);
+
+  useEffect(() => {
+    if (selectedTaskSessionsForDay.length === 0) {
+      setSelectedTaskSessionSlotId("");
+      return;
+    }
+    const exists = selectedTaskSessionsForDay.some((item) => item.scheduleSlotId === selectedTaskSessionSlotId);
+    if (!exists) {
+      setSelectedTaskSessionSlotId(selectedTaskSessionsForDay[0].scheduleSlotId);
+    }
+  }, [selectedTaskSessionSlotId, selectedTaskSessionsForDay]);
+
+  useEffect(() => {
+    if (!selectedTaskForDay || !selectedTaskSessionForDay) {
+      setTaskGeneralCommentDraft("");
+      setTaskStudentCommentDraft(new Map());
+      setSelectedRubricTemplateId("");
+      setSelectedChecklistTemplateId("");
+      setTaskRubricDraft(new Map());
+      setTaskChecklistDraft(new Map());
+      setTaskNotice("");
+      setTaskDirty(false);
+      return;
+    }
+    const slotId = selectedTaskSessionForDay.scheduleSlotId;
+    const setting =
+      taskDailyEvaluationSettings.find(
+        (item) =>
+          item.taskId === selectedTaskForDay.id &&
+          item.date === selectedDate &&
+          (item.scheduleSlotId ?? "") === slotId
+      ) ?? null;
+    const legacySetting =
+      taskDailyEvaluationSettings.find(
+        (item) => item.taskId === selectedTaskForDay.id && item.date === selectedDate && !item.scheduleSlotId
+      ) ?? null;
+
+    setTaskGeneralCommentDraft(
+      setting?.generalComment ?? legacySetting?.generalComment ?? selectedTaskForDay.generalComment ?? ""
+    );
+    const commentsMap = new Map<string, string>();
+    let hasScopedComments = false;
+    for (const row of taskStudentComments) {
+      if (
+        row.taskId === selectedTaskForDay.id &&
+        row.date === selectedDate &&
+        (row.scheduleSlotId ?? "") === slotId
+      ) {
+        hasScopedComments = true;
+        commentsMap.set(row.studentId, row.comment);
+      }
+    }
+    if (!hasScopedComments) {
+      for (const row of taskStudentComments) {
+        if (row.taskId === selectedTaskForDay.id && !row.date && !row.scheduleSlotId) {
+          commentsMap.set(row.studentId, row.comment);
+        }
+      }
+    }
+    setTaskStudentCommentDraft(commentsMap);
+
+    const taskRubricId = selectedTaskForDay.rubricTemplateId ?? "";
+    const taskChecklistId = selectedTaskForDay.checklistTemplateId ?? "";
+    const loadedRubricId =
+      taskRubricId || setting?.rubricTemplateId || legacySetting?.rubricTemplateId || "";
+    const loadedChecklistId =
+      taskChecklistId || setting?.checklistTemplateId || legacySetting?.checklistTemplateId || "";
+    if (loadedRubricId) {
+      setSelectedRubricTemplateId(loadedRubricId);
+      setSelectedChecklistTemplateId("");
+    } else if (loadedChecklistId) {
+      setSelectedRubricTemplateId("");
+      setSelectedChecklistTemplateId(loadedChecklistId);
+    } else {
+      setSelectedRubricTemplateId("");
+      setSelectedChecklistTemplateId("");
+    }
+
+    const rubricMap = new Map<string, string>();
+    for (const row of taskRubricAssessments) {
+      if (
+        row.taskId !== selectedTaskForDay.id ||
+        row.date !== selectedDate ||
+        (row.scheduleSlotId ?? "") !== slotId
+      ) {
+        continue;
+      }
+      rubricMap.set(rubricDraftKey(row.studentId, row.criterionId), row.levelId);
+    }
+    setTaskRubricDraft(rubricMap);
+
+    const checklistMap = new Map<string, boolean>();
+    for (const row of taskChecklistAssessments) {
+      if (
+        row.taskId !== selectedTaskForDay.id ||
+        row.date !== selectedDate ||
+        (row.scheduleSlotId ?? "") !== slotId
+      ) {
+        continue;
+      }
+      checklistMap.set(checklistDraftKey(row.studentId, row.itemId), row.checked);
+    }
+    setTaskChecklistDraft(checklistMap);
+    setTaskNotice("");
+    setTaskDirty(false);
+  }, [
+    selectedDate,
+    selectedTaskForDay,
+    selectedTaskSessionForDay,
+    taskChecklistAssessments,
+    taskDailyEvaluationSettings,
+    taskRubricAssessments,
+    taskStudentComments
+  ]);
+
   const attendanceDirty = draftStatusByStudent.size > 0;
 
   const setDraftStatus = (studentId: string, status: AttendanceEntry["status"]): void => {
@@ -407,9 +718,9 @@ export function AttendancePage() {
     setAttendanceNotice("");
   };
 
-  const saveAttendance = async (): Promise<void> => {
+  const saveAttendance = async (): Promise<boolean> => {
     if (!selectedSubjectSlot) {
-      return;
+      return false;
     }
     setIsSavingAttendance(true);
     try {
@@ -440,24 +751,157 @@ export function AttendancePage() {
       setAttendanceNotice("Asistencia guardada.");
       await loadData();
       setCoverageVersion((current) => current + 1);
+      return true;
     } finally {
       setIsSavingAttendance(false);
     }
   };
 
-  const ensureCanChangeContext = (): boolean => {
-    if (!attendanceDirty) {
-      return true;
+  const saveTaskDiary = async (): Promise<boolean> => {
+    if (!selectedTaskForDay || !selectedTaskSessionForDay) {
+      return false;
     }
-    setAttendanceNotice("Tienes cambios sin guardar. Pulsa Guardar asistencia antes de cambiar.");
-    return false;
+
+    const taskId = selectedTaskForDay.id;
+    const scheduleSlotId = selectedTaskSessionForDay.scheduleSlotId;
+    const normalizedGeneralComment = taskGeneralCommentDraft.trim();
+    const effectiveRubricTemplateId = selectedRubricTemplateId || "";
+    const effectiveChecklistTemplateId = effectiveRubricTemplateId ? "" : selectedChecklistTemplateId || "";
+    const normalizedComments = taskStudents
+      .map((student) => ({
+        id: crypto.randomUUID(),
+        taskId,
+        date: selectedDate,
+        scheduleSlotId,
+        studentId: student.id,
+        comment: (taskStudentCommentDraft.get(student.id) ?? "").trim()
+      }))
+      .filter((row) => row.comment.length > 0);
+
+    setIsSavingTask(true);
+    try {
+      await db.transaction(
+        "rw",
+        [
+          db.taskStudentComments,
+          db.taskDailyEvaluationSettings,
+          db.taskRubricAssessments,
+          db.taskChecklistAssessments
+        ],
+        async () => {
+          await db.taskStudentComments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([taskId, selectedDate, scheduleSlotId])
+            .delete();
+          if (normalizedComments.length > 0) {
+            await db.taskStudentComments.bulkAdd(normalizedComments);
+          }
+
+          await db.taskDailyEvaluationSettings
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([taskId, selectedDate, scheduleSlotId])
+            .delete();
+          if (normalizedGeneralComment || effectiveRubricTemplateId || effectiveChecklistTemplateId) {
+            await db.taskDailyEvaluationSettings.add({
+              id: `task-eval-${taskId}-${selectedDate}-${scheduleSlotId}`,
+              taskId,
+              date: selectedDate,
+              scheduleSlotId,
+              generalComment: normalizedGeneralComment || undefined,
+              rubricTemplateId: effectiveRubricTemplateId || undefined,
+              checklistTemplateId: effectiveChecklistTemplateId || undefined
+            });
+          }
+
+          await db.taskRubricAssessments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([taskId, selectedDate, scheduleSlotId])
+            .delete();
+          if (effectiveRubricTemplateId && selectedRubricTemplate) {
+            const rubricRows: TaskRubricAssessment[] = [];
+            for (const student of taskStudents) {
+              for (const criterion of selectedRubricTemplate.criteria ?? []) {
+                const criterionId = criterion.id;
+                const levelId = taskRubricDraft.get(rubricDraftKey(student.id, criterionId));
+                const level = (criterion.levels ?? []).find((item) => item.id === levelId);
+                if (!level) {
+                  continue;
+                }
+                rubricRows.push({
+                  id: crypto.randomUUID(),
+                  taskId,
+                  date: selectedDate,
+                  scheduleSlotId,
+                  studentId: student.id,
+                  rubricTemplateId: selectedRubricTemplate.id,
+                  criterionId,
+                  levelId: level.id,
+                  score: Number(level.score) || 0
+                });
+              }
+            }
+            if (rubricRows.length > 0) {
+              await db.taskRubricAssessments.bulkAdd(rubricRows);
+            }
+          }
+
+          await db.taskChecklistAssessments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([taskId, selectedDate, scheduleSlotId])
+            .delete();
+          if (effectiveChecklistTemplateId && selectedChecklistTemplate) {
+            const checklistRows: TaskChecklistAssessment[] = [];
+            for (const student of taskStudents) {
+              for (const item of selectedChecklistTemplate.items ?? []) {
+                if (!taskChecklistDraft.get(checklistDraftKey(student.id, item.id))) {
+                  continue;
+                }
+                checklistRows.push({
+                  id: crypto.randomUUID(),
+                  taskId,
+                  date: selectedDate,
+                  scheduleSlotId,
+                  studentId: student.id,
+                  checklistTemplateId: selectedChecklistTemplate.id,
+                  itemId: item.id,
+                  checked: true
+                });
+              }
+            }
+            if (checklistRows.length > 0) {
+              await db.taskChecklistAssessments.bulkAdd(checklistRows);
+            }
+          }
+        }
+      );
+
+      setTaskDirty(false);
+      setTaskNotice("Registro de tarea guardado.");
+      await loadMetadata();
+      return true;
+    } finally {
+      setIsSavingTask(false);
+    }
   };
+
+  const hasUnsavedChanges = attendanceDirty || taskDirty;
+
+  const runWithContextGuard = (action: () => void): void => {
+    if (!hasUnsavedChanges) {
+      action();
+      return;
+    }
+    pendingContextChangeRef.current = action;
+    setShowUnsavedModal(true);
+  };
+
+  useUnsavedChangesGuard(hasUnsavedChanges);
 
   const calendarCells = useMemo(() => monthGrid(calendarMonth), [calendarMonth]);
 
   return (
     <section className="module-card">
-      <h2>Asistencia por asignatura</h2>
+      <h2>Diario</h2>
 
       <div className="courses-layout">
         <aside className="courses-list-panel">
@@ -467,10 +911,7 @@ export function AttendancePage() {
               className="icon-btn"
               aria-label="Dia anterior"
               onClick={() => {
-                if (!ensureCanChangeContext()) {
-                  return;
-                }
-                setSelectedDate((current) => shiftIsoDate(current, -1));
+                runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, -1)));
               }}
             >
               {"<"}
@@ -482,10 +923,7 @@ export function AttendancePage() {
               className="icon-btn"
               aria-label="Dia siguiente"
               onClick={() => {
-                if (!ensureCanChangeContext()) {
-                  return;
-                }
-                setSelectedDate((current) => shiftIsoDate(current, 1));
+                runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, 1)));
               }}
             >
               {">"}
@@ -500,11 +938,10 @@ export function AttendancePage() {
                 aria-selected={selectedSlotKey === slot.key}
                 className={`section-tab ${selectedSlotKey === slot.key ? "active" : ""}`}
                 onClick={() => {
-                  if (!ensureCanChangeContext()) {
-                    return;
-                  }
-                  setSelectedSlotKey(slot.key);
-                  setSelectedSubjectId(slot.subjectId);
+                  runWithContextGuard(() => {
+                    setSelectedSlotKey(slot.key);
+                    setSelectedSubjectId(slot.subjectId);
+                  });
                 }}
               >
                 <span>{slot.subjectName}</span>
@@ -569,10 +1006,7 @@ export function AttendancePage() {
                       isDone ? "done" : isMissing ? "missing" : isPartial ? "partial" : ""
                     } ${isSelected ? "selected" : ""} ${isToday ? "today" : ""}`}
                     onClick={() => {
-                      if (!ensureCanChangeContext()) {
-                        return;
-                      }
-                      setSelectedDate(iso);
+                      runWithContextGuard(() => setSelectedDate(iso));
                     }}
                   >
                     {cell.date.getDate()}
@@ -590,7 +1024,25 @@ export function AttendancePage() {
         </aside>
 
         <section className="course-detail-panel">
-          {selectedSubjectSlot ? (
+          <div className="evaluation-tool-buttons" aria-label="Tabs del diario">
+            <button
+              type="button"
+              className={`btn secondary ${activeDiaryTab === "attendance" ? "active" : ""}`}
+              onClick={() => runWithContextGuard(() => setActiveDiaryTab("attendance"))}
+            >
+              Asistencia
+            </button>
+            <button
+              type="button"
+              className={`btn secondary ${activeDiaryTab === "tasks" ? "active" : ""}`}
+              onClick={() => runWithContextGuard(() => setActiveDiaryTab("tasks"))}
+            >
+              Tareas
+            </button>
+          </div>
+
+          {activeDiaryTab === "attendance" ? (
+            selectedSubjectSlot ? (
             <>
               <div className="course-detail-header">
                 <div>
@@ -658,9 +1110,370 @@ export function AttendancePage() {
             </>
           ) : (
             <p>Selecciona una combinacion de asignatura y hora para pasar lista.</p>
+          )
+          ) : (
+            <>
+              <div className="course-detail-header">
+                <h4>Tareas del {selectedDate}</h4>
+              </div>
+
+              <div className="courses-list section-tabs" role="tablist" aria-label="Tareas del día">
+                {tasksForSelectedDate.map((item) => (
+                  <button
+                    key={item.task.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedTaskId === item.task.id}
+                    className={`section-tab ${selectedTaskId === item.task.id ? "active" : ""}`}
+                    onClick={() => runWithContextGuard(() => setSelectedTaskId(item.task.id))}
+                  >
+                    <span>{item.task.title || "Tarea sin título"}</span>
+                    <small>{subjectById.get(item.task.subjectId)?.name ?? "-"}</small>
+                    <small>
+                      {item.sessions
+                        .map((session) => slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
+                        .join(" · ")}
+                    </small>
+                  </button>
+                ))}
+                {tasksForSelectedDate.length === 0 ? (
+                  <p className="hint">No hay tareas programadas para este día.</p>
+                ) : null}
+              </div>
+
+              {selectedTaskForDay ? (
+                <>
+                  <section className="detail-section">
+                    <h5>Hora de la tarea</h5>
+                    <div className="inline-form">
+                      <select
+                        className="input"
+                        value={selectedTaskSessionSlotId}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          runWithContextGuard(() => setSelectedTaskSessionSlotId(value));
+                        }}
+                      >
+                        {selectedTaskSessionsForDay.map((session) => (
+                          <option key={`${session.scheduleSlotId}:${session.id}`} value={session.scheduleSlotId}>
+                            {slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </section>
+
+                  <div className="actions-cell" style={{ marginTop: 8, marginBottom: 8 }}>
+                    <IconButton
+                      icon="save"
+                      label="Guardar registro de tarea"
+                      className={taskDirty ? "save-attention" : ""}
+                      disabled={isSavingTask || !taskDirty || !selectedTaskSessionForDay}
+                      onClick={async () => {
+                        await saveTaskDiary();
+                      }}
+                    />
+                  </div>
+                  {taskNotice ? <p className="hint">{taskNotice}</p> : null}
+
+                  <section className="detail-section">
+                    <h5>Comentario general (tarea + hora)</h5>
+                    <textarea
+                      className="input"
+                      value={taskGeneralCommentDraft}
+                      placeholder="Comentario general"
+                      onChange={(event) => {
+                        setTaskGeneralCommentDraft(event.target.value);
+                        setTaskNotice("");
+                        setTaskDirty(true);
+                      }}
+                    />
+                  </section>
+
+                  <section className="detail-section">
+                    <h5>Comentarios por alumno (tarea + hora)</h5>
+                    <div className="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Alumno</th>
+                            <th>Comentario</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {taskStudents.map((student) => (
+                            <tr key={student.id}>
+                              <td>{getStudentFullName(student)}</td>
+                              <td>
+                                <textarea
+                                  className="input"
+                                  value={taskStudentCommentDraft.get(student.id) ?? ""}
+                                  placeholder="Comentario individual"
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    setTaskStudentCommentDraft((current) => {
+                                      const next = new Map(current);
+                                      if (value.trim().length === 0) {
+                                        next.delete(student.id);
+                                      } else {
+                                        next.set(student.id, value);
+                                      }
+                                      return next;
+                                    });
+                                    setTaskNotice("");
+                                    setTaskDirty(true);
+                                  }}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                          {taskStudents.length === 0 ? (
+                            <tr>
+                              <td colSpan={2}>No hay alumnos asociados a esta tarea.</td>
+                            </tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  {!taskHasFixedChecklist ? (
+                    <section className="detail-section">
+                      <h5>Rúbrica</h5>
+                      <div className="inline-form">
+                        <select
+                          className="input"
+                          value={selectedRubricTemplateId}
+                          disabled={taskHasFixedRubric}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setSelectedRubricTemplateId(value);
+                            if (value) {
+                              setSelectedChecklistTemplateId("");
+                            }
+                            setTaskNotice("");
+                            setTaskDirty(true);
+                          }}
+                        >
+                          <option value="">Sin rúbrica</option>
+                          {diaryRubricTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedRubricTemplate ? (
+                        <div className="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Alumno</th>
+                                {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
+                                  <th key={criterion.id}>{criterion.name}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {taskStudents.map((student) => (
+                                <tr key={student.id}>
+                                  <td>{getStudentFullName(student)}</td>
+                                  {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
+                                    <td key={`${student.id}:${criterion.id}`}>
+                                      <select
+                                        className="input"
+                                        value={taskRubricDraft.get(rubricDraftKey(student.id, criterion.id)) ?? ""}
+                                        onChange={(event) => {
+                                          const value = event.target.value;
+                                          setTaskRubricDraft((current) => {
+                                            const next = new Map(current);
+                                            if (value) {
+                                              next.set(rubricDraftKey(student.id, criterion.id), value);
+                                            } else {
+                                              next.delete(rubricDraftKey(student.id, criterion.id));
+                                            }
+                                            return next;
+                                          });
+                                          setTaskNotice("");
+                                          setTaskDirty(true);
+                                        }}
+                                      >
+                                        <option value="">-</option>
+                                        {(criterion.levels ?? []).map((level) => (
+                                          <option key={level.id} value={level.id}>
+                                            {level.name} ({level.score})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="hint">Selecciona una rúbrica para evaluarla en este día.</p>
+                      )}
+                    </section>
+                  ) : null}
+
+                  {!taskHasFixedRubric ? (
+                    <section className="detail-section">
+                      <h5>Lista de cotejo</h5>
+                      <div className="inline-form">
+                        <select
+                          className="input"
+                          value={selectedChecklistTemplateId}
+                          disabled={taskHasFixedChecklist}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setSelectedChecklistTemplateId(value);
+                            if (value) {
+                              setSelectedRubricTemplateId("");
+                            }
+                            setTaskNotice("");
+                            setTaskDirty(true);
+                          }}
+                        >
+                          <option value="">Sin lista de cotejo</option>
+                          {diaryChecklistTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedChecklistTemplate ? (
+                        <div className="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Alumno</th>
+                                {(selectedChecklistTemplate.items ?? []).map((item) => (
+                                  <th key={item.id}>{item.text}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {taskStudents.map((student) => (
+                                <tr key={student.id}>
+                                  <td>{getStudentFullName(student)}</td>
+                                  {(selectedChecklistTemplate.items ?? []).map((item) => (
+                                    <td key={`${student.id}:${item.id}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(taskChecklistDraft.get(checklistDraftKey(student.id, item.id)))}
+                                        onChange={(event) => {
+                                          const checked = event.target.checked;
+                                          setTaskChecklistDraft((current) => {
+                                            const next = new Map(current);
+                                            if (checked) {
+                                              next.set(checklistDraftKey(student.id, item.id), true);
+                                            } else {
+                                              next.delete(checklistDraftKey(student.id, item.id));
+                                            }
+                                            return next;
+                                          });
+                                          setTaskNotice("");
+                                          setTaskDirty(true);
+                                        }}
+                                      />
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="hint">Selecciona una lista de cotejo para cubrirla en este día.</p>
+                      )}
+                    </section>
+                  ) : null}
+
+                  <p className="hint">
+                    Sesiones del día:{" "}
+                    {selectedTaskSessionsForDay
+                      .map((session) => slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
+                      .join(" · ") || "-"}
+                  </p>
+                  <p className="hint">
+                    Hora activa:{" "}
+                    {selectedTaskSessionForDay
+                      ? slotLabelById.get(selectedTaskSessionForDay.scheduleSlotId) ??
+                        selectedTaskSessionForDay.scheduleSlotId
+                      : "-"}
+                  </p>
+                </>
+              ) : (
+                <p>Selecciona una tarea para registrar comentarios y evaluación.</p>
+              )}
+            </>
           )}
         </section>
       </div>
+
+      <Modal
+        open={showUnsavedModal}
+        title="Cambios sin guardar"
+        onClose={() => {
+          setShowUnsavedModal(false);
+          pendingContextChangeRef.current = null;
+        }}
+      >
+        <p>Tienes cambios sin guardar en Diario.</p>
+        <div className="inline-form">
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={() => {
+              setShowUnsavedModal(false);
+              pendingContextChangeRef.current = null;
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={() => {
+              setDraftStatusByStudent(new Map());
+              setAttendanceNotice("");
+              setTaskDirty(false);
+              setTaskNotice("");
+              void loadMetadata();
+              setShowUnsavedModal(false);
+              const action = pendingContextChangeRef.current;
+              pendingContextChangeRef.current = null;
+              action?.();
+            }}
+          >
+            Descartar y continuar
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={isSavingAttendance || isSavingTask}
+            onClick={async () => {
+              const attendanceSaved = attendanceDirty ? await saveAttendance() : true;
+              if (!attendanceSaved) {
+                return;
+              }
+              const taskSaved = taskDirty ? await saveTaskDiary() : true;
+              if (!taskSaved) {
+                return;
+              }
+              setShowUnsavedModal(false);
+              const action = pendingContextChangeRef.current;
+              pendingContextChangeRef.current = null;
+              action?.();
+            }}
+          >
+            Guardar y continuar
+          </button>
+        </div>
+      </Modal>
     </section>
   );
 }

@@ -4,16 +4,14 @@ import { db } from "../../shared/db/database";
 import type { ChecklistItem, ChecklistTemplate } from "../../shared/db/types";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
-const WEBLLM_IMPORT_SOURCES = [
-  "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@latest/+esm",
-  "https://esm.run/@mlc-ai/web-llm"
-];
 const AI_GENERATION_TIMEOUT_MS = 180000;
 const CHECKLIST_AI_LOG_PREFIX = "[ChecklistAI]";
 
 type ChecklistsSectionProps = {
   selectedClassId: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 type GeneratedChecklist = {
@@ -46,11 +44,6 @@ function logChecklistAI(step: string, meta?: Record<string, unknown>): void {
     return;
   }
   console.log(`${CHECKLIST_AI_LOG_PREFIX} ${step}`);
-}
-
-async function dynamicImport(modulePath: string): Promise<any> {
-  const importer = new Function("p", "return import(p)") as (p: string) => Promise<any>;
-  return importer(modulePath);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -268,7 +261,7 @@ function buildFallbackChecklist(theme: string): {
   };
 }
 
-export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
+export function ChecklistsSection({ selectedClassId, onDirtyChange }: ChecklistsSectionProps) {
   const aiModel = useAppSelector((state) => state.app.aiModel);
   const [templates, setTemplates] = useState<ChecklistTemplate[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState("");
@@ -285,8 +278,10 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
   const [isModelLoadingOpen, setIsModelLoadingOpen] = useState(false);
   const [modelLoadStatus, setModelLoadStatus] = useState("Preparando modelo...");
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
 
   const engineRef = useRef<any>(null);
+  const pendingChecklistActionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const loadTemplates = async (): Promise<void> => {
     if (!selectedClassId) {
@@ -294,7 +289,7 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
       return;
     }
     const rows = await db.checklistTemplates.where("classId").equals(selectedClassId).toArray();
-    setTemplates(rows.map(normalizeChecklist));
+    setTemplates(rows.filter((item) => !item.taskId).map(normalizeChecklist));
   };
 
   useEffect(() => {
@@ -338,6 +333,12 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
     engineRef.current = null;
   }, [aiModel]);
 
+  useUnsavedChangesGuard(checklistDirty);
+  useEffect(() => {
+    onDirtyChange?.(checklistDirty);
+    return () => onDirtyChange?.(false);
+  }, [checklistDirty, onDirtyChange]);
+
   const persistChecklist = async (): Promise<boolean> => {
     if (!selectedTemplate || !checklistDirty) {
       return true;
@@ -365,6 +366,29 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
     return true;
   };
 
+  const runChecklistAction = (action: () => void | Promise<void>): void => {
+    if (!checklistDirty) {
+      void action();
+      return;
+    }
+    pendingChecklistActionRef.current = action;
+    setShowUnsavedModal(true);
+  };
+
+  const closeUnsavedModal = (): void => {
+    setShowUnsavedModal(false);
+    pendingChecklistActionRef.current = null;
+  };
+
+  const executePendingChecklistAction = (): void => {
+    const action = pendingChecklistActionRef.current;
+    pendingChecklistActionRef.current = null;
+    setShowUnsavedModal(false);
+    if (action) {
+      void action();
+    }
+  };
+
   const createChecklist = async (): Promise<void> => {
     if (!selectedClassId) {
       return;
@@ -373,6 +397,7 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
     await db.checklistTemplates.add({
       id,
       classId: selectedClassId,
+      taskId: undefined,
       name: "Nueva lista de cotejo",
       description: "",
       items: []
@@ -410,6 +435,7 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
         await db.checklistTemplates.add({
           id,
           classId: selectedClassId,
+          taskId: undefined,
           name: "Nueva lista de cotejo",
           description: "",
           items: []
@@ -419,13 +445,10 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
       }
 
       let webllm: any = null;
-      for (const source of WEBLLM_IMPORT_SOURCES) {
-        try {
-          webllm = await dynamicImport(source);
-          break;
-        } catch {
-          webllm = null;
-        }
+      try {
+        webllm = await import("@mlc-ai/web-llm");
+      } catch {
+        webllm = null;
       }
       if (!webllm) {
         setAiStatus("No se pudo cargar WebLLM en este navegador.");
@@ -593,7 +616,11 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
           <div className="courses-list-header">
             <strong>Listas de cotejo</strong>
             <div className="actions-cell">
-              <IconButton icon="add" label="Crear lista de cotejo" onClick={async () => void createChecklist()} />
+              <IconButton
+                icon="add"
+                label="Crear lista de cotejo"
+                onClick={() => runChecklistAction(async () => void createChecklist())}
+              />
               <IconButton
                 icon="ai"
                 label="Generar lista de cotejo con IA"
@@ -613,10 +640,7 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
                   aria-selected={selectedChecklistId === item.id}
                   className={`section-tab ${selectedChecklistId === item.id ? "active" : ""}`}
                   onClick={() => {
-                    if (checklistDirty) {
-                      return;
-                    }
-                    setSelectedChecklistId(item.id);
+                    runChecklistAction(() => setSelectedChecklistId(item.id));
                   }}
                 >
                   <span>{item.name}</span>
@@ -626,10 +650,9 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
                   icon="delete"
                   label={`Eliminar ${item.name}`}
                   onClick={async () => {
-                    if (checklistDirty) {
-                      return;
-                    }
-                    await removeChecklist(item.id);
+                    runChecklistAction(async () => {
+                      await removeChecklist(item.id);
+                    });
                   }}
                 />
               </div>
@@ -772,6 +795,42 @@ export function ChecklistsSection({ selectedClassId }: ChecklistsSectionProps) {
         </section>
       </div>
       {checklistDirty ? <p className="hint">Tienes cambios sin guardar en la lista de cotejo actual.</p> : null}
+
+      <Modal
+        open={showUnsavedModal}
+        title="Cambios sin guardar"
+        onClose={closeUnsavedModal}
+      >
+        <p>Hay cambios pendientes en la lista actual.</p>
+        <div className="inline-form">
+          <button type="button" className="btn secondary" onClick={closeUnsavedModal}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={() => {
+              setChecklistDirty(false);
+              executePendingChecklistAction();
+            }}
+          >
+            Descartar y continuar
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={async () => {
+              const saved = await persistChecklist();
+              if (!saved) {
+                return;
+              }
+              executePendingChecklistAction();
+            }}
+          >
+            Guardar y continuar
+          </button>
+        </div>
+      </Modal>
 
       <Modal
         open={isAIModalOpen}

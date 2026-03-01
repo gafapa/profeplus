@@ -3,6 +3,7 @@ import { useManagement } from "./ManagementContext";
 import { getStudentFullName } from "../../shared/utils/student";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementCoursesPage() {
   const {
@@ -11,7 +12,8 @@ export function ManagementCoursesPage() {
     createEmptyCourse,
     updateCourse,
     deleteCourse,
-    moveStudent
+    moveStudent,
+    setNotice
   } = useManagement();
 
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -60,12 +62,21 @@ export function ManagementCoursesPage() {
       return true;
     }
     if (detailCourseName.trim().length < 3 || detailCourseYear.trim().length < 4) {
+      setNotice("Completa nombre del curso (minimo 3 caracteres) y curso escolar (minimo 4).");
       return false;
     }
     await updateCourse(selectedCourse.id, detailCourseName, detailCourseYear, detailCourseComments);
     setCourseDirty(false);
     return true;
-  }, [courseDirty, detailCourseComments, detailCourseName, detailCourseYear, selectedCourse, updateCourse]);
+  }, [
+    courseDirty,
+    detailCourseComments,
+    detailCourseName,
+    detailCourseYear,
+    selectedCourse,
+    setNotice,
+    updateCourse
+  ]);
 
   const ensureNoPendingChanges = (): boolean => {
     if (!courseDirty) {
@@ -74,6 +85,8 @@ export function ManagementCoursesPage() {
     setShowUnsavedModal(true);
     return false;
   };
+
+  useUnsavedChangesGuard(courseDirty);
 
   const handleCourseDrop = async (targetCourseId: string, rawStudentId: string | null) => {
     if (!ensureNoPendingChanges()) {

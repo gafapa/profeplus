@@ -2,11 +2,12 @@
 import { useManagement } from "./ManagementContext";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 const today = new Date().toISOString().slice(0, 10);
 
 export function ManagementUnitsPage() {
-  const { subjects, units, createEmptyUnit, updateUnit, deleteUnit } = useManagement();
+  const { subjects, units, createEmptyUnit, updateUnit, deleteUnit, setNotice } = useManagement();
 
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [selectedUnitId, setSelectedUnitId] = useState("");
@@ -73,6 +74,7 @@ export function ManagementUnitsPage() {
       return true;
     }
     if (detailName.trim().length < 2 || !detailStartDate || !detailEndDate) {
+      setNotice("La unidad necesita nombre (minimo 2 caracteres) y fechas de inicio y fin.");
       return false;
     }
 
@@ -93,6 +95,7 @@ export function ManagementUnitsPage() {
     detailSessionCount,
     detailStartDate,
     selectedUnit,
+    setNotice,
     unitDirty,
     updateUnit
   ]);
@@ -104,6 +107,8 @@ export function ManagementUnitsPage() {
     setShowUnsavedModal(true);
     return false;
   };
+
+  useUnsavedChangesGuard(unitDirty);
 
   return (
     <>

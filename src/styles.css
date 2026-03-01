@@ -766,6 +766,25 @@ td {
   background: #ffe2e2 !important;
 }
 
+.management-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.management-page-header h3 {
+  margin: 0;
+}
+
+.management-page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .courses-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
@@ -1309,5 +1328,14 @@ td {
 
   .student-detail-top {
     grid-template-columns: 1fr;
+  }
+
+  .management-page-header {
+    flex-wrap: wrap;
+  }
+
+  .management-page-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }

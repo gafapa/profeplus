@@ -3,6 +3,7 @@ import { useManagement } from "./ManagementContext";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import type { ScheduleBlock, ScheduleDay } from "../../shared/db/types";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
 const MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, "0"));
@@ -173,6 +174,8 @@ export function ManagementSchedulePage() {
     return false;
   };
 
+  useUnsavedChangesGuard(hasPendingChanges);
+
   const addBlock = () => {
     if (!detailDay) {
       return;
@@ -221,9 +224,12 @@ export function ManagementSchedulePage() {
       return;
     }
 
-    const copiedBlocks = sourceDay.blocks.map((block) => ({
-      ...block,
-      id: crypto.randomUUID()
+    const sourceBlocks = sortBlocksByTime(sourceDay.blocks);
+    const targetBlocks = sortBlocksByTime(targetDay.blocks);
+    const copiedBlocks = sourceBlocks.map((block, index) => ({
+      id: targetBlocks[index]?.id ?? crypto.randomUUID(),
+      startTime: block.startTime,
+      endTime: block.endTime
     }));
     void updateScheduleDay({
       ...targetDay,

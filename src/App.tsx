@@ -2,7 +2,7 @@ import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { useEffect } from "react";
 import { GradebookPage } from "./modules/gradebook/GradebookPage";
 import { AttendancePage } from "./modules/attendance/AttendancePage";
-import { PlannerPage } from "./modules/planner/PlannerPage";
+import { TasksPage } from "./modules/planner/PlannerPage";
 import { RubricsPage } from "./modules/rubrics/RubricsPage";
 import { ReportsPage } from "./modules/reports/ReportsPage";
 import { AIAssistantPage } from "./modules/ai-assistant/AIAssistantPage";
@@ -106,8 +106,10 @@ function App() {
             <Route path="database" element={<ManagementDatabasePage />} />
           </Route>
           <Route path="/gradebook" element={<GradebookPage />} />
-          <Route path="/attendance" element={<AttendancePage />} />
-          <Route path="/planner" element={<PlannerPage />} />
+          <Route path="/journal" element={<AttendancePage />} />
+          <Route path="/attendance" element={<Navigate replace to="/journal" />} />
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/planner" element={<Navigate replace to="/tasks" />} />
           <Route path="/rubrics" element={<RubricsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/ai" element={<AIAssistantPage />} />

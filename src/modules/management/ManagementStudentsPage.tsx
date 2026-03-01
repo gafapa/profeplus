@@ -4,6 +4,7 @@ import { resizeImageToMaxSide } from "../../shared/utils/image";
 import { getStudentFullName } from "../../shared/utils/student";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementStudentsPage() {
   const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice } = useManagement();
@@ -95,70 +96,88 @@ export function ManagementStudentsPage() {
     return false;
   };
 
+  useUnsavedChangesGuard(studentDirty);
+
   return (
     <>
       <article className="management-card">
-      <h3>Alumnos</h3>
+      <div className="management-page-header">
+        <h3>Alumnos</h3>
+        <div className="management-page-actions">
+          <IconButton
+            icon="add"
+            label="Crear alumno"
+            onClick={async () => {
+              if (!ensureNoPendingChanges()) {
+                return;
+              }
+              const targetCourseId = detailCourseId || preferredCourseId || courses[0]?.id;
+              const createdId = await createEmptyStudent(targetCourseId);
+              if (createdId) {
+                setSelectedStudentId(createdId);
+              }
+            }}
+          />
+          <IconButton
+            icon="save"
+            label="Guardar alumno"
+            className={studentDirty ? "save-attention" : ""}
+            disabled={!selectedStudent || !studentDirty || isProcessingPhoto}
+            onClick={async () => {
+              await persistStudent();
+            }}
+          />
+          <IconButton
+            icon="delete"
+            label="Eliminar alumno"
+            disabled={!selectedStudent}
+            onClick={async () => {
+              if (!selectedStudent) {
+                return;
+              }
+              if (!ensureNoPendingChanges()) {
+                return;
+              }
+              await deleteStudent(selectedStudent.id);
+            }}
+          />
+        </div>
+      </div>
 
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="courses-list-header">
             <strong>Listado</strong>
-            <IconButton
-              icon="add"
-              label="Crear alumno"
-              onClick={async () => {
-                if (!ensureNoPendingChanges()) {
-                  return;
-                }
-                const targetCourseId = detailCourseId || preferredCourseId || courses[0]?.id;
-                const createdId = await createEmptyStudent(targetCourseId);
-                if (createdId) {
-                  setSelectedStudentId(createdId);
-                }
-              }}
-            />
           </div>
           <div className="courses-list section-tabs" role="tablist" aria-label="Secciones de alumnos">
             {students.map((student) => (
-              <div key={student.id} className="courses-list-row">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={selectedStudentId === student.id}
-                  className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
-                    setSelectedStudentId(student.id);
-                  }}
-                >
-                  <span className="student-item-name">
-                    {student.photoDataUrl ? (
-                      <img
-                        className="student-avatar"
-                        src={student.photoDataUrl}
-                        alt={getStudentFullName(student)}
-                      />
-                    ) : (
-                      <span className="student-avatar-placeholder">-</span>
-                    )}
-                    {getStudentFullName(student)}
-                  </span>
-                  <small>{courses.find((course) => course.id === student.classId)?.name ?? "-"}</small>
-                </button>
-                <IconButton
-                  icon="delete"
-                  label={`Eliminar ${getStudentFullName(student)}`}
-                  onClick={async () => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
-                    await deleteStudent(student.id);
-                  }}
-                />
-              </div>
+              <button
+                key={student.id}
+                type="button"
+                role="tab"
+                aria-selected={selectedStudentId === student.id}
+                className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
+                onClick={() => {
+                  if (!ensureNoPendingChanges()) {
+                    return;
+                  }
+                  setSelectedStudentId(student.id);
+                }}
+              >
+                <span className="student-item-name">
+                  {student.photoDataUrl ? (
+                    <img
+                      className="student-avatar"
+                      src={student.photoDataUrl}
+                      alt={getStudentFullName(student)}
+                    />
+                  ) : (
+                    <span className="student-avatar-placeholder">-</span>
+                  )}
+                  {getStudentFullName(student)}
+                </span>
+                <small>{courses.find((course) => course.id === student.classId)?.name ?? "-"}</small>
+              </button>
             ))}
           </div>
         </aside>
@@ -169,17 +188,6 @@ export function ManagementStudentsPage() {
               <div className="course-detail-header">
                 <div>
                   <h4>Ficha del alumno</h4>
-                </div>
-                <div className="actions-cell">
-                  <IconButton
-                    icon="save"
-                    label="Guardar alumno"
-                    className={studentDirty ? "save-attention" : ""}
-                    disabled={!studentDirty || isProcessingPhoto}
-                    onClick={async () => {
-                      await persistStudent();
-                    }}
-                  />
                 </div>
               </div>
 

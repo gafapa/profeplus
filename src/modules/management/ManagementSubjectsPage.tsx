@@ -3,6 +3,7 @@ import { useManagement } from "./ManagementContext";
 import { Modal } from "../../shared/ui/Modal";
 import { getStudentFullName } from "../../shared/utils/student";
 import { IconButton } from "../../shared/ui/IconButton";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementSubjectsPage() {
   const {
@@ -59,6 +60,15 @@ export function ManagementSubjectsPage() {
     () => subjects.find((subject) => subject.id === selectedSubjectId) ?? null,
     [selectedSubjectId, subjects]
   );
+  const allScheduleSlotIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const day of scheduleDays) {
+      for (const block of day.blocks) {
+        ids.add(block.id);
+      }
+    }
+    return ids;
+  }, [scheduleDays]);
   const activeScheduleDays = useMemo(
     () => scheduleDays.filter((day) => day.enabled),
     [scheduleDays]
@@ -80,6 +90,10 @@ export function ManagementSubjectsPage() {
   const conflictingSelectedSlotIds = useMemo(
     () => detailScheduleSlotIds.filter((slotId) => occupiedSlotsByOtherSubjects.has(slotId)),
     [detailScheduleSlotIds, occupiedSlotsByOtherSubjects]
+  );
+  const orphanSelectedSlotIds = useMemo(
+    () => detailScheduleSlotIds.filter((slotId) => !allScheduleSlotIds.has(slotId)),
+    [allScheduleSlotIds, detailScheduleSlotIds]
   );
 
   useEffect(() => {
@@ -106,7 +120,12 @@ export function ManagementSubjectsPage() {
       setNotice("La asignatura necesita al menos 2 caracteres.");
       return false;
     }
-    if (conflictingSelectedSlotIds.length > 0) {
+    const normalizedSlotIds = detailScheduleSlotIds.filter((slotId) => allScheduleSlotIds.has(slotId));
+    const orphanCount = detailScheduleSlotIds.length - normalizedSlotIds.length;
+    const conflictingNormalized = normalizedSlotIds.filter((slotId) =>
+      occupiedSlotsByOtherSubjects.has(slotId)
+    );
+    if (conflictingNormalized.length > 0) {
       setNotice("Hay horas en conflicto con otra asignatura. Libera esos bloques antes de guardar.");
       return false;
     }
@@ -115,17 +134,23 @@ export function ManagementSubjectsPage() {
       selectedSubject.id,
       detailName,
       detailTeachingHours,
-      detailScheduleSlotIds,
+      normalizedSlotIds,
       detailCourseIds
     );
+    if (orphanCount > 0) {
+      setNotice(
+        `Asignatura actualizada. Se descartaron ${orphanCount} horas antiguas que ya no existen en el horario.`
+      );
+    }
     setSubjectDirty(false);
     return true;
   }, [
+    allScheduleSlotIds,
     detailCourseIds,
     detailName,
     detailScheduleSlotIds,
     detailTeachingHours,
-    conflictingSelectedSlotIds.length,
+    occupiedSlotsByOtherSubjects,
     selectedSubject,
     setNotice,
     subjectDirty,
@@ -139,6 +164,8 @@ export function ManagementSubjectsPage() {
     setShowUnsavedModal(true);
     return false;
   };
+
+  useUnsavedChangesGuard(subjectDirty);
 
   const rows = useMemo(() => getEnrollmentRows(selectedSubjectId), [getEnrollmentRows, selectedSubjectId]);
   const assignedRows = useMemo(() => rows.filter((row) => row.effectiveIncluded), [rows]);
@@ -183,6 +210,53 @@ export function ManagementSubjectsPage() {
     }
   };
 
+  const cleanOrphanSlots = () => {
+    if (orphanSelectedSlotIds.length === 0) {
+      return;
+    }
+    setDetailScheduleSlotIds((current) => current.filter((slotId) => allScheduleSlotIds.has(slotId)));
+    setSubjectDirty(true);
+    setNotice(
+      `Se han quitado ${orphanSelectedSlotIds.length} horas antiguas que no existen en el horario actual.`
+    );
+  };
+
+  const reassignOrphanSlotsAutomatically = () => {
+    const orphanCount = orphanSelectedSlotIds.length;
+    if (orphanCount === 0) {
+      return;
+    }
+
+    const baseSlotIds = detailScheduleSlotIds.filter((slotId) => allScheduleSlotIds.has(slotId));
+    const nextSlotIds = [...baseSlotIds];
+    const selectedSet = new Set(baseSlotIds);
+    const candidateSlotIds = activeScheduleDays.flatMap((day) => day.blocks.map((block) => block.id));
+
+    for (const slotId of candidateSlotIds) {
+      if (selectedSet.has(slotId)) {
+        continue;
+      }
+      if (occupiedSlotsByOtherSubjects.has(slotId)) {
+        continue;
+      }
+      nextSlotIds.push(slotId);
+      selectedSet.add(slotId);
+      if (nextSlotIds.length >= baseSlotIds.length + orphanCount) {
+        break;
+      }
+    }
+
+    setDetailScheduleSlotIds(nextSlotIds);
+    setSubjectDirty(true);
+    if (nextSlotIds.length < baseSlotIds.length + orphanCount) {
+      setNotice(
+        `Se pudieron reasignar ${nextSlotIds.length - baseSlotIds.length} de ${orphanCount} horas. Revisa y ajusta manualmente.`
+      );
+      return;
+    }
+    setNotice(`Se han reasignado automaticamente ${orphanCount} horas. Revisa y guarda la asignatura.`);
+  };
+
   return (
     <article className="management-card">
       <h3>Asignaturas</h3>
@@ -208,6 +282,9 @@ export function ManagementSubjectsPage() {
           <div className="courses-list section-tabs" role="tablist" aria-label="Secciones de asignaturas">
             {subjects.map((subject) => {
               const ids = courseIdsBySubject.get(subject.id) ?? [];
+              const validSlotCount = (subject.scheduleSlotIds ?? []).filter((slotId) =>
+                allScheduleSlotIds.has(slotId)
+              ).length;
               return (
                 <div key={subject.id} className="courses-list-row">
                   <button
@@ -224,7 +301,7 @@ export function ManagementSubjectsPage() {
                   >
                     <span>{subject.name}</span>
                     <small>{ids.map((id) => courseMap.get(id)?.name ?? "-").join(", ")}</small>
-                    <small>{subject.scheduleSlotIds?.length ?? 0} bloques marcados</small>
+                    <small>{validSlotCount} bloques marcados</small>
                   </button>
                   <IconButton
                     icon="delete"
@@ -306,6 +383,24 @@ export function ManagementSubjectsPage() {
 
               <section className="detail-section">
                 <h5>Horario de impartición</h5>
+                {orphanSelectedSlotIds.length > 0 ? (
+                  <div className="hint" style={{ marginBottom: 8 }}>
+                    Esta asignatura tiene {orphanSelectedSlotIds.length} horas antiguas que ya no existen en el
+                    horario.
+                    <div className="inline-form" style={{ marginTop: 6 }}>
+                      <button type="button" className="btn secondary" onClick={cleanOrphanSlots}>
+                        Limpiar horas antiguas
+                      </button>
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        onClick={reassignOrphanSlotsAutomatically}
+                      >
+                        Reasignar automaticamente
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="schedule-grid-wrap">
                   <div className="schedule-grid">
                     {activeScheduleDays.map((day) => (

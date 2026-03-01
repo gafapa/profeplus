@@ -99,9 +99,73 @@ export type LessonPlan = {
   status?: "planned" | "taught";
 };
 
+export type Task = {
+  id: string;
+  subjectId: string;
+  unitId?: string;
+  title: string;
+  description: string;
+  sendToGradebook: boolean;
+  gradebookWeight?: number;
+  rubricTemplateId?: string;
+  checklistTemplateId?: string;
+  generalComment?: string;
+};
+
+export type TaskSession = {
+  id: string;
+  taskId: string;
+  subjectId: string;
+  date: string;
+  scheduleSlotId: string;
+};
+
+export type TaskStudentComment = {
+  id: string;
+  taskId: string;
+  date?: string;
+  scheduleSlotId?: string;
+  studentId: string;
+  comment: string;
+};
+
+export type TaskDailyEvaluationSetting = {
+  id: string;
+  taskId: string;
+  date: string;
+  scheduleSlotId?: string;
+  generalComment?: string;
+  rubricTemplateId?: string;
+  checklistTemplateId?: string;
+};
+
+export type TaskRubricAssessment = {
+  id: string;
+  taskId: string;
+  date: string;
+  scheduleSlotId?: string;
+  studentId: string;
+  rubricTemplateId: string;
+  criterionId: string;
+  levelId: string;
+  score: number;
+};
+
+export type TaskChecklistAssessment = {
+  id: string;
+  taskId: string;
+  date: string;
+  scheduleSlotId?: string;
+  studentId: string;
+  checklistTemplateId: string;
+  itemId: string;
+  checked: boolean;
+};
+
 export type RubricTemplate = {
   id: string;
   classId: string;
+  taskId?: string;
   name: string;
   description?: string;
   criteria?: RubricCriterion[];
@@ -126,6 +190,7 @@ export type RubricLevel = {
 export type ChecklistTemplate = {
   id: string;
   classId: string;
+  taskId?: string;
   name: string;
   description?: string;
   items?: ChecklistItem[];

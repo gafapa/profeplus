@@ -1,10 +1,10 @@
 import { NavLink } from "react-router-dom";
 
 const items = [
-  { to: "/attendance", label: "Asistencia" },
+  { to: "/journal", label: "Diario" },
   { to: "/management", label: "Gestión" },
   { to: "/gradebook", label: "Cuaderno" },
-  { to: "/planner", label: "Planner" },
+  { to: "/tasks", label: "Tareas" },
   { to: "/rubrics", label: "Evaluación" },
   { to: "/reports", label: "Informes" }
 ];

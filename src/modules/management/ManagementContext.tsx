@@ -262,7 +262,6 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       assessmentsCount,
       gradesByClassCount,
       attendanceByClassCount,
-      lessonPlansCount,
       rubricsCount,
       checklistsCount,
       linksCount
@@ -270,15 +269,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       db.assessments.where("classId").equals(courseId).count(),
       db.gradeEntries.where("classId").equals(courseId).count(),
       db.attendanceEntries.where("classId").equals(courseId).count(),
-      db.lessonPlans.where("classId").equals(courseId).count(),
       db.rubricTemplates.where("classId").equals(courseId).count(),
       db.checklistTemplates.where("classId").equals(courseId).count(),
       db.subjectCourseLinks.where("classId").equals(courseId).count()
     ]);
 
     let subjectAssignmentsCount = 0;
+    let taskCommentsCount = 0;
     if (studentIds.length > 0) {
       subjectAssignmentsCount = await db.subjectStudentLinks.where("studentId").anyOf(studentIds).count();
+      taskCommentsCount = await db.taskStudentComments.where("studentId").anyOf(studentIds).count();
     }
 
     const dependencies = [
@@ -286,11 +286,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       `evaluaciones:${assessmentsCount}`,
       `notas:${gradesByClassCount}`,
       `asistencia:${attendanceByClassCount}`,
-      `planner:${lessonPlansCount}`,
       `rúbricas:${rubricsCount}`,
       `listas_cotejo:${checklistsCount}`,
       `vinculos_asignatura:${linksCount}`,
-      `asignaciones_asignatura:${subjectAssignmentsCount}`
+      `asignaciones_asignatura:${subjectAssignmentsCount}`,
+      `comentarios_tareas:${taskCommentsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {
@@ -300,7 +300,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await db.classGroups.delete(courseId);
+    await db.transaction("rw", db.classGroups, db.lessonPlans, async () => {
+      await db.classGroups.delete(courseId);
+      // Cleanup legacy planner records that still point to this course.
+      await db.lessonPlans.where("classId").equals(courseId).delete();
+    });
     setNotice("Curso eliminado.");
     await loadAll();
   };
@@ -392,16 +396,18 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteStudent = async (studentId: string): Promise<void> => {
-    const [gradesCount, attendanceCount, subjectAssignmentsCount] = await Promise.all([
+    const [gradesCount, attendanceCount, subjectAssignmentsCount, taskCommentsCount] = await Promise.all([
       db.gradeEntries.where("studentId").equals(studentId).count(),
       db.attendanceEntries.where("studentId").equals(studentId).count(),
-      db.subjectStudentLinks.where("studentId").equals(studentId).count()
+      db.subjectStudentLinks.where("studentId").equals(studentId).count(),
+      db.taskStudentComments.where("studentId").equals(studentId).count()
     ]);
 
     const dependencies = [
       `notas:${gradesCount}`,
       `asistencia:${attendanceCount}`,
-      `asignaciones_asignatura:${subjectAssignmentsCount}`
+      `asignaciones_asignatura:${subjectAssignmentsCount}`,
+      `comentarios_tareas:${taskCommentsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {
@@ -561,16 +567,18 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteSubject = async (subjectId: string): Promise<void> => {
-    const [linksCount, studentLinksCount, unitsCount] = await Promise.all([
+    const [linksCount, studentLinksCount, unitsCount, tasksCount] = await Promise.all([
       db.subjectCourseLinks.where("subjectId").equals(subjectId).count(),
       db.subjectStudentLinks.where("subjectId").equals(subjectId).count(),
-      db.unitBlocks.where("subjectId").equals(subjectId).count()
+      db.unitBlocks.where("subjectId").equals(subjectId).count(),
+      db.tasks.where("subjectId").equals(subjectId).count()
     ]);
 
     const dependencies = [
       `vinculos_curso:${linksCount}`,
       `asignaciones_alumno:${studentLinksCount}`,
-      `unidades:${unitsCount}`
+      `unidades:${unitsCount}`,
+      `tareas:${tasksCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {
@@ -672,7 +680,108 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const updateScheduleDay = async (day: ScheduleDay): Promise<void> => {
-    await db.scheduleDays.put(day);
+    await db.transaction("rw", db.scheduleDays, db.subjects, async () => {
+      const previous = await db.scheduleDays.get(day.id);
+      await db.scheduleDays.put(day);
+
+      if (!previous) {
+        return;
+      }
+
+      const previousBlocks = previous.blocks ?? [];
+      if (previousBlocks.length === 0) {
+        return;
+      }
+
+      const nextBlocks = day.blocks ?? [];
+      const previousIds = new Set(previousBlocks.map((block) => block.id));
+      const remap = new Map<string, string>();
+      const usedNextIds = new Set<string>();
+
+      // Keep explicit IDs whenever a block survives with the same ID.
+      for (const block of nextBlocks) {
+        if (previousIds.has(block.id)) {
+          remap.set(block.id, block.id);
+          usedNextIds.add(block.id);
+        }
+      }
+
+      const unmatchedPrevious = previousBlocks.filter((block) => !remap.has(block.id));
+      const unmatchedNext = nextBlocks.filter((block) => !usedNextIds.has(block.id));
+
+      // First try to match blocks by identical time range.
+      const nextIdsByTime = new Map<string, string[]>();
+      for (const block of unmatchedNext) {
+        const key = `${block.startTime}|${block.endTime}`;
+        const bucket = nextIdsByTime.get(key) ?? [];
+        bucket.push(block.id);
+        nextIdsByTime.set(key, bucket);
+      }
+
+      for (const block of unmatchedPrevious) {
+        const key = `${block.startTime}|${block.endTime}`;
+        const bucket = nextIdsByTime.get(key);
+        const mappedId = bucket?.shift();
+        if (!mappedId) {
+          continue;
+        }
+        remap.set(block.id, mappedId);
+        usedNextIds.add(mappedId);
+      }
+
+      // Fallback: preserve as many assignments as possible by position.
+      const stillPrevious = unmatchedPrevious.filter((block) => !remap.has(block.id));
+      const stillNext = unmatchedNext.filter((block) => !usedNextIds.has(block.id));
+      const fallbackLength = Math.min(stillPrevious.length, stillNext.length);
+      for (let index = 0; index < fallbackLength; index += 1) {
+        const fromId = stillPrevious[index].id;
+        const toId = stillNext[index].id;
+        remap.set(fromId, toId);
+        usedNextIds.add(toId);
+      }
+
+      if (remap.size === 0) {
+        return;
+      }
+
+      const subjectsData = await db.subjects.toArray();
+      for (const subject of subjectsData) {
+        const currentSlotIds = subject.scheduleSlotIds ?? [];
+        if (!currentSlotIds.some((slotId) => previousIds.has(slotId))) {
+          continue;
+        }
+
+        const nextSlotIds: string[] = [];
+        let changed = false;
+
+        for (const slotId of currentSlotIds) {
+          if (!previousIds.has(slotId)) {
+            nextSlotIds.push(slotId);
+            continue;
+          }
+
+          const mappedId = remap.get(slotId);
+          if (!mappedId) {
+            changed = true;
+            continue;
+          }
+          if (mappedId !== slotId) {
+            changed = true;
+          }
+          nextSlotIds.push(mappedId);
+        }
+
+        if (!changed) {
+          continue;
+        }
+
+        const deduped = Array.from(new Set(nextSlotIds));
+        await db.subjects.put({
+          ...subject,
+          scheduleSlotIds: deduped
+        });
+      }
+    });
     await loadAll();
   };
 
