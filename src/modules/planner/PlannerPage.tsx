@@ -25,11 +25,28 @@ type TaskSessionDraft = {
 type SlotOption = {
   slotId: string;
   label: string;
+  occupied: boolean;
+  assignedToCurrentTask: boolean;
 };
 
 type AITemplateMode = "rubric" | "checklist";
 
 const AI_GENERATION_TIMEOUT_MS = 180000;
+const WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+const MONTH_LABELS = [
+  "Enero",
+  "Febrero",
+  "Marzo",
+  "Abril",
+  "Mayo",
+  "Junio",
+  "Julio",
+  "Agosto",
+  "Septiembre",
+  "Octubre",
+  "Noviembre",
+  "Diciembre"
+];
 
 function toIsoDate(value: Date): string {
   const year = value.getFullYear();
@@ -46,6 +63,36 @@ function isoDayOfWeek(isoDate: string): number {
   const date = new Date(year, month - 1, day);
   const jsDay = date.getDay();
   return jsDay === 0 ? 7 : jsDay;
+}
+
+function monthStart(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
+function addMonths(value: Date, delta: number): Date {
+  return new Date(value.getFullYear(), value.getMonth() + delta, 1);
+}
+
+function mondayFirstIndex(value: Date): number {
+  return (value.getDay() + 6) % 7;
+}
+
+function monthGrid(value: Date): { date: Date; inMonth: boolean }[] {
+  const start = monthStart(value);
+  const startOffset = mondayFirstIndex(start);
+  const gridStart = new Date(start);
+  gridStart.setDate(start.getDate() - startOffset);
+
+  const items: { date: Date; inMonth: boolean }[] = [];
+  for (let index = 0; index < 42; index += 1) {
+    const current = new Date(gridStart);
+    current.setDate(gridStart.getDate() + index);
+    items.push({
+      date: current,
+      inMonth: current.getMonth() === value.getMonth()
+    });
+  }
+  return items;
 }
 
 function uniqueSessionKey(item: TaskSessionDraft): string {
@@ -203,6 +250,7 @@ const today = toIsoDate(new Date());
 
 export function TasksPage() {
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
+  const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
   const aiModel = useAppSelector((state) => state.app.aiModel);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [units, setUnits] = useState<UnitBlock[]>([]);
@@ -212,7 +260,6 @@ export function TasksPage() {
   const [rubricTemplates, setRubricTemplates] = useState<RubricTemplate[]>([]);
   const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
 
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
 
   const [detailTitle, setDetailTitle] = useState("");
@@ -235,12 +282,13 @@ export function TasksPage() {
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
 
   const [sessionDate, setSessionDate] = useState(today);
-  const [sessionSlotId, setSessionSlotId] = useState("");
+  const [sessionCalendarMonth, setSessionCalendarMonth] = useState(() => monthStart(new Date()));
   const engineRef = useRef<any>(null);
 
   const loadAll = async (): Promise<void> => {
     const [
       subjectsData,
+      subjectCourseLinksData,
       unitsData,
       scheduleDaysData,
       tasksData,
@@ -249,6 +297,7 @@ export function TasksPage() {
       checklistTemplatesData
     ] = await Promise.all([
       db.subjects.orderBy("name").toArray(),
+      selectedClassId ? db.subjectCourseLinks.where("classId").equals(selectedClassId).toArray() : Promise.resolve([]),
       db.unitBlocks.orderBy("[subjectId+position]").toArray(),
       db.scheduleDays.orderBy("dayOfWeek").toArray(),
       db.tasks.toArray(),
@@ -259,7 +308,12 @@ export function TasksPage() {
         : Promise.resolve([])
     ]);
 
-    setSubjects(subjectsData);
+    const linkedSubjectIds = new Set(subjectCourseLinksData.map((item) => item.subjectId));
+    const filteredSubjects = subjectsData.filter((item) => linkedSubjectIds.has(item.id));
+    const visibleSubjects =
+      filteredSubjects.length > 1 || subjectsData.length <= 1 ? filteredSubjects : subjectsData;
+
+    setSubjects(visibleSubjects);
     setUnits(unitsData);
     setScheduleDays(scheduleDaysData);
     setTasks(tasksData);
@@ -272,19 +326,31 @@ export function TasksPage() {
     void loadAll();
   }, [selectedClassId]);
 
-  useEffect(() => {
-    if (subjects.length === 0) {
-      setSelectedSubjectId("");
-      return;
+  const latestSessionDateByTask = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const session of taskSessions) {
+      const current = map.get(session.taskId) ?? "";
+      if (session.date > current) {
+        map.set(session.taskId, session.date);
+      }
     }
-    if (!subjects.some((item) => item.id === selectedSubjectId)) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-  }, [selectedSubjectId, subjects]);
+    return map;
+  }, [taskSessions]);
 
   const tasksBySubject = useMemo(
-    () => tasks.filter((item) => item.subjectId === selectedSubjectId),
-    [selectedSubjectId, tasks]
+    () =>
+      tasks
+        .filter((item) => item.subjectId === selectedSubjectId)
+        .sort((a, b) => {
+          const dateA = latestSessionDateByTask.get(a.id) ?? "";
+          const dateB = latestSessionDateByTask.get(b.id) ?? "";
+          const byDate = dateB.localeCompare(dateA);
+          if (byDate !== 0) {
+            return byDate;
+          }
+          return a.title.localeCompare(b.title);
+        }),
+    [latestSessionDateByTask, selectedSubjectId, tasks]
   );
 
   useEffect(() => {
@@ -330,6 +396,58 @@ export function TasksPage() {
     return map;
   }, [scheduleDays]);
 
+  const selectedSubjectSlotIds = useMemo(() => new Set(selectedSubject?.scheduleSlotIds ?? []), [selectedSubject]);
+
+  const scheduleByDayForSelectedSubject = useMemo(() => {
+    const map = new Map<number, ScheduleDay>();
+    for (const day of scheduleDays) {
+      if (!day.enabled) {
+        continue;
+      }
+      const blocks = day.blocks.filter((block) => selectedSubjectSlotIds.has(block.id));
+      if (blocks.length === 0) {
+        continue;
+      }
+      map.set(day.dayOfWeek, {
+        ...day,
+        blocks
+      });
+    }
+    return map;
+  }, [scheduleDays, selectedSubjectSlotIds]);
+
+  const classDayOfWeekSet = useMemo(() => new Set(scheduleByDayForSelectedSubject.keys()), [scheduleByDayForSelectedSubject]);
+
+  const occupiedSessionKeySet = useMemo(() => {
+    const set = new Set<string>();
+    for (const session of taskSessions) {
+      if (session.subjectId !== selectedSubjectId) {
+        continue;
+      }
+      if (selectedTask && session.taskId === selectedTask.id) {
+        continue;
+      }
+      set.add(`${session.date}::${session.scheduleSlotId}`);
+    }
+    return set;
+  }, [selectedSubjectId, selectedTask, taskSessions]);
+
+  const detailSessionKeySet = useMemo(() => new Set(detailSessions.map(uniqueSessionKey)), [detailSessions]);
+  const detailSessionDateSet = useMemo(() => new Set(detailSessions.map((item) => item.date)), [detailSessions]);
+
+  const occupiedCountByDate = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const key of occupiedSessionKeySet) {
+      const parts = key.split("::");
+      const date = parts[0] ?? "";
+      if (!date) {
+        continue;
+      }
+      map.set(date, (map.get(date) ?? 0) + 1);
+    }
+    return map;
+  }, [occupiedSessionKeySet]);
+
   const availableSlotsForSessionDate = useMemo((): SlotOption[] => {
     if (!selectedSubject) {
       return [];
@@ -338,29 +456,76 @@ export function TasksPage() {
     if (dayOfWeek === 0) {
       return [];
     }
-    const scheduleDay = scheduleDays.find((day) => day.enabled && day.dayOfWeek === dayOfWeek);
+    const scheduleDay = scheduleByDayForSelectedSubject.get(dayOfWeek);
     if (!scheduleDay) {
       return [];
     }
-    const slotIds = new Set(selectedSubject.scheduleSlotIds ?? []);
     return scheduleDay.blocks
-      .filter((block) => slotIds.has(block.id))
       .map((block) => ({
         slotId: block.id,
-        label: `${scheduleDay.dayName} ${block.startTime} - ${block.endTime}`
+        label: `${scheduleDay.dayName} ${block.startTime} - ${block.endTime}`,
+        occupied: occupiedSessionKeySet.has(`${sessionDate}::${block.id}`),
+        assignedToCurrentTask: detailSessionKeySet.has(`${sessionDate}::${block.id}`)
       }));
-  }, [scheduleDays, selectedSubject, sessionDate]);
+  }, [detailSessionKeySet, occupiedSessionKeySet, scheduleByDayForSelectedSubject, selectedSubject, sessionDate]);
 
   useEffect(() => {
-    if (availableSlotsForSessionDate.length === 0) {
-      setSessionSlotId("");
+    const [year, month] = sessionDate.split("-").map((item) => Number(item));
+    if (!Number.isInteger(year) || !Number.isInteger(month)) {
       return;
     }
-    const exists = availableSlotsForSessionDate.some((item) => item.slotId === sessionSlotId);
-    if (!exists) {
-      setSessionSlotId(availableSlotsForSessionDate[0].slotId);
+    setSessionCalendarMonth(new Date(year, month - 1, 1));
+  }, [sessionDate]);
+
+  useEffect(() => {
+    if (classDayOfWeekSet.size === 0) {
+      return;
     }
-  }, [availableSlotsForSessionDate, sessionSlotId]);
+    if (classDayOfWeekSet.has(isoDayOfWeek(sessionDate))) {
+      return;
+    }
+    const [year, month, day] = sessionDate.split("-").map((item) => Number(item));
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+      return;
+    }
+    const base = new Date(year, month - 1, day);
+    for (let offset = 1; offset <= 21; offset += 1) {
+      const candidate = new Date(base);
+      candidate.setDate(base.getDate() + offset);
+      const candidateIso = toIsoDate(candidate);
+      if (classDayOfWeekSet.has(isoDayOfWeek(candidateIso))) {
+        setSessionDate(candidateIso);
+        return;
+      }
+    }
+  }, [classDayOfWeekSet, sessionDate]);
+
+  const availableSessionSlots = useMemo(
+    () => availableSlotsForSessionDate.filter((item) => !item.occupied && !item.assignedToCurrentTask),
+    [availableSlotsForSessionDate]
+  );
+
+  const selectedDateOccupationSummary = useMemo(() => {
+    const day = scheduleByDayForSelectedSubject.get(isoDayOfWeek(sessionDate));
+    if (!day) {
+      return {
+        total: 0,
+        occupied: 0
+      };
+    }
+    let occupied = 0;
+    for (const block of day.blocks) {
+      if (occupiedSessionKeySet.has(`${sessionDate}::${block.id}`)) {
+        occupied += 1;
+      }
+    }
+    return {
+      total: day.blocks.length,
+      occupied
+    };
+  }, [occupiedSessionKeySet, scheduleByDayForSelectedSubject, sessionDate]);
+
+  const sessionCalendarCells = useMemo(() => monthGrid(sessionCalendarMonth), [sessionCalendarMonth]);
 
   useEffect(() => {
     if (!selectedTask) {
@@ -811,16 +976,20 @@ export function TasksPage() {
     }
   };
 
-  const addSessionToTask = (): void => {
-    if (!sessionDate || !sessionSlotId) {
+  const addSessionToTask = (slotId: string): void => {
+    if (!sessionDate || !slotId) {
       return;
     }
     const nextItem: TaskSessionDraft = {
       date: sessionDate,
-      scheduleSlotId: sessionSlotId
+      scheduleSlotId: slotId
     };
     const key = uniqueSessionKey(nextItem);
-    if (detailSessions.some((item) => uniqueSessionKey(item) === key)) {
+    if (occupiedSessionKeySet.has(key)) {
+      setTaskNotice("Ese bloque ya esta ocupado por otra tarea.");
+      return;
+    }
+    if (detailSessionKeySet.has(key)) {
       return;
     }
     setDetailSessions((current) => [...current, nextItem].sort(compareSessionDraft));
@@ -836,28 +1005,6 @@ export function TasksPage() {
         <div className="courses-layout">
           <aside className="courses-list-panel">
             <div className="courses-list-header">
-              <strong>Asignatura</strong>
-            </div>
-            <div className="inline-form">
-              <select
-                className="input"
-                value={selectedSubjectId}
-                onChange={(event) => {
-                  if (!ensureNoPendingChanges()) {
-                    return;
-                  }
-                  setSelectedSubjectId(event.target.value);
-                }}
-              >
-                {subjects.map((subject) => (
-                  <option key={subject.id} value={subject.id}>
-                    {subject.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="courses-list-header" style={{ marginTop: 10 }}>
               <strong>Tareas</strong>
               <IconButton
                 icon="add"
@@ -1091,34 +1238,101 @@ export function TasksPage() {
 
                 <section className="detail-section">
                   <h5>Sesiones de horario</h5>
-                  <div className="inline-form">
-                    <input
-                      className="input"
-                      type="date"
-                      value={sessionDate}
-                      onChange={(event) => setSessionDate(event.target.value)}
-                    />
-                    <select
-                      className="input"
-                      value={sessionSlotId}
-                      onChange={(event) => setSessionSlotId(event.target.value)}
-                    >
-                      {availableSlotsForSessionDate.map((slot) => (
-                        <option key={slot.slotId} value={slot.slotId}>
-                          {slot.label}
-                        </option>
+                  <section className="attendance-calendar task-session-calendar">
+                    <div className="attendance-calendar-header">
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Mes anterior"
+                        onClick={() => setSessionCalendarMonth((current) => addMonths(current, -1))}
+                      >
+                        {"<"}
+                      </button>
+                      <strong>
+                        {MONTH_LABELS[sessionCalendarMonth.getMonth()]} {sessionCalendarMonth.getFullYear()}
+                      </strong>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Mes siguiente"
+                        onClick={() => setSessionCalendarMonth((current) => addMonths(current, 1))}
+                      >
+                        {">"}
+                      </button>
+                    </div>
+                    <div className="attendance-calendar-grid" role="grid" aria-label="Calendario de sesiones">
+                      {WEEKDAY_LABELS.map((item) => (
+                        <span key={item} className="attendance-calendar-weekday">
+                          {item}
+                        </span>
                       ))}
-                      {availableSlotsForSessionDate.length === 0 ? (
-                        <option value="">No hay bloques para ese día</option>
-                      ) : null}
-                    </select>
-                    <IconButton
-                      icon="add"
-                      label="Añadir sesión"
-                      onClick={addSessionToTask}
-                      disabled={!sessionDate || !sessionSlotId}
-                    />
+                      {sessionCalendarCells.map((cell) => {
+                        const iso = toIsoDate(cell.date);
+                        const dayOfWeek = isoDayOfWeek(iso);
+                        const daySchedule = scheduleByDayForSelectedSubject.get(dayOfWeek);
+                        const totalSlots = daySchedule?.blocks.length ?? 0;
+                        const occupiedSlots = occupiedCountByDate.get(iso) ?? 0;
+                        const isClassDay = totalSlots > 0;
+                        const isFullyOccupied = isClassDay && occupiedSlots >= totalSlots;
+                        const isAssignedToCurrentTask = isClassDay && detailSessionDateSet.has(iso);
+                        const isSelected = isClassDay && sessionDate === iso;
+                        const isToday = isClassDay && iso === today;
+                        const isDisabled = !cell.inMonth || !isClassDay;
+                        return (
+                          <button
+                            key={iso}
+                            type="button"
+                            disabled={isDisabled}
+                            className={`attendance-calendar-day ${cell.inMonth ? "" : "outside"} ${
+                              isFullyOccupied ? "missing" : isAssignedToCurrentTask ? "done" : ""
+                            } ${isSelected ? "selected" : ""} ${isToday ? "today" : ""} ${
+                              isClassDay ? "" : "task-calendar-no-class"
+                            }`}
+                            onClick={() => {
+                              if (isDisabled) {
+                                return;
+                              }
+                              setSessionDate(iso);
+                            }}
+                          >
+                            {isDisabled ? "" : cell.date.getDate()}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="attendance-calendar-legend">
+                      <span className="attendance-dot today">Hoy</span>
+                      <span className="attendance-dot done">Dia asignado a esta tarea</span>
+                      <span className="attendance-dot missing">Dia con horas ocupadas</span>
+                    </div>
+                  </section>
+
+                  <div className="inline-form">
+                    <span className="pill">{sessionDate}</span>
                   </div>
+                  <div className="task-session-slots section-tabs" aria-label="Sesiones disponibles">
+                    {availableSessionSlots.map((slot) => (
+                      <button
+                        key={slot.slotId}
+                        type="button"
+                        className="section-tab"
+                        onClick={() => addSessionToTask(slot.slotId)}
+                      >
+                        <span>{slot.label}</span>
+                      </button>
+                    ))}
+                    {availableSessionSlots.length === 0 ? (
+                      <p className="hint">No hay sesiones disponibles para este dia.</p>
+                    ) : null}
+                  </div>
+                  {selectedDateOccupationSummary.total > 0 ? (
+                    <p className="hint">
+                      Ocupadas por otras tareas: {selectedDateOccupationSummary.occupied} de{" "}
+                      {selectedDateOccupationSummary.total} horas del dia.
+                    </p>
+                  ) : (
+                    <p className="hint">Ese dia no tiene horario para la asignatura seleccionada.</p>
+                  )}
 
                   <div className="table-scroll">
                     <table>
@@ -1236,3 +1450,4 @@ export function TasksPage() {
     </>
   );
 }
+

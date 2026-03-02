@@ -567,18 +567,20 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteSubject = async (subjectId: string): Promise<void> => {
-    const [linksCount, studentLinksCount, unitsCount, tasksCount] = await Promise.all([
+    const [linksCount, studentLinksCount, unitsCount, tasksCount, gradebookGroupsCount] = await Promise.all([
       db.subjectCourseLinks.where("subjectId").equals(subjectId).count(),
       db.subjectStudentLinks.where("subjectId").equals(subjectId).count(),
       db.unitBlocks.where("subjectId").equals(subjectId).count(),
-      db.tasks.where("subjectId").equals(subjectId).count()
+      db.tasks.where("subjectId").equals(subjectId).count(),
+      db.gradebookGroups.filter((group) => group.subjectId === subjectId).count()
     ]);
 
     const dependencies = [
       `vinculos_curso:${linksCount}`,
       `asignaciones_alumno:${studentLinksCount}`,
       `unidades:${unitsCount}`,
-      `tareas:${tasksCount}`
+      `tareas:${tasksCount}`,
+      `carpetas_cuaderno:${gradebookGroupsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {

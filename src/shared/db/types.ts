@@ -59,9 +59,11 @@ export type Student = {
 export type Assessment = {
   id: string;
   classId: string;
+  subjectId?: string;
   title: string;
   weight: number;
   period: string;
+  groupId?: string;
   competency?: string;
 };
 
@@ -107,9 +109,20 @@ export type Task = {
   description: string;
   sendToGradebook: boolean;
   gradebookWeight?: number;
+  groupId?: string;
   rubricTemplateId?: string;
   checklistTemplateId?: string;
   generalComment?: string;
+};
+
+export type GradebookGroup = {
+  id: string;
+  classId: string;
+  subjectId?: string;
+  name: string;
+  parentId?: string;
+  position: number;
+  weight?: number;
 };
 
 export type TaskSession = {

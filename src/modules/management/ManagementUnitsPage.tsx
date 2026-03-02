@@ -115,15 +115,14 @@ export function ManagementUnitsPage() {
     <article className="management-card">
       <h3>Unidades</h3>
 
-      <div className="units-subject-buttons" aria-label="Asignaturas">
+      <div className="module-subject-tabs section-tabs" role="tablist" aria-label="Asignaturas">
         {subjects.map((subject) => (
           <button
             key={subject.id}
             type="button"
-            aria-pressed={selectedSubjectId === subject.id}
-            className={`btn secondary units-subject-button ${
-              selectedSubjectId === subject.id ? "active" : ""
-            }`}
+            role="tab"
+            aria-selected={selectedSubjectId === subject.id}
+            className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
             onClick={() => {
               if (!ensureNoPendingChanges()) {
                 return;
@@ -134,6 +133,7 @@ export function ManagementUnitsPage() {
             {subject.name}
           </button>
         ))}
+        {subjects.length === 0 ? <p className="hint">No hay asignaturas disponibles.</p> : null}
       </div>
 
       <div className="courses-layout">

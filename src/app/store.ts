@@ -3,6 +3,7 @@ import { DEFAULT_WEBLLM_MODEL } from "../modules/ai-assistant/webllmModels";
 
 type AppState = {
   selectedClassId: string | null;
+  selectedSubjectId: string;
   aiModel: string;
 };
 
@@ -15,6 +16,7 @@ function readAiModel(): string {
 
 const initialState: AppState = {
   selectedClassId: null,
+  selectedSubjectId: "",
   aiModel: readAiModel()
 };
 
@@ -24,6 +26,12 @@ const appSlice = createSlice({
   reducers: {
     setSelectedClass(state, action: PayloadAction<string | null>) {
       state.selectedClassId = action.payload;
+      if (!action.payload) {
+        state.selectedSubjectId = "";
+      }
+    },
+    setSelectedSubject(state, action: PayloadAction<string>) {
+      state.selectedSubjectId = action.payload;
     },
     setAiModel(state, action: PayloadAction<string>) {
       state.aiModel = action.payload;
@@ -34,7 +42,7 @@ const appSlice = createSlice({
   }
 });
 
-export const { setSelectedClass, setAiModel } = appSlice.actions;
+export const { setSelectedClass, setSelectedSubject, setAiModel } = appSlice.actions;
 
 export const store = configureStore({
   reducer: {

@@ -8,7 +8,6 @@ import type {
   ScheduleDay,
   Student,
   Subject,
-  SubjectCourseLink,
   SubjectStudentLink,
   Task,
   TaskChecklistAssessment,
@@ -153,11 +152,11 @@ function checklistDraftKey(studentId: string, itemId: string): string {
 
 export function AttendancePage() {
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
+  const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [scheduleDays, setScheduleDays] = useState<ScheduleDay[]>([]);
   const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [subjectStudentLinks, setSubjectStudentLinks] = useState<SubjectStudentLink[]>([]);
-  const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskSessions, setTaskSessions] = useState<TaskSession[]>([]);
   const [taskStudentComments, setTaskStudentComments] = useState<TaskStudentComment[]>([]);
@@ -168,7 +167,6 @@ export function AttendancePage() {
   const [taskChecklistAssessments, setTaskChecklistAssessments] = useState<TaskChecklistAssessment[]>([]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedSlotKey, setSelectedSlotKey] = useState("");
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [activeDiaryTab, setActiveDiaryTab] = useState<"attendance" | "tasks">("attendance");
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [selectedTaskSessionSlotId, setSelectedTaskSessionSlotId] = useState("");
@@ -227,11 +225,19 @@ export function AttendancePage() {
       db.taskRubricAssessments.toArray(),
       db.taskChecklistAssessments.toArray()
     ]);
-    setSubjects(subjectsData);
+    const linkedSubjectIds = new Set(
+      subjectCourseLinksData
+        .filter((item) => (selectedClassId ? item.classId === selectedClassId : true))
+        .map((item) => item.subjectId)
+    );
+    const filteredSubjects = subjectsData.filter((item) => linkedSubjectIds.has(item.id));
+    const visibleSubjects =
+      filteredSubjects.length > 1 || subjectsData.length <= 1 ? filteredSubjects : subjectsData;
+
+    setSubjects(visibleSubjects);
     setScheduleDays(scheduleDaysData);
     setAllStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
     setSubjectStudentLinks(subjectStudentLinksData);
-    setSubjectCourseLinks(subjectCourseLinksData);
     setTasks(tasksData);
     setTaskSessions(taskSessionsData);
     setTaskStudentComments(taskStudentCommentsData);
@@ -240,9 +246,6 @@ export function AttendancePage() {
     setTaskDailyEvaluationSettings(taskDailyEvaluationSettingsData);
     setTaskRubricAssessments(taskRubricAssessmentsData);
     setTaskChecklistAssessments(taskChecklistAssessmentsData);
-    if (!selectedSubjectId && subjectsData.length > 0) {
-      setSelectedSubjectId(subjectsData[0].id);
-    }
   };
 
   const dayOfWeek = useMemo(() => {
@@ -258,24 +261,29 @@ export function AttendancePage() {
     if (!day) {
       return slots;
     }
+    if (!selectedSubjectId) {
+      return slots;
+    }
+    const subject = subjects.find((item) => item.id === selectedSubjectId);
+    if (!subject) {
+      return slots;
+    }
 
-    for (const subject of subjects) {
-      const subjectSlotIds = new Set(subject.scheduleSlotIds ?? []);
-      for (const block of day.blocks) {
-        if (!subjectSlotIds.has(block.id)) {
-          continue;
-        }
-        slots.push({
-          key: `${subject.id}:${block.id}`,
-          subjectId: subject.id,
-          subjectName: subject.name,
-          slotId: block.id,
-          dayOfWeek: day.dayOfWeek,
-          dayName: day.dayName,
-          startTime: block.startTime,
-          endTime: block.endTime
-        });
+    const subjectSlotIds = new Set(subject.scheduleSlotIds ?? []);
+    for (const block of day.blocks) {
+      if (!subjectSlotIds.has(block.id)) {
+        continue;
       }
+      slots.push({
+        key: `${subject.id}:${block.id}`,
+        subjectId: subject.id,
+        subjectName: subject.name,
+        slotId: block.id,
+        dayOfWeek: day.dayOfWeek,
+        dayName: day.dayName,
+        startTime: block.startTime,
+        endTime: block.endTime
+      });
     }
 
     return slots.sort((a, b) => {
@@ -283,52 +291,30 @@ export function AttendancePage() {
       if (byStart !== 0) {
         return byStart;
       }
-      return a.subjectName.localeCompare(b.subjectName);
+      return a.slotId.localeCompare(b.slotId);
     });
-  }, [dayOfWeek, scheduleDays, subjects]);
+  }, [dayOfWeek, scheduleDays, selectedSubjectId, subjects]);
 
   useEffect(() => {
     if (subjectSlotsForDate.length === 0) {
       setSelectedSlotKey("");
       return;
     }
-    let effectiveSubjectId = selectedSubjectId;
-    if (!effectiveSubjectId) {
-      effectiveSubjectId = subjectSlotsForDate[0].subjectId;
-      setSelectedSubjectId(effectiveSubjectId);
-    }
-    const subjectSlots = subjectSlotsForDate.filter((slot) => slot.subjectId === effectiveSubjectId);
-    const exists = subjectSlots.some((slot) => slot.key === selectedSlotKey);
+    const exists = subjectSlotsForDate.some((slot) => slot.key === selectedSlotKey);
     if (exists) {
       return;
     }
-    if (subjectSlots.length > 0) {
-      setSelectedSlotKey(getNearestSlotKey(subjectSlots));
-      return;
-    }
-    setSelectedSlotKey("");
-  }, [selectedSlotKey, selectedSubjectId, subjectSlotsForDate]);
+    setSelectedSlotKey(getNearestSlotKey(subjectSlotsForDate));
+  }, [selectedSlotKey, subjectSlotsForDate]);
 
   const selectedSubjectSlot = useMemo(
     () => subjectSlotsForDate.find((slot) => slot.key === selectedSlotKey) ?? null,
     [selectedSlotKey, subjectSlotsForDate]
   );
-  const activeCalendarSubjectId = selectedSubjectId || selectedSubjectSlot?.subjectId || "";
   const selectedSubject = useMemo(
-    () => subjects.find((item) => item.id === activeCalendarSubjectId) ?? null,
-    [activeCalendarSubjectId, subjects]
+    () => subjects.find((item) => item.id === selectedSubjectId) ?? null,
+    [selectedSubjectId, subjects]
   );
-
-  useEffect(() => {
-    if (!selectedSubjectId && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-      return;
-    }
-    const exists = subjects.some((item) => item.id === selectedSubjectId);
-    if (!exists && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-  }, [selectedSubjectId, subjects]);
 
   useEffect(() => {
     const [year, month] = selectedDate.split("-").map((item) => Number(item));
@@ -482,26 +468,40 @@ export function AttendancePage() {
   }, [attendanceByStudent, students]);
 
   const subjectById = useMemo(() => new Map(subjects.map((item) => [item.id, item])), [subjects]);
-  const slotLabelById = useMemo(() => {
+  const slotTimeLabelById = useMemo(() => {
     const map = new Map<string, string>();
     for (const day of scheduleDays) {
       for (const block of day.blocks) {
-        map.set(block.id, `${day.dayName} ${block.startTime} - ${block.endTime}`);
+        map.set(block.id, `${block.startTime} - ${block.endTime}`);
+      }
+    }
+    return map;
+  }, [scheduleDays]);
+  const slotOrderById = useMemo(() => {
+    const map = new Map<string, number>();
+    let index = 0;
+    const sortedDays = [...scheduleDays].sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+    for (const day of sortedDays) {
+      const sortedBlocks = [...day.blocks].sort((a, b) => {
+        if (a.startTime === b.startTime) {
+          return a.endTime.localeCompare(b.endTime);
+        }
+        return a.startTime.localeCompare(b.startTime);
+      });
+      for (const block of sortedBlocks) {
+        if (!map.has(block.id)) {
+          map.set(block.id, index);
+          index += 1;
+        }
       }
     }
     return map;
   }, [scheduleDays]);
 
-  const classSubjectSet = useMemo(() => {
-    if (!selectedClassId) {
-      return null;
-    }
-    return new Set(
-      subjectCourseLinks.filter((item) => item.classId === selectedClassId).map((item) => item.subjectId)
-    );
-  }, [selectedClassId, subjectCourseLinks]);
-
   const tasksForSelectedDate = useMemo(() => {
+    if (!selectedSubjectId) {
+      return [];
+    }
     const sessionRows = taskSessions.filter((item) => item.date === selectedDate);
     const sessionsByTask = new Map<string, TaskSession[]>();
     for (const session of sessionRows) {
@@ -512,22 +512,34 @@ export function AttendancePage() {
     }
 
     const visible = tasks
+      .filter((task) => task.subjectId === selectedSubjectId)
       .filter((task) => sessionsByTask.has(task.id))
-      .filter((task) => (classSubjectSet ? classSubjectSet.has(task.subjectId) : true))
       .map((task) => ({
         task,
-        sessions: (sessionsByTask.get(task.id) ?? []).sort((a, b) => a.scheduleSlotId.localeCompare(b.scheduleSlotId))
+        sessions: (sessionsByTask.get(task.id) ?? []).sort((a, b) => {
+          const orderA = slotOrderById.get(a.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
+          const orderB = slotOrderById.get(b.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
+          if (orderA !== orderB) {
+            return orderA - orderB;
+          }
+          return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
+        })
       }))
       .sort((a, b) => {
         const firstA = a.sessions[0]?.scheduleSlotId ?? "";
         const firstB = b.sessions[0]?.scheduleSlotId ?? "";
-        const labelA = slotLabelById.get(firstA) ?? firstA;
-        const labelB = slotLabelById.get(firstB) ?? firstB;
+        const orderA = slotOrderById.get(firstA) ?? Number.MAX_SAFE_INTEGER;
+        const orderB = slotOrderById.get(firstB) ?? Number.MAX_SAFE_INTEGER;
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
+        const labelA = slotTimeLabelById.get(firstA) ?? firstA;
+        const labelB = slotTimeLabelById.get(firstB) ?? firstB;
         return labelA.localeCompare(labelB) || a.task.title.localeCompare(b.task.title);
       });
 
     return visible;
-  }, [classSubjectSet, selectedDate, slotLabelById, taskSessions, tasks]);
+  }, [selectedDate, selectedSubjectId, slotOrderById, slotTimeLabelById, taskSessions, tasks]);
 
   const selectedTaskForDay = useMemo(
     () => tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.task ?? null,
@@ -916,8 +928,10 @@ export function AttendancePage() {
             >
               {"<"}
             </button>
-            <strong>{selectedDayName}</strong>
-            <small>{selectedDate}</small>
+            <div className="attendance-day-nav-center">
+              <strong>{selectedDayName}</strong>
+              <small>{selectedDate}</small>
+            </div>
             <button
               type="button"
               className="icon-btn"
@@ -929,7 +943,7 @@ export function AttendancePage() {
               {">"}
             </button>
           </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Combinaciones de asignatura y hora">
+          <div className="courses-list section-tabs" role="tablist" aria-label="Horas de la asignatura">
             {subjectSlotsForDate.map((slot) => (
               <button
                 key={slot.key}
@@ -940,7 +954,6 @@ export function AttendancePage() {
                 onClick={() => {
                   runWithContextGuard(() => {
                     setSelectedSlotKey(slot.key);
-                    setSelectedSubjectId(slot.subjectId);
                   });
                 }}
               >
@@ -951,7 +964,7 @@ export function AttendancePage() {
               </button>
             ))}
             {subjectSlotsForDate.length === 0 ? (
-              <p className="hint">No hay combinaciones de asignatura y hora para este dia.</p>
+              <p className="hint">No hay horas para la asignatura seleccionada en este dia.</p>
             ) : null}
           </div>
           <section className="attendance-calendar">
@@ -1131,7 +1144,7 @@ export function AttendancePage() {
                     <small>{subjectById.get(item.task.subjectId)?.name ?? "-"}</small>
                     <small>
                       {item.sessions
-                        .map((session) => slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
+                        .map((session) => slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
                         .join(" · ")}
                     </small>
                   </button>
@@ -1156,7 +1169,7 @@ export function AttendancePage() {
                       >
                         {selectedTaskSessionsForDay.map((session) => (
                           <option key={`${session.scheduleSlotId}:${session.id}`} value={session.scheduleSlotId}>
-                            {slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}
+                            {slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}
                           </option>
                         ))}
                       </select>
@@ -1395,13 +1408,13 @@ export function AttendancePage() {
                   <p className="hint">
                     Sesiones del día:{" "}
                     {selectedTaskSessionsForDay
-                      .map((session) => slotLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
+                      .map((session) => slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
                       .join(" · ") || "-"}
                   </p>
                   <p className="hint">
                     Hora activa:{" "}
                     {selectedTaskSessionForDay
-                      ? slotLabelById.get(selectedTaskSessionForDay.scheduleSlotId) ??
+                      ? slotTimeLabelById.get(selectedTaskSessionForDay.scheduleSlotId) ??
                         selectedTaskSessionForDay.scheduleSlotId
                       : "-"}
                   </p>

@@ -207,6 +207,7 @@ a {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   padding: 10px 14px 8px;
   margin: 0 14px;
   border-radius: 14px;
@@ -232,6 +233,17 @@ a {
   color: #ffffff;
   border-color: #3871cd;
   box-shadow: 0 8px 18px rgba(56, 113, 205, 0.24);
+}
+
+.top-tabs-subject {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.top-tabs-subject .class-selector {
+  min-width: 220px;
 }
 
 .attendance-subject-tabs {
@@ -269,14 +281,25 @@ a {
 }
 
 .attendance-day-nav {
-  display: flex;
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 10px;
+}
+
+.attendance-day-nav-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
 }
 
 .attendance-day-nav strong {
   color: #214b8c;
+  line-height: 1.1;
 }
 
 .attendance-day-nav small {
@@ -361,6 +384,28 @@ a {
   color: #9b3131;
 }
 
+.task-session-calendar {
+  margin-bottom: 10px;
+}
+
+.attendance-calendar-day.task-calendar-no-class {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.task-session-slots.section-tabs {
+  border-bottom: 0;
+  padding: 0;
+  gap: 6px;
+}
+
+.task-session-slots .section-tab {
+  min-width: 190px;
+  border: 1px solid #d3e0f5;
+  border-radius: 10px;
+  background: #fff;
+}
+
 .attendance-calendar-legend {
   display: flex;
   gap: 10px;
@@ -396,23 +441,14 @@ a {
   background: #3f78d1;
 }
 
-.units-subject-buttons {
+.module-subject-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   margin: 10px 0 14px;
 }
 
-.units-subject-button {
-  font-weight: 700;
-  border-color: #aec4e8;
-  color: #2a548f;
-}
-
-.units-subject-button.active {
-  background: linear-gradient(180deg, #4f8ced 0%, #3871cd 100%);
-  border-color: #3871cd;
-  color: #fff;
+.module-subject-tabs.section-tabs {
+  gap: 2px;
 }
 
 .active-class-title {
@@ -503,6 +539,23 @@ a {
 .management-shell {
   position: relative;
   overflow: hidden;
+}
+
+.management-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+}
+
+.management-shell-header h2 {
+  margin: 0;
+}
+
+.management-close-btn {
+  margin-left: auto;
 }
 
 .management-shell::before {
@@ -929,6 +982,158 @@ td {
   margin: 0 0 8px;
   font-size: 0.9rem;
   color: #294b83;
+}
+
+.gradebook-tree {
+  border: 1px solid #d9e5f6;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.gradebook-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.gradebook-tree-list.root {
+  margin-top: 6px;
+}
+
+.gradebook-tree-list.nested {
+  margin-left: 14px;
+  padding-left: 14px;
+  border-left: 1px dashed #c5d7f2;
+}
+
+.gradebook-tree-item {
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+.gradebook-tree-list.nested > .gradebook-tree-item::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 24px;
+  width: 14px;
+  border-top: 1px dashed #c5d7f2;
+}
+
+.gradebook-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid #e2e9f6;
+  border-radius: 8px;
+  background: #ffffff;
+  margin: 6px 0;
+  padding: 6px 8px;
+  flex-wrap: wrap;
+}
+
+.gradebook-tree-row.group {
+  background: linear-gradient(180deg, #f8fbff 0%, #f0f6ff 100%);
+}
+
+.gradebook-tree-row.group.root {
+  border-style: dashed;
+}
+
+.gradebook-tree-row.task {
+  background: #ffffff;
+  cursor: grab;
+}
+
+.gradebook-tree-row.task.dragging {
+  opacity: 0.65;
+}
+
+.gradebook-tree-row.drop-target {
+  border-color: #2f7a2f;
+  background: #ebf8eb;
+}
+
+.gradebook-tree-toggle {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #b8caea;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #254a87;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.gradebook-tree-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.gradebook-tree-toggle svg,
+.gradebook-tree-node-icon svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gradebook-tree-node-main {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 220px;
+  flex: 1 1 240px;
+}
+
+.gradebook-tree-node-icon {
+  width: 16px;
+  height: 16px;
+  color: #2d5da9;
+}
+
+.gradebook-tree-node-name {
+  font-weight: 700;
+  color: #1c376a;
+}
+
+.gradebook-tree-node-meta {
+  color: #4e5f7e;
+  font-size: 0.84rem;
+}
+
+.gradebook-tree-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.aporte-empty-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #cc2a2a;
+  display: inline-block;
+}
+
+.icon-btn.danger {
+  border-color: #d14343;
+  color: #b42323;
+  background: #fff1f1;
+}
+
+.icon-btn.danger:hover {
+  background: #ffe2e2;
 }
 
 .detail-grid {

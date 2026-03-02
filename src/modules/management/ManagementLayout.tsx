@@ -1,15 +1,30 @@
-import { NavLink, Outlet } from "react-router-dom";
+﻿import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { ManagementProvider, useManagement } from "./ManagementContext";
 
 function ManagementShell() {
   const { notice, isBusy } = useManagement();
+  const navigate = useNavigate();
 
   return (
     <section className="module-card management-shell">
-      <h2>Gestión académica</h2>
+      <div className="management-shell-header">
+        <h2>Gestion academica</h2>
+        <button
+          type="button"
+          className="icon-btn management-close-btn"
+          onClick={() => navigate("/gradebook")}
+          title="Cerrar gestion academica"
+          aria-label="Cerrar gestion academica"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12" />
+            <path d="M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
       {notice ? <p className="notice">{notice}</p> : null}
       {isBusy ? (
-        <div className="management-progress" role="status" aria-label="Procesando acción">
+        <div className="management-progress" role="status" aria-label="Procesando acciÃ³n">
           <div className="management-progress-bar" />
         </div>
       ) : null}
@@ -65,3 +80,4 @@ export function ManagementLayout() {
     </ManagementProvider>
   );
 }
+

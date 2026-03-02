@@ -91,7 +91,7 @@ function App() {
         </div>
       </header>
 
-      <TopTabs />
+      {isManagementRoute ? null : <TopTabs />}
 
       <main className="main-panel">
         <Routes>
