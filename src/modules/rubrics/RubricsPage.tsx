@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppSelector } from "../../app/hooks";
 import { db } from "../../shared/db/database";
 import type { RubricCriterion, RubricLevel, RubricTemplate } from "../../shared/db/types";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import { ChecklistsSection } from "./ChecklistsSection";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { generateAiText } from "../../shared/ai/extensionRuntime";
 
 const AI_GENERATION_TIMEOUT_MS = 180000;
 const RUBRIC_AI_LOG_PREFIX = "[RubricAI]";
@@ -102,12 +104,9 @@ function isTimeoutError(error: unknown): boolean {
   return false;
 }
 
-function logRubricAI(step: string, meta?: Record<string, unknown>): void {
-  if (meta) {
-    console.log(`${RUBRIC_AI_LOG_PREFIX} ${step}`, meta);
-    return;
-  }
-  console.log(`${RUBRIC_AI_LOG_PREFIX} ${step}`);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function logRubricAI(_step: string, _meta?: Record<string, unknown>): void {
+  // no-op in production
 }
 
 function parseFirstJsonObject(raw: string): GeneratedRubric | null {
@@ -159,54 +158,6 @@ function parseFirstJsonObject(raw: string): GeneratedRubric | null {
   return null;
 }
 
-function extractMessageText(response: any): string {
-  const content = response?.choices?.[0]?.message?.content ?? response?.choices?.[0]?.delta?.content ?? "";
-  const normalize = (input: unknown): string => {
-    if (typeof input === "string") {
-      return input;
-    }
-    if (Array.isArray(input)) {
-      return input
-        .map((item) => {
-          if (typeof item === "string") {
-            return item;
-          }
-          if (!item || typeof item !== "object") {
-            return "";
-          }
-          const typed = item as Record<string, unknown>;
-          const itemType = String(typed.type ?? "");
-          if (itemType.toLowerCase().includes("reason")) {
-            return "";
-          }
-          if (typeof typed.text === "string") {
-            return typed.text;
-          }
-          return "";
-        })
-        .join("");
-    }
-    if (input && typeof input === "object") {
-      const obj = input as Record<string, unknown>;
-      if (typeof obj.text === "string") {
-        return obj.text;
-      }
-    }
-    return String(input ?? "");
-  };
-
-  const primaryText = normalize(content);
-  const reasoningText =
-    normalize(response?.choices?.[0]?.message?.reasoning_content) ||
-    normalize(response?.choices?.[0]?.delta?.reasoning_content);
-
-  // In reasoning models, prefer final answer text over reasoning traces.
-  if (primaryText.trim().length > 0) {
-    return primaryText;
-  }
-  return reasoningText;
-}
-
 function normalizeGeneratedRubric(generated: GeneratedRubric): {
   name: string;
   description: string;
@@ -255,7 +206,7 @@ function buildFallbackRubric(theme: string): {
     { name: "Inicial", score: 1 }
   ];
 
-  const criteriaNames = ["Dominio del contenido", "Aplicacion practica", "Comunicacion y justificacion"];
+const criteriaNames = ["Dominio del contenido", "Aplicación práctica", "Comunicación y justificación"];
   const criteria = criteriaNames.map((criterionName) => ({
     id: crypto.randomUUID(),
     name: criterionName,
@@ -267,7 +218,7 @@ function buildFallbackRubric(theme: string): {
   }));
 
   return {
-    name: `Rubrica: ${theme.slice(0, 60)}`,
+    name: `Rúbrica: ${theme.slice(0, 60)}`,
     description: `Borrador generado para: ${theme}`,
     criteria
   };
@@ -275,7 +226,6 @@ function buildFallbackRubric(theme: string): {
 
 export function RubricsPage() {
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
-  const aiModel = useAppSelector((state) => state.app.aiModel);
   const [activeTool, setActiveTool] = useState<"rubrics" | "checklists">("rubrics");
   const [checklistsDirty, setChecklistsDirty] = useState(false);
   const [templates, setTemplates] = useState<RubricTemplate[]>([]);
@@ -289,12 +239,8 @@ export function RubricsPage() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [aiStatus, setAiStatus] = useState("");
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
-  const [isModelLoadingOpen, setIsModelLoadingOpen] = useState(false);
-  const [modelLoadStatus, setModelLoadStatus] = useState("Preparando modelo...");
-  const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [showRubricUnsavedModal, setShowRubricUnsavedModal] = useState(false);
   const [showChecklistUnsavedModal, setShowChecklistUnsavedModal] = useState(false);
-  const engineRef = useRef<any>(null);
   const pendingRubricActionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const loadTemplates = async () => {
@@ -342,10 +288,6 @@ export function RubricsPage() {
     setDetailCriteria(selectedTemplate.criteria ?? []);
     setRubricDirty(false);
   }, [selectedTemplate]);
-
-  useEffect(() => {
-    engineRef.current = null;
-  }, [aiModel]);
 
   useUnsavedChangesGuard(rubricDirty);
 
@@ -413,7 +355,7 @@ export function RubricsPage() {
       id,
       classId: selectedClassId,
       taskId: undefined,
-      name: "Nueva rubrica",
+      name: "Nueva rúbrica",
       description: "",
       criteria: [],
       criteriaCount: 0,
@@ -424,7 +366,26 @@ export function RubricsPage() {
   };
 
   const removeRubric = async (rubricId: string): Promise<void> => {
-    await db.rubricTemplates.delete(rubricId);
+    const assessmentsCount = await db.taskRubricAssessments.where("rubricTemplateId").equals(rubricId).count();
+    if (assessmentsCount > 0) {
+      setAiStatus("No se puede eliminar la rúbrica porque ya tiene evaluaciones.");
+      return;
+    }
+    await db.transaction("rw", db.rubricTemplates, db.taskGradebookConfigs, db.taskDailyEvaluationSettings, async () => {
+      await db.rubricTemplates.delete(rubricId);
+      const configs = await db.taskGradebookConfigs.where("rubricTemplateId").equals(rubricId).toArray();
+      if (configs.length > 0) {
+        await db.taskGradebookConfigs.bulkPut(
+          configs.map((config) => ({ ...config, rubricTemplateId: undefined }))
+        );
+      }
+      const settings = await db.taskDailyEvaluationSettings.where("rubricTemplateId").equals(rubricId).toArray();
+      if (settings.length > 0) {
+        await db.taskDailyEvaluationSettings.bulkPut(
+          settings.map((setting) => ({ ...setting, rubricTemplateId: undefined }))
+        );
+      }
+    });
     await loadTemplates();
   };
 
@@ -432,26 +393,25 @@ export function RubricsPage() {
     const startedAt = Date.now();
     logRubricAI("generate.start", {
       selectedClassId,
-      selectedRubricId,
-      aiModel
+      selectedRubricId
     });
 
     if (!selectedTemplate && !selectedClassId) {
       logRubricAI("generate.blocked.no-class");
-      setAiStatus("Selecciona una clase para generar la rubrica.");
+      setAiStatus("Selecciona una clase para generar la rúbrica.");
       return;
     }
 
     const theme = aiPrompt.trim();
     if (!theme) {
       logRubricAI("generate.blocked.empty-prompt");
-      setAiStatus("Escribe una indicacion para generar la rubrica.");
+      setAiStatus("Escribe una indicación para generar la rúbrica.");
       return;
     }
     logRubricAI("generate.prompt.ready", { promptLength: theme.length });
 
     setIsGeneratingAI(true);
-    setAiStatus("Generando rubrica con IA...");
+    setAiStatus("Generando rúbrica con IA...");
 
     try {
       if (!selectedTemplate && selectedClassId) {
@@ -461,7 +421,7 @@ export function RubricsPage() {
           id,
           classId: selectedClassId,
           taskId: undefined,
-          name: "Nueva rubrica",
+        name: "Nueva rúbrica",
           description: "",
           criteria: [],
           criteriaCount: 0,
@@ -472,105 +432,47 @@ export function RubricsPage() {
         logRubricAI("rubric.bootstrap.created", { rubricId: id });
       }
 
-      let webllm: any = null;
-      try {
-        logRubricAI("webllm.import.try", { source: "@mlc-ai/web-llm" });
-        webllm = await import("@mlc-ai/web-llm");
-        logRubricAI("webllm.import.ok", { source: "@mlc-ai/web-llm" });
-      } catch {
-        logRubricAI("webllm.import.fail", { source: "@mlc-ai/web-llm" });
-        webllm = null;
-      }
-      if (!webllm) {
-        logRubricAI("webllm.import.unavailable");
-        setAiStatus("No se pudo cargar WebLLM en este navegador.");
-        return;
-      }
-
-      const createEngine =
-        webllm.CreateMLCEngine ??
-        webllm.CreateWebWorkerMLCEngine ??
-        webllm.createMLCEngine;
-
-      if (!createEngine) {
-        logRubricAI("webllm.createEngine.missing");
-        setAiStatus("WebLLM no expone un inicializador compatible.");
-        return;
-      }
-
-      if (!engineRef.current) {
-        logRubricAI("engine.create.start", { aiModel });
-        setIsModelLoadingOpen(true);
-        setModelLoadStatus(`Cargando modelo ${aiModel}...`);
-        setModelLoadProgress(0);
-        try {
-          engineRef.current = await createEngine(aiModel, {
-            initProgressCallback: (report: any) => {
-              const progress =
-                typeof report?.progress === "number"
-                  ? Math.max(0, Math.min(100, Math.round(report.progress * 100)))
-                  : null;
-              const text = typeof report?.text === "string" ? report.text : "";
-              if (progress !== null) {
-                setModelLoadProgress(progress);
-              }
-              if (text) {
-                setModelLoadStatus(text);
-              } else if (progress !== null) {
-                setModelLoadStatus(`Cargando modelo... ${progress}%`);
-              }
-            }
-          });
-          logRubricAI("engine.create.ok.with-progress");
-        } catch {
-          logRubricAI("engine.create.retry.without-progress");
-          engineRef.current = await createEngine(aiModel);
-          logRubricAI("engine.create.ok.without-progress");
-        } finally {
-          setIsModelLoadingOpen(false);
-        }
-      } else {
-        logRubricAI("engine.reuse.cached");
-      }
-      const engine = engineRef.current;
-
       setAiStatus("Generando contenido...");
-      const completionPayload = {
-        messages: [
-          {
-            role: "system",
-            content:
-              "Genera rúbricas académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
-          },
-          {
-            role: "user",
-            content: [
-              `Tema: ${theme}`,
-              "Estructura JSON exacta:",
-              '{"name":"", "description":"", "criteria":[{"name":"", "description":"", "levels":[{"name":"", "score":4},{"name":"", "score":3},{"name":"", "score":2},{"name":"", "score":1}]}]}',
-              "Reglas:",
-              "- Minimo 3 criterios.",
-              "- Cada criterio con minimo 4 niveles.",
-              "- Niveles ordenados de mayor a menor puntuacion."
-            ].join("\n")
-          }
-        ],
-        temperature: 0.2,
-        max_tokens: 700,
-        enable_thinking: false
-      };
+      const completionMessages = [
+        {
+          role: "system" as const,
+          content:
+            "Genera rúbricas académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
+        },
+        {
+          role: "user" as const,
+          content: [
+            `Tema: ${theme}`,
+            "Estructura JSON exacta:",
+            '{"name":"", "description":"", "criteria":[{"name":"", "description":"", "levels":[{"name":"", "score":4},{"name":"", "score":3},{"name":"", "score":2},{"name":"", "score":1}]}]}',
+            "Reglas:",
+            "- Mínimo 3 criterios.",
+            "- Cada criterio con mínimo 4 niveles.",
+            "- Niveles ordenados de mayor a menor puntuación."
+          ].join("\n")
+        }
+      ];
 
-      let response: any;
-      try {
-        logRubricAI("completion.run.primary", {
-          maxTokens: completionPayload.max_tokens
+      const runCompletion = (messages: typeof completionMessages, maxOutputTokens: number) =>
+        generateAiText(messages, {
+          temperature: 0.2,
+          maxOutputTokens,
+          responseFormat: "json"
         });
-        response = await withTimeout<any>(
-          engine.chat.completions.create(completionPayload),
+
+      let raw: string;
+      try {
+        logRubricAI("completion.run.primary", { maxTokens: 700 });
+        const response = await withTimeout(
+          runCompletion(completionMessages, 700),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
-        logRubricAI("completion.run.primary.ok");
+        raw = response.text;
+        logRubricAI("completion.run.primary.ok", {
+          provider: response.provider,
+          model: response.model
+        });
       } catch (error) {
         if (!isTimeoutError(error)) {
           logRubricAI("completion.run.primary.error", {
@@ -579,15 +481,13 @@ export function RubricsPage() {
           throw error;
         }
         logRubricAI("completion.run.primary.timeout");
-        setAiStatus("La generacion va lenta. Reintentando con salida reducida...");
-        logRubricAI("completion.run.fallback", { maxTokens: 420 });
-        response = await withTimeout<any>(
-          engine.chat.completions.create({
-            ...completionPayload,
-            messages: [
-              completionPayload.messages[0],
+        setAiStatus("La generación va lenta. Reintentando con salida reducida...");
+        const response = await withTimeout(
+          runCompletion(
+            [
+              completionMessages[0],
               {
-                role: "user",
+                role: "user" as const,
                 content: [
                   `Tema: ${theme}`,
                   "Devuelve SOLO JSON válido con 3 criterios y 4 niveles por criterio.",
@@ -595,15 +495,18 @@ export function RubricsPage() {
                 ].join("\n")
               }
             ],
-            max_tokens: 420
-          }),
+            420
+          ),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
-        logRubricAI("completion.run.fallback.ok");
+        raw = response.text;
+        logRubricAI("completion.run.fallback.ok", {
+          provider: response.provider,
+          model: response.model
+        });
       }
 
-      const raw = extractMessageText(response);
       logRubricAI("completion.output.received", {
         textLength: raw.length,
         previewStart: raw.slice(0, 180),
@@ -615,9 +518,9 @@ export function RubricsPage() {
       if (!normalized) {
         logRubricAI("completion.output.repair.start");
         setAiStatus("Reformateando respuesta a JSON...");
-        const repairResponse: any = await withTimeout<any>(
-          engine.chat.completions.create({
-            messages: [
+        const repairResponse = await withTimeout(
+          generateAiText(
+            [
               {
                 role: "system",
                 content:
@@ -633,14 +536,16 @@ export function RubricsPage() {
                 ].join("\n")
               }
             ],
-            temperature: 0,
-            max_tokens: 500,
-            enable_thinking: false
-          }),
+            {
+              temperature: 0,
+              maxOutputTokens: 500,
+              responseFormat: "json"
+            }
+          ),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
-        const repairedRaw = extractMessageText(repairResponse);
+        const repairedRaw = repairResponse.text;
         logRubricAI("completion.output.repair.received", {
           textLength: repairedRaw.length,
           previewStart: repairedRaw.slice(0, 180),
@@ -660,7 +565,7 @@ export function RubricsPage() {
       setDetailDescription(normalized.description);
       setDetailCriteria(normalized.criteria);
       setRubricDirty(true);
-      setAiStatus("Rubrica generada. Revisa y pulsa Guardar rubrica.");
+    setAiStatus("Rúbrica generada. Revisa y pulsa Guardar rúbrica.");
       setIsAIModalOpen(false);
       logRubricAI("generate.success", {
         criteriaCount: normalized.criteria.length,
@@ -673,7 +578,7 @@ export function RubricsPage() {
         elapsedMs: Date.now() - startedAt
       });
       console.error(`${RUBRIC_AI_LOG_PREFIX} error.detail`, error);
-      setAiStatus(`No se pudo generar la rubrica (${message}).`);
+      setAiStatus(`No se pudo generar la rúbrica (${message}).`);
     } finally {
       setIsGeneratingAI(false);
       logRubricAI("generate.end", { elapsedMs: Date.now() - startedAt });
@@ -682,9 +587,7 @@ export function RubricsPage() {
 
   return (
     <section className="module-card">
-      <h2>Rubricas y listas de cotejo</h2>
-
-      <div className="evaluation-tool-buttons" aria-label="Instrumentos de evaluacion">
+      <div className="evaluation-tool-buttons" aria-label="Instrumentos de evaluación">
         <button
           type="button"
           aria-pressed={activeTool === "rubrics"}
@@ -697,7 +600,7 @@ export function RubricsPage() {
             setActiveTool("rubrics");
           }}
         >
-          Rubricas
+          Rúbricas
         </button>
         <button
           type="button"
@@ -713,17 +616,18 @@ export function RubricsPage() {
         <>
       <div className="courses-layout">
         <aside className="courses-list-panel">
+          <ContextSidebarTabs />
           <div className="courses-list-header">
-            <strong>Rubricas</strong>
+              <strong>Rúbricas</strong>
             <div className="actions-cell">
               <IconButton
                 icon="add"
-                label="Crear rubrica"
+              label="Crear rúbrica"
                 onClick={() => runRubricAction(async () => void createRubric())}
               />
               <IconButton
                 icon="ai"
-                label="Generar rubrica con IA"
+              label="Generar rúbrica con IA"
                 onClick={() => {
                   setAiStatus("");
                   setIsAIModalOpen(true);
@@ -731,7 +635,7 @@ export function RubricsPage() {
               />
             </div>
           </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Rubricas">
+              <div className="courses-list section-tabs" role="tablist" aria-label="Rúbricas">
             {templates.map((item) => (
               <div key={item.id} className="courses-list-row">
                 <button
@@ -758,7 +662,7 @@ export function RubricsPage() {
                 />
               </div>
             ))}
-            {templates.length === 0 ? <p className="hint">No hay rubricas para esta clase.</p> : null}
+              {templates.length === 0 ? <p className="hint">No hay rúbricas para esta clase.</p> : null}
           </div>
         </aside>
 
@@ -766,11 +670,11 @@ export function RubricsPage() {
           {selectedTemplate ? (
             <>
               <div className="course-detail-header">
-                <h4>Editor de rubrica</h4>
+                  <h4>Editor de rúbrica</h4>
                 <div className="actions-cell">
                   <IconButton
                     icon="save"
-                    label="Guardar rubrica"
+                    label="Guardar rúbrica"
                     className={rubricDirty ? "save-attention" : ""}
                     disabled={!rubricDirty}
                     onClick={async () => {
@@ -795,7 +699,7 @@ export function RubricsPage() {
                     />
                   </div>
                   <div className="detail-field full">
-                    <label>Descripcion</label>
+              <label>Descripción</label>
                     <textarea
                       className="input"
                       value={detailDescription}
@@ -984,17 +888,17 @@ export function RubricsPage() {
               </section>
             </>
           ) : (
-            <p>No hay rubricas para editar.</p>
+            <p>No hay rúbricas para editar.</p>
           )}
         </section>
       </div>
-      {rubricDirty ? <p className="hint">Tienes cambios sin guardar en la rubrica actual.</p> : null}
+      {rubricDirty ? <p className="hint">Tienes cambios sin guardar en la rúbrica actual.</p> : null}
       <Modal
         open={showRubricUnsavedModal}
         title="Cambios sin guardar"
         onClose={closeRubricUnsavedModal}
       >
-        <p>Hay cambios pendientes en la rubrica actual.</p>
+        <p>Hay cambios pendientes en la rúbrica actual.</p>
         <div className="inline-form">
           <button type="button" className="btn secondary" onClick={closeRubricUnsavedModal}>
             Cancelar
@@ -1038,7 +942,7 @@ export function RubricsPage() {
       </Modal>
       <Modal
         open={isAIModalOpen}
-        title="Generar rubrica con IA"
+      title="Generar rúbrica con IA"
         onClose={() => {
           if (!isGeneratingAI) {
             setIsAIModalOpen(false);
@@ -1050,7 +954,7 @@ export function RubricsPage() {
             <label>Que quieres generar</label>
             <textarea
               className="input"
-              placeholder="Ej: Rubrica para debate en 4º ESO de Geografia e Historia, con criterios de argumentacion, evidencias y expresion oral."
+          placeholder="Ej: Rúbrica para debate en 4º ESO de Geografía e Historia, con criterios de argumentación, evidencias y expresión oral."
               value={aiPrompt}
               onChange={(event) => setAiPrompt(event.target.value)}
             />
@@ -1074,13 +978,6 @@ export function RubricsPage() {
           >
             {isGeneratingAI ? "Generando..." : "Generar"}
           </button>
-        </div>
-      </Modal>
-      <Modal open={isModelLoadingOpen} title="Cargando modelo IA" onClose={() => undefined}>
-        <p className="hint">{modelLoadStatus}</p>
-        <div style={{ marginTop: 8 }}>
-          <progress value={modelLoadProgress} max={100} style={{ width: "100%" }} />
-          <p className="hint">{modelLoadProgress}%</p>
         </div>
       </Modal>
         </>

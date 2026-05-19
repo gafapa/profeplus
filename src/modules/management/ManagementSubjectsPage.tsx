@@ -1,11 +1,11 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
 import { Modal } from "../../shared/ui/Modal";
-import { getStudentFullName } from "../../shared/utils/student";
+import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementSubjectsPage() {
+  const { formatName } = useStudentDisplay();
   const {
     subjects,
     courses,
@@ -27,7 +27,6 @@ export function ManagementSubjectsPage() {
   const [subjectDirty, setSubjectDirty] = useState(false);
 
   const [isAddStudentsModalOpen, setIsAddStudentsModalOpen] = useState(false);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
   const [addFilterCourseId, setAddFilterCourseId] = useState("all");
   const [addSearchTerm, setAddSearchTerm] = useState("");
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
@@ -64,6 +63,7 @@ export function ManagementSubjectsPage() {
     const ids = new Set<string>();
     for (const day of scheduleDays) {
       for (const block of day.blocks) {
+        if (block.isBreak) continue;
         ids.add(block.id);
       }
     }
@@ -76,13 +76,9 @@ export function ManagementSubjectsPage() {
   const occupiedSlotsByOtherSubjects = useMemo(() => {
     const map = new Map<string, string>();
     for (const subject of subjects) {
-      if (subject.id === selectedSubjectId) {
-        continue;
-      }
+      if (subject.id === selectedSubjectId) continue;
       for (const slotId of subject.scheduleSlotIds ?? []) {
-        if (!map.has(slotId)) {
-          map.set(slotId, subject.name);
-        }
+        if (!map.has(slotId)) map.set(slotId, subject.name);
       }
     }
     return map;
@@ -112,72 +108,45 @@ export function ManagementSubjectsPage() {
     setSubjectDirty(false);
   }, [courseIdsBySubject, selectedSubject]);
 
-  const persistSubject = useCallback(async (): Promise<boolean> => {
-    if (!selectedSubject || !subjectDirty) {
-      return true;
-    }
-    if (detailName.trim().length < 2) {
-      setNotice("La asignatura necesita al menos 2 caracteres.");
-      return false;
-    }
-    const normalizedSlotIds = detailScheduleSlotIds.filter((slotId) => allScheduleSlotIds.has(slotId));
-    const orphanCount = detailScheduleSlotIds.length - normalizedSlotIds.length;
-    const conflictingNormalized = normalizedSlotIds.filter((slotId) =>
-      occupiedSlotsByOtherSubjects.has(slotId)
-    );
-    if (conflictingNormalized.length > 0) {
-      setNotice("Hay horas en conflicto con otra asignatura. Libera esos bloques antes de guardar.");
-      return false;
-    }
+  // Auto-guardado con debounce (funciones de contexto excluidas de deps: su referencia cambia en cada render)
+  useEffect(() => {
+    if (!subjectDirty || !selectedSubject) return;
+    const name = detailName.trim();
+    if (name.length < 2) return;
+    const normalizedSlotIds = detailScheduleSlotIds.filter((id) => allScheduleSlotIds.has(id));
+    const hasConflicts = normalizedSlotIds.some((id) => occupiedSlotsByOtherSubjects.has(id));
+    if (hasConflicts) return;
+    const id = selectedSubject.id;
+    const hours = detailTeachingHours;
+    const courseIds = detailCourseIds;
+    const timer = setTimeout(() => {
+      void updateSubject(id, name, hours, normalizedSlotIds, courseIds);
+      setSubjectDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, detailCourseIds, selectedSubject?.id]);
 
-    await updateSubject(
-      selectedSubject.id,
-      detailName,
-      detailTeachingHours,
-      normalizedSlotIds,
-      detailCourseIds
-    );
-    if (orphanCount > 0) {
-      setNotice(
-        `Asignatura actualizada. Se descartaron ${orphanCount} horas antiguas que ya no existen en el horario.`
-      );
-    }
+  const saveIfDirty = useCallback(async () => {
+    if (!subjectDirty || !selectedSubject) return;
+    const name = detailName.trim();
+    if (name.length < 2) return;
+    const normalizedSlotIds = detailScheduleSlotIds.filter((id) => allScheduleSlotIds.has(id));
+    const hasConflicts = normalizedSlotIds.some((id) => occupiedSlotsByOtherSubjects.has(id));
+    if (hasConflicts) return;
+    await updateSubject(selectedSubject.id, name, detailTeachingHours, normalizedSlotIds, detailCourseIds);
     setSubjectDirty(false);
-    return true;
-  }, [
-    allScheduleSlotIds,
-    detailCourseIds,
-    detailName,
-    detailScheduleSlotIds,
-    detailTeachingHours,
-    occupiedSlotsByOtherSubjects,
-    selectedSubject,
-    setNotice,
-    subjectDirty,
-    updateSubject
-  ]);
-
-  const ensureNoPendingChanges = (): boolean => {
-    if (!subjectDirty) {
-      return true;
-    }
-    setShowUnsavedModal(true);
-    return false;
-  };
-
-  useUnsavedChangesGuard(subjectDirty);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, detailCourseIds, selectedSubject?.id, allScheduleSlotIds, occupiedSlotsByOtherSubjects]);
 
   const rows = useMemo(() => getEnrollmentRows(selectedSubjectId), [getEnrollmentRows, selectedSubjectId]);
   const assignedRows = useMemo(() => rows.filter((row) => row.effectiveIncluded), [rows]);
   const candidateRows = useMemo(() => {
     const search = addSearchTerm.trim().toLowerCase();
     return rows.filter((row) => {
-      if (row.effectiveIncluded) {
-        return false;
-      }
+      if (row.effectiveIncluded) return false;
       const byCourse = addFilterCourseId === "all" ? true : row.student.classId === addFilterCourseId;
-      const bySearch =
-        search.length === 0 ? true : getStudentFullName(row.student).toLowerCase().includes(search);
+      const bySearch = search.length === 0 ? true : formatName(row.student).toLowerCase().includes(search);
       return byCourse && bySearch;
     });
   }, [addFilterCourseId, addSearchTerm, rows]);
@@ -211,47 +180,35 @@ export function ManagementSubjectsPage() {
   };
 
   const cleanOrphanSlots = () => {
-    if (orphanSelectedSlotIds.length === 0) {
-      return;
-    }
+    if (orphanSelectedSlotIds.length === 0) return;
     setDetailScheduleSlotIds((current) => current.filter((slotId) => allScheduleSlotIds.has(slotId)));
     setSubjectDirty(true);
-    setNotice(
-      `Se han quitado ${orphanSelectedSlotIds.length} horas antiguas que no existen en el horario actual.`
-    );
+    setNotice(`Se han quitado ${orphanSelectedSlotIds.length} horas antiguas que no existen en el horario actual.`);
   };
 
   const reassignOrphanSlotsAutomatically = () => {
     const orphanCount = orphanSelectedSlotIds.length;
-    if (orphanCount === 0) {
-      return;
-    }
+    if (orphanCount === 0) return;
 
     const baseSlotIds = detailScheduleSlotIds.filter((slotId) => allScheduleSlotIds.has(slotId));
     const nextSlotIds = [...baseSlotIds];
     const selectedSet = new Set(baseSlotIds);
-    const candidateSlotIds = activeScheduleDays.flatMap((day) => day.blocks.map((block) => block.id));
+    const candidateSlotIds = activeScheduleDays.flatMap((day) =>
+      day.blocks.filter((block) => !block.isBreak).map((block) => block.id)
+    );
 
     for (const slotId of candidateSlotIds) {
-      if (selectedSet.has(slotId)) {
-        continue;
-      }
-      if (occupiedSlotsByOtherSubjects.has(slotId)) {
-        continue;
-      }
+      if (selectedSet.has(slotId)) continue;
+      if (occupiedSlotsByOtherSubjects.has(slotId)) continue;
       nextSlotIds.push(slotId);
       selectedSet.add(slotId);
-      if (nextSlotIds.length >= baseSlotIds.length + orphanCount) {
-        break;
-      }
+      if (nextSlotIds.length >= baseSlotIds.length + orphanCount) break;
     }
 
     setDetailScheduleSlotIds(nextSlotIds);
     setSubjectDirty(true);
     if (nextSlotIds.length < baseSlotIds.length + orphanCount) {
-      setNotice(
-        `Se pudieron reasignar ${nextSlotIds.length - baseSlotIds.length} de ${orphanCount} horas. Revisa y ajusta manualmente.`
-      );
+      setNotice(`Se pudieron reasignar ${nextSlotIds.length - baseSlotIds.length} de ${orphanCount} horas. Revisa y ajusta manualmente.`);
       return;
     }
     setNotice(`Se han reasignado automaticamente ${orphanCount} horas. Revisa y guarda la asignatura.`);
@@ -259,8 +216,6 @@ export function ManagementSubjectsPage() {
 
   return (
     <article className="management-card">
-      <h3>Asignaturas</h3>
-
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="courses-list-header">
@@ -269,13 +224,9 @@ export function ManagementSubjectsPage() {
               icon="add"
               label="Crear asignatura"
               onClick={async () => {
-                if (!ensureNoPendingChanges()) {
-                  return;
-                }
+                await saveIfDirty();
                 const createdId = await createEmptySubject(detailCourseIds);
-                if (createdId) {
-                  setSelectedSubjectId(createdId);
-                }
+                if (createdId) setSelectedSubjectId(createdId);
               }}
             />
           </div>
@@ -292,10 +243,8 @@ export function ManagementSubjectsPage() {
                     role="tab"
                     aria-selected={selectedSubjectId === subject.id}
                     className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
-                    onClick={() => {
-                      if (!ensureNoPendingChanges()) {
-                        return;
-                      }
+                    onClick={async () => {
+                      await saveIfDirty();
                       setSelectedSubjectId(subject.id);
                     }}
                   >
@@ -307,9 +256,7 @@ export function ManagementSubjectsPage() {
                     icon="delete"
                     label={`Eliminar ${subject.name || "asignatura"}`}
                     onClick={async () => {
-                      if (!ensureNoPendingChanges()) {
-                        return;
-                      }
+                      await saveIfDirty();
                       await deleteSubject(subject.id);
                     }}
                   />
@@ -325,17 +272,6 @@ export function ManagementSubjectsPage() {
               <div className="course-detail-header">
                 <div>
                   <h4>Detalle de asignatura</h4>
-                </div>
-                <div className="actions-cell">
-                  <IconButton
-                    icon="save"
-                    label="Guardar asignatura"
-                    className={subjectDirty ? "save-attention" : ""}
-                    disabled={!subjectDirty}
-                    onClick={async () => {
-                      await persistSubject();
-                    }}
-                  />
                 </div>
               </div>
 
@@ -384,18 +320,13 @@ export function ManagementSubjectsPage() {
               <section className="detail-section">
                 <h5>Horario de impartición</h5>
                 {orphanSelectedSlotIds.length > 0 ? (
-                  <div className="hint" style={{ marginBottom: 8 }}>
-                    Esta asignatura tiene {orphanSelectedSlotIds.length} horas antiguas que ya no existen en el
-                    horario.
-                    <div className="inline-form" style={{ marginTop: 6 }}>
+                  <div className="hint">
+                    Esta asignatura tiene {orphanSelectedSlotIds.length} horas antiguas que ya no existen en el horario.
+                    <div className="inline-form tight">
                       <button type="button" className="btn secondary" onClick={cleanOrphanSlots}>
                         Limpiar horas antiguas
                       </button>
-                      <button
-                        type="button"
-                        className="btn secondary"
-                        onClick={reassignOrphanSlotsAutomatically}
-                      >
+                      <button type="button" className="btn secondary" onClick={reassignOrphanSlotsAutomatically}>
                         Reasignar automaticamente
                       </button>
                     </div>
@@ -411,25 +342,22 @@ export function ManagementSubjectsPage() {
                             const slotId = block.id;
                             const occupiedBy = occupiedSlotsByOtherSubjects.get(slotId);
                             const isActive = detailScheduleSlotIds.includes(slotId);
+                            const isBreak = Boolean(block.isBreak);
                             const isBlocked = Boolean(occupiedBy) && !isActive;
                             return (
                               <button
                                 key={slotId}
                                 type="button"
-                                className={`schedule-slot-pill ${
-                                  isActive ? "active" : ""
-                                } ${isBlocked ? "blocked" : ""}`}
-                                title={occupiedBy ? `Ocupado por ${occupiedBy}` : undefined}
-                                disabled={isBlocked}
+                                className={`schedule-slot-pill ${isActive ? "active" : ""} ${isBlocked ? "blocked" : ""} ${isBreak ? "break" : ""}`}
+                                title={isBreak ? "Descanso" : occupiedBy ? `Ocupado por ${occupiedBy}` : undefined}
+                                disabled={isBlocked || isBreak}
                                 onClick={() => {
-                                  if (isBlocked) {
-                                    return;
-                                  }
+                                  if (isBlocked || isBreak) return;
                                   toggleSlot(slotId, detailScheduleSlotIds, setDetailScheduleSlotIds);
                                   setSubjectDirty(true);
                                 }}
                               >
-                                {block.startTime}
+                                {block.isBreak ? "Descanso" : block.startTime}
                               </button>
                             );
                           })}
@@ -440,7 +368,7 @@ export function ManagementSubjectsPage() {
                   </div>
                 </div>
                 {conflictingSelectedSlotIds.length > 0 ? (
-                  <p className="hint" style={{ marginTop: 8 }}>
+                  <p className="hint">
                     Hay bloques en conflicto con otras asignaturas. Debes quitarlos para poder guardar.
                   </p>
                 ) : null}
@@ -452,10 +380,8 @@ export function ManagementSubjectsPage() {
                   <IconButton
                     icon="add"
                     label="Añadir alumnos"
-                    onClick={() => {
-                      if (!ensureNoPendingChanges()) {
-                        return;
-                      }
+                    onClick={async () => {
+                      await saveIfDirty();
                       setIsAddStudentsModalOpen(true);
                     }}
                   />
@@ -472,16 +398,14 @@ export function ManagementSubjectsPage() {
                     <tbody>
                       {assignedRows.map((row) => (
                         <tr key={row.student.id}>
-                          <td>{getStudentFullName(row.student)}</td>
+                          <td>{formatName(row.student)}</td>
                           <td>{row.courseName}</td>
                           <td className="actions-cell">
                             <IconButton
                               icon="remove"
                               label="Quitar alumno"
                               onClick={async () => {
-                                if (!ensureNoPendingChanges()) {
-                                  return;
-                                }
+                                await saveIfDirty();
                                 await setStudentEnrollment(selectedSubject.id, row.student.id, false);
                               }}
                             />
@@ -499,7 +423,7 @@ export function ManagementSubjectsPage() {
               </section>
             </>
           ) : (
-            <p>No hay asignaturas para mostrar.</p>
+            <p className="empty-state">No hay asignaturas para mostrar.</p>
           )}
         </section>
       </div>
@@ -517,9 +441,7 @@ export function ManagementSubjectsPage() {
           >
             <option value="all">Todos los cursos</option>
             {courses.map((course) => (
-              <option key={course.id} value={course.id}>
-                {course.name}
-              </option>
+              <option key={course.id} value={course.id}>{course.name}</option>
             ))}
           </select>
           <input
@@ -544,12 +466,7 @@ export function ManagementSubjectsPage() {
             icon="save"
             label="Añadir seleccionados"
             onClick={async () => {
-              if (!selectedSubject || selectedCandidateIds.length === 0) {
-                return;
-              }
-              if (!ensureNoPendingChanges()) {
-                return;
-              }
+              if (!selectedSubject || selectedCandidateIds.length === 0) return;
               for (const studentId of selectedCandidateIds) {
                 await setStudentEnrollment(selectedSubject.id, studentId, true);
               }
@@ -578,7 +495,7 @@ export function ManagementSubjectsPage() {
                       onChange={() => toggleCandidate(row.student.id)}
                     />
                   </td>
-                  <td>{getStudentFullName(row.student)}</td>
+                  <td>{formatName(row.student)}</td>
                   <td>{row.courseName}</td>
                 </tr>
               ))}
@@ -591,21 +508,6 @@ export function ManagementSubjectsPage() {
           </table>
         </div>
       </Modal>
-      <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => setShowUnsavedModal(false)}
-      >
-        <p>Tienes cambios sin guardar. Pulsa Guardar antes de continuar.</p>
-        <div className="inline-form">
-          <button type="button" className="btn" onClick={() => setShowUnsavedModal(false)}>
-            Entendido
-          </button>
-        </div>
-      </Modal>
     </article>
   );
 }
-
-
-

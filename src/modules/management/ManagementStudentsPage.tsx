@@ -1,37 +1,57 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useManagement } from "./ManagementContext";
 import { resizeImageToMaxSide } from "../../shared/utils/image";
-import { getStudentFullName } from "../../shared/utils/student";
+import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
-import { Modal } from "../../shared/ui/Modal";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementStudentsPage() {
-  const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice } = useManagement();
+  const { formatName } = useStudentDisplay();
+  const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice } =
+    useManagement();
 
+  const [selectedCourseId, setSelectedCourseId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [detailFirstName, setDetailFirstName] = useState("");
   const [detailLastName, setDetailLastName] = useState("");
-  const [detailCourseId, setDetailCourseId] = useState("");
+  const [detailComments, setDetailComments] = useState("");
   const [detailPhoto, setDetailPhoto] = useState<string | undefined>(undefined);
   const [studentDirty, setStudentDirty] = useState(false);
-  const [preferredCourseId, setPreferredCourseId] = useState("");
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedCourseRef = useRef("");
 
   useEffect(() => {
-    if (!selectedStudentId && students.length > 0) {
-      setSelectedStudentId(students[0].id);
+    if (courses.length === 0) {
+      setSelectedCourseId("");
+      return;
     }
-    const exists = students.some((student) => student.id === selectedStudentId);
-    if (!exists && students.length > 0) {
-      setSelectedStudentId(students[0].id);
+    const exists = courses.some((course) => course.id === selectedCourseId);
+    if (!selectedCourseId || !exists) {
+      setSelectedCourseId(courses[0].id);
     }
-  }, [students, selectedStudentId]);
+  }, [courses, selectedCourseId]);
+
+  const filteredStudents = useMemo(
+    () => students.filter((student) => student.classId === selectedCourseId),
+    [selectedCourseId, students]
+  );
+
+  useEffect(() => {
+    if (filteredStudents.length === 0) {
+      setSelectedStudentId("");
+      selectedCourseRef.current = selectedCourseId;
+      return;
+    }
+    const exists = filteredStudents.some((student) => student.id === selectedStudentId);
+    const courseChanged = selectedCourseRef.current !== selectedCourseId;
+    selectedCourseRef.current = selectedCourseId;
+    if (courseChanged || !selectedStudentId || !exists) {
+      setSelectedStudentId(filteredStudents[0].id);
+    }
+  }, [filteredStudents, selectedCourseId, selectedStudentId]);
 
   const selectedStudent = useMemo(
-    () => students.find((student) => student.id === selectedStudentId) ?? null,
+    () => students.find((s) => s.id === selectedStudentId) ?? null,
     [students, selectedStudentId]
   );
 
@@ -39,146 +59,156 @@ export function ManagementStudentsPage() {
     if (!selectedStudent) {
       setDetailFirstName("");
       setDetailLastName("");
-      setDetailCourseId((current) => current || preferredCourseId || courses[0]?.id || "");
+      setDetailComments("");
       setDetailPhoto(undefined);
       setStudentDirty(false);
       return;
     }
     setDetailFirstName(selectedStudent.firstName ?? "");
     setDetailLastName(selectedStudent.lastName ?? "");
-    setDetailCourseId(selectedStudent.classId);
-    setPreferredCourseId(selectedStudent.classId);
+    setDetailComments(selectedStudent.comments ?? "");
     setDetailPhoto(selectedStudent.photoDataUrl);
     setStudentDirty(false);
-  }, [courses, selectedStudent]);
+  }, [selectedStudent]);
 
-  const persistStudent = useCallback(async (): Promise<boolean> => {
-    if (!selectedStudent || !studentDirty) {
-      return true;
-    }
-    if (isProcessingPhoto) {
-      setNotice("Espera a que termine de procesarse la foto antes de guardar.");
-      return false;
-    }
+  // Auto-guardado con debounce (updateStudent excluido de deps: su referencia cambia en cada render del contexto)
+  useEffect(() => {
+    if (!studentDirty || !selectedStudent || isProcessingPhoto) return;
     const firstName = detailFirstName.trim();
     const lastName = detailLastName.trim();
-    if (firstName.length < 2 || lastName.length < 2 || !detailCourseId) {
-      setNotice("Completa nombre, apellidos y curso (minimo 2 caracteres por campo).");
-      return false;
+    if (firstName.length < 2 || lastName.length < 2 || !selectedCourseId) return;
+    const id = selectedStudent.id;
+    const courseId = selectedCourseId;
+    const photo = detailPhoto;
+    const comments = detailComments;
+    const timer = setTimeout(() => {
+      void updateStudent(id, firstName, lastName, courseId, photo, comments).then(() => {
+        if (courseId) {
+          setSelectedCourseId(courseId);
+        }
+        setStudentDirty(false);
+      });
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailComments, selectedCourseId, detailPhoto, selectedStudent?.id]);
+
+  const saveIfDirty = useCallback(async () => {
+    if (!studentDirty || !selectedStudent || isProcessingPhoto) return;
+    const firstName = detailFirstName.trim();
+    const lastName = detailLastName.trim();
+    if (firstName.length < 2 || lastName.length < 2 || !selectedCourseId) return;
+    const courseId = selectedCourseId;
+    await updateStudent(selectedStudent.id, firstName, lastName, courseId, detailPhoto, detailComments);
+    if (courseId) {
+      setSelectedCourseId(courseId);
     }
-    await updateStudent(
-      selectedStudent.id,
-      firstName,
-      lastName,
-      detailCourseId,
-      detailPhoto
-    );
-    setPreferredCourseId(detailCourseId);
     setStudentDirty(false);
-    return true;
-  }, [
-    detailCourseId,
-    detailFirstName,
-    detailLastName,
-    detailPhoto,
-    isProcessingPhoto,
-    selectedStudent,
-    setNotice,
-    studentDirty,
-    updateStudent
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailComments, selectedCourseId, detailPhoto, selectedStudent?.id]);
 
-  const ensureNoPendingChanges = (): boolean => {
-    if (!studentDirty) {
-      return true;
-    }
-    setShowUnsavedModal(true);
-    return false;
-  };
+  const changeSelectedCourse = useCallback(async (courseId: string) => {
+    await saveIfDirty();
+    setSelectedCourseId(courseId);
+  }, [saveIfDirty]);
 
-  useUnsavedChangesGuard(studentDirty);
+  const changeSelectedStudent = useCallback((studentId: string) => {
+    setSelectedStudentId(studentId);
+    void saveIfDirty();
+  }, [saveIfDirty]);
 
   return (
-    <>
-      <article className="management-card">
-      <div className="management-page-header">
-        <h3>Alumnos</h3>
-        <div className="management-page-actions">
-          <IconButton
-            icon="add"
-            label="Crear alumno"
-            onClick={async () => {
-              if (!ensureNoPendingChanges()) {
-                return;
-              }
-              const targetCourseId = detailCourseId || preferredCourseId || courses[0]?.id;
-              const createdId = await createEmptyStudent(targetCourseId);
-              if (createdId) {
-                setSelectedStudentId(createdId);
-              }
-            }}
-          />
-          <IconButton
-            icon="save"
-            label="Guardar alumno"
-            className={studentDirty ? "save-attention" : ""}
-            disabled={!selectedStudent || !studentDirty || isProcessingPhoto}
-            onClick={async () => {
-              await persistStudent();
-            }}
-          />
-          <IconButton
-            icon="delete"
-            label="Eliminar alumno"
-            disabled={!selectedStudent}
-            onClick={async () => {
-              if (!selectedStudent) {
-                return;
-              }
-              if (!ensureNoPendingChanges()) {
-                return;
-              }
-              await deleteStudent(selectedStudent.id);
-            }}
-          />
-        </div>
-      </div>
-
+    <article className="management-card">
       <div className="courses-layout">
         <aside className="courses-list-panel">
+          <div className="context-sidebar-tabs">
+            <div className="context-sidebar-group">
+              <strong>Curso</strong>
+              {courses.length > 0 ? (
+                <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Cursos de alumnos">
+                  {courses.map((course) => (
+                    <button
+                      key={course.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedCourseId === course.id}
+                      className={`section-tab ${selectedCourseId === course.id ? "active" : ""}`}
+                      onClick={() => {
+                        void changeSelectedCourse(course.id);
+                      }}
+                    >
+                      <span>{course.name || "Curso sin nombre"}</span>
+                      <small>{course.schoolYear}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="hint">Sin cursos</p>
+              )}
+            </div>
+          </div>
           <div className="courses-list-header">
             <strong>Listado</strong>
-          </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Secciones de alumnos">
-            {students.map((student) => (
-              <button
-                key={student.id}
-                type="button"
-                role="tab"
-                aria-selected={selectedStudentId === student.id}
-                className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
-                onClick={() => {
-                  if (!ensureNoPendingChanges()) {
-                    return;
+            <IconButton
+              icon="add"
+              label="Crear alumno"
+              onClick={async () => {
+                await saveIfDirty();
+                const targetCourseId = selectedCourseId || courses[0]?.id;
+                const createdId = await createEmptyStudent(targetCourseId);
+                if (createdId) {
+                  if (targetCourseId) {
+                    setSelectedCourseId(targetCourseId);
                   }
-                  setSelectedStudentId(student.id);
-                }}
-              >
-                <span className="student-item-name">
-                  {student.photoDataUrl ? (
-                    <img
-                      className="student-avatar"
-                      src={student.photoDataUrl}
-                      alt={getStudentFullName(student)}
-                    />
-                  ) : (
-                    <span className="student-avatar-placeholder">-</span>
-                  )}
-                  {getStudentFullName(student)}
-                </span>
-                <small>{courses.find((course) => course.id === student.classId)?.name ?? "-"}</small>
-              </button>
-            ))}
+                  setSelectedStudentId(createdId);
+                }
+              }}
+            />
+          </div>
+
+          <div
+            className="courses-list section-tabs"
+            role="tablist"
+            aria-label="Secciones de alumnos"
+          >
+            {filteredStudents.map((student) => {
+              const courseName = courses.find((course) => course.id === student.classId)?.name;
+              return (
+                <div key={student.id} className="courses-list-row">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedStudentId === student.id}
+                    className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
+                    onClick={() => {
+                      changeSelectedStudent(student.id);
+                    }}
+                  >
+                    <span className="student-item-name">
+                      {student.photoDataUrl ? (
+                        <img
+                          className="student-avatar"
+                          src={student.photoDataUrl}
+                          alt={formatName(student)}
+                        />
+                      ) : (
+                        <span className="student-avatar-placeholder">-</span>
+                      )}
+                      {formatName(student) || "Sin nombre"}
+                    </span>
+                    <small>{courseName || "Sin curso"}</small>
+                  </button>
+                  <IconButton
+                    icon="delete"
+                    label={`Eliminar ${formatName(student) || "alumno"}`}
+                    onClick={async () => {
+                      await saveIfDirty();
+                      await deleteStudent(student.id);
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
         </aside>
 
@@ -192,24 +222,37 @@ export function ManagementStudentsPage() {
               </div>
 
               <div className="detail-summary">
-                <span className="pill">
-                  {courses.find((course) => course.id === detailCourseId)?.name ?? "Sin curso"}
-                </span>
+                {selectedCourseId ? (
+                  <span className="pill">
+                    {courses.find((course) => course.id === selectedCourseId)?.name ?? selectedCourseId}
+                  </span>
+                ) : (
+                  <span className="pill warning">
+                    Sin curso asignado
+                  </span>
+                )}
               </div>
 
               <section className="detail-section">
                 <h5>Datos del alumno</h5>
                 <div className="student-detail-top">
+                  {/* Foto */}
                   <div className="student-photo-box">
                     <button
                       type="button"
                       className="student-photo-trigger"
-                      title={isProcessingPhoto ? "Procesando foto..." : "Pulsa para cambiar la foto"}
+                      title={
+                        isProcessingPhoto ? "Procesando foto..." : "Pulsa para cambiar la foto"
+                      }
                       onClick={() => photoInputRef.current?.click()}
                       disabled={isProcessingPhoto}
                     >
                       {detailPhoto ? (
-                        <img className="student-profile-photo" src={detailPhoto} alt="Foto del alumno" />
+                        <img
+                          className="student-profile-photo"
+                          src={detailPhoto}
+                          alt="Foto del alumno"
+                        />
                       ) : (
                         <div className="student-profile-photo placeholder">Sin foto</div>
                       )}
@@ -222,14 +265,16 @@ export function ManagementStudentsPage() {
                       disabled={isProcessingPhoto}
                       onChange={(event) => {
                         const file = event.target.files?.[0];
-                        if (!file) {
-                          return;
-                        }
+                        if (!file) return;
                         setIsProcessingPhoto(true);
                         void resizeImageToMaxSide(file, 200)
                           .then((value) => {
                             setDetailPhoto(value);
                             setStudentDirty(true);
+                          })
+                          .catch((error) => {
+                            const message = error instanceof Error ? error.message : "No se pudo procesar la imagen.";
+                            setNotice(message);
                           })
                           .finally(() => {
                             setIsProcessingPhoto(false);
@@ -249,6 +294,7 @@ export function ManagementStudentsPage() {
                     </button>
                   </div>
 
+                  {/* Campos */}
                   <div className="detail-grid">
                     <div className="detail-field">
                       <label>Nombre</label>
@@ -275,45 +321,27 @@ export function ManagementStudentsPage() {
                       />
                     </div>
                     <div className="detail-field full">
-                      <label>Curso</label>
-                      <select
+                      <label>Comentarios</label>
+                      <textarea
                         className="input"
-                        value={detailCourseId}
+                        rows={5}
+                        placeholder="Comentarios del alumno"
+                        value={detailComments}
                         onChange={(event) => {
-                          setDetailCourseId(event.target.value);
-                          setPreferredCourseId(event.target.value);
+                          setDetailComments(event.target.value);
                           setStudentDirty(true);
                         }}
-                      >
-                        {courses.map((course) => (
-                          <option key={course.id} value={course.id}>
-                            {course.name}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   </div>
                 </div>
               </section>
             </>
           ) : (
-            <p>No hay alumnos para mostrar.</p>
+            <p className="empty-state">No hay alumnos para mostrar.</p>
           )}
         </section>
       </div>
-      </article>
-      <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => setShowUnsavedModal(false)}
-      >
-        <p>Tienes cambios sin guardar. Pulsa Guardar antes de continuar.</p>
-        <div className="inline-form">
-          <button type="button" className="btn" onClick={() => setShowUnsavedModal(false)}>
-            Entendido
-          </button>
-        </div>
-      </Modal>
-    </>
+    </article>
   );
 }

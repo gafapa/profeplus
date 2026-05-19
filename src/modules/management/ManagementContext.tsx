@@ -16,9 +16,12 @@ import type {
   Subject,
   UnitBlock,
   SubjectCourseLink,
-  SubjectStudentLink
+  SubjectStudentLink,
+  TaskSubjectLink,
+  Task
 } from "../../shared/db/types";
-import { getStudentFullName } from "../../shared/utils/student";
+import { compareStudentsByField } from "../../shared/utils/student";
+import { useAppSelector } from "../../app/hooks";
 
 export type EnrollmentRow = {
   student: Student;
@@ -35,6 +38,8 @@ type ManagementContextValue = {
   scheduleDays: ScheduleDay[];
   scheduleSettings: ScheduleSettings;
   subjectCourseLinks: SubjectCourseLink[];
+  taskSubjectLinks: TaskSubjectLink[];
+  allTasks: Task[];
   notice: string;
   isBusy: boolean;
   setNotice: (value: string) => void;
@@ -47,7 +52,8 @@ type ManagementContextValue = {
     firstName: string,
     lastName: string,
     courseId: string,
-    photoDataUrl?: string
+    photoDataUrl?: string,
+    comments?: string
   ) => Promise<void>;
   createEmptyStudent: (courseId?: string) => Promise<string | null>;
   updateStudent: (
@@ -55,9 +61,11 @@ type ManagementContextValue = {
     firstName: string,
     lastName: string,
     courseId: string,
-    photoDataUrl?: string
+    photoDataUrl?: string,
+    comments?: string
   ) => Promise<void>;
-  moveStudent: (studentId: string, courseId: string) => Promise<void>;
+  addStudentToCourse: (studentId: string, courseId: string) => Promise<void>;
+  removeStudentFromCourse: (studentId: string, courseId: string) => Promise<void>;
   deleteStudent: (studentId: string) => Promise<void>;
   createSubject: (
     name: string,
@@ -79,30 +87,33 @@ type ManagementContextValue = {
   getEnrollmentRows: (subjectId: string) => EnrollmentRow[];
   updateScheduleDay: (day: ScheduleDay) => Promise<void>;
   updateScheduleSettings: (settings: ScheduleSettings) => Promise<void>;
-  createDefaultScheduleDays: () => Promise<void>;
   createUnit: (
     subjectId: string,
     name: string,
     description: string,
-    startDate: string,
-    endDate: string,
     sessionCount: number
   ) => Promise<void>;
   createEmptyUnit: (subjectId: string) => Promise<string | null>;
-  updateUnit: (
-    unitId: string,
-    name: string,
-    description: string,
-    startDate: string,
-    endDate: string,
-    sessionCount: number
-  ) => Promise<void>;
+  updateUnit: (unitId: string, name: string, description: string, sessionCount: number) => Promise<void>;
   deleteUnit: (unitId: string) => Promise<void>;
+  createEmptyTask: () => Promise<string | null>;
+  updateTask: (
+    taskId: string,
+    title: string,
+    description: string,
+    sessionCount: number,
+    sendToGradebook: boolean
+  ) => Promise<void>;
+  deleteTask: (taskId: string) => Promise<void>;
+  addTaskSubjectLink: (taskId: string, subjectId: string, unitId?: string) => Promise<void>;
+  removeTaskSubjectLink: (linkId: string) => Promise<void>;
+  updateTaskSubjectLink: (linkId: string, unitId: string | undefined) => Promise<void>;
 };
 
 const ManagementContext = createContext<ManagementContextValue | null>(null);
 
 export function ManagementProvider({ children }: { children: ReactNode }) {
+  const studentSortBy = useAppSelector((state) => state.app.studentSortBy);
   const [courses, setCourses] = useState<ClassGroup[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -114,6 +125,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   });
   const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
   const [subjectStudentLinks, setSubjectStudentLinks] = useState<SubjectStudentLink[]>([]);
+  const [taskSubjectLinks, setTaskSubjectLinks] = useState<TaskSubjectLink[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [notice, setNotice] = useState("");
   const [pendingActions, setPendingActions] = useState(0);
   const isBusy = pendingActions > 0;
@@ -128,6 +141,23 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadAll = useCallback(async (): Promise<void> => {
+    // Sembrar días de la semana automáticamente si la BD está vacía
+    const dayCount = await db.scheduleDays.count();
+    if (dayCount === 0) {
+      await db.scheduleDays.bulkPut([
+        { id: "mon", dayOfWeek: 1, dayName: "Lunes",     enabled: true,  blocks: [] },
+        { id: "tue", dayOfWeek: 2, dayName: "Martes",    enabled: true,  blocks: [] },
+        { id: "wed", dayOfWeek: 3, dayName: "Miércoles", enabled: true,  blocks: [] },
+        { id: "thu", dayOfWeek: 4, dayName: "Jueves",    enabled: true,  blocks: [] },
+        { id: "fri", dayOfWeek: 5, dayName: "Viernes",   enabled: true,  blocks: [] },
+        { id: "sat", dayOfWeek: 6, dayName: "Sábado",    enabled: false, blocks: [] },
+        { id: "sun", dayOfWeek: 7, dayName: "Domingo",   enabled: false, blocks: [] }
+      ]);
+      if (!(await db.scheduleSettings.get("default"))) {
+        await db.scheduleSettings.put({ id: "default", defaultBlockDurationMinutes: 50 });
+      }
+    }
+
     const [
       coursesData,
       studentsData,
@@ -136,21 +166,24 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       linksData,
       studentLinksData,
       scheduleDaysData,
-      scheduleSettingsData
-    ] =
-      await Promise.all([
-        db.classGroups.orderBy("name").toArray(),
-        db.students.toArray(),
-        db.subjects.orderBy("name").toArray(),
-        db.unitBlocks.orderBy("[subjectId+position]").toArray(),
-        db.subjectCourseLinks.toArray(),
-        db.subjectStudentLinks.toArray(),
-        db.scheduleDays.orderBy("dayOfWeek").toArray(),
-        db.scheduleSettings.get("default")
-      ]);
+      scheduleSettingsData,
+      taskSubjectLinksData,
+      allTasksData
+    ] = await Promise.all([
+      db.classGroups.orderBy("name").toArray(),
+      db.students.toArray(),
+      db.subjects.orderBy("name").toArray(),
+      db.unitBlocks.orderBy("[subjectId+position]").toArray(),
+      db.subjectCourseLinks.toArray(),
+      db.subjectStudentLinks.toArray(),
+      db.scheduleDays.orderBy("dayOfWeek").toArray(),
+      db.scheduleSettings.get("default"),
+      db.taskSubjectLinks.toArray(),
+      db.tasks.toArray()
+    ]);
 
     setCourses(coursesData);
-    setStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
+    setStudents(studentsData.sort(compareStudentsByField(studentSortBy)));
     setSubjects(subjectsData);
     setUnits(unitsData);
     setScheduleDays(scheduleDaysData);
@@ -162,11 +195,18 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     );
     setSubjectCourseLinks(linksData);
     setSubjectStudentLinks(studentLinksData);
+    setTaskSubjectLinks(taskSubjectLinksData);
+    setAllTasks(allTasksData);
   }, []);
 
   useEffect(() => {
     void runWithProgress(loadAll);
   }, [loadAll, runWithProgress]);
+
+  // Re-ordenar alumnos en memoria cuando cambia la preferencia sin recargar la BD
+  useEffect(() => {
+    setStudents((prev) => [...prev].sort(compareStudentsByField(studentSortBy)));
+  }, [studentSortBy]);
 
   const courseMap = useMemo(() => new Map(courses.map((item) => [item.id, item])), [courses]);
   const linksBySubject = useMemo(() => {
@@ -195,7 +235,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     schoolYearValue: string,
     commentsValue?: string
   ): Promise<void> => {
-    const name = nameValue.trim().toUpperCase();
+    const name = nameValue.trim();
     const schoolYear = schoolYearValue.trim();
     if (name.length < 3 || schoolYear.length < 4) {
       setNotice("El curso necesita nombre y año.");
@@ -235,7 +275,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     schoolYearValue: string,
     commentsValue?: string
   ): Promise<void> => {
-    const name = nameValue.trim().toUpperCase();
+    const name = nameValue.trim();
     const schoolYear = schoolYearValue.trim();
     if (name.length < 3 || schoolYear.length < 4) {
       setNotice("Datos inválidos para editar el curso.");
@@ -264,14 +304,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       attendanceByClassCount,
       rubricsCount,
       checklistsCount,
-      linksCount
+      linksCount,
+      taskGradebookConfigsCount
     ] = await Promise.all([
       db.assessments.where("classId").equals(courseId).count(),
       db.gradeEntries.where("classId").equals(courseId).count(),
       db.attendanceEntries.where("classId").equals(courseId).count(),
       db.rubricTemplates.where("classId").equals(courseId).count(),
       db.checklistTemplates.where("classId").equals(courseId).count(),
-      db.subjectCourseLinks.where("classId").equals(courseId).count()
+      db.subjectCourseLinks.where("classId").equals(courseId).count(),
+      db.taskGradebookConfigs.where("classId").equals(courseId).count()
     ]);
 
     let subjectAssignmentsCount = 0;
@@ -289,6 +331,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       `rúbricas:${rubricsCount}`,
       `listas_cotejo:${checklistsCount}`,
       `vinculos_asignatura:${linksCount}`,
+      `config_tareas_cuaderno:${taskGradebookConfigsCount}`,
       `asignaciones_asignatura:${subjectAssignmentsCount}`,
       `comentarios_tareas:${taskCommentsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
@@ -300,10 +343,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await db.transaction("rw", db.classGroups, db.lessonPlans, async () => {
+    await db.transaction("rw", db.classGroups, db.lessonPlans, db.taskSessions, async () => {
       await db.classGroups.delete(courseId);
       // Cleanup legacy planner records that still point to this course.
       await db.lessonPlans.where("classId").equals(courseId).delete();
+      await db.taskSessions.where("classId").equals(courseId).delete();
     });
     setNotice("Curso eliminado.");
     await loadAll();
@@ -313,11 +357,13 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     firstNameValue: string,
     lastNameValue: string,
     courseId: string,
-    photoDataUrl?: string
+    photoDataUrl?: string,
+    commentsValue?: string
   ): Promise<void> => {
     const firstName = firstNameValue.trim();
     const lastName = lastNameValue.trim();
     const fullName = `${firstName} ${lastName}`.trim();
+    const comments = commentsValue?.trim() || undefined;
     if (firstName.length < 2 || lastName.length < 2 || !courseId) {
       setNotice("Alumno inválido: completa nombre, apellidos y curso.");
       return;
@@ -329,6 +375,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       firstName,
       lastName,
       fullName,
+      comments,
       photoDataUrl
     });
     setNotice("Alumno creado.");
@@ -355,59 +402,115 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     return id;
   };
 
-  const moveStudent = async (studentId: string, courseId: string): Promise<void> => {
+  const getSubjectLinksToDeleteForStudentCourse = async (
+    studentId: string,
+    courseId: string
+  ): Promise<string[]> => {
+    const [courseLinks, studentSubjectLinks] = await Promise.all([
+      db.subjectCourseLinks.where("classId").equals(courseId).toArray(),
+      db.subjectStudentLinks.where("studentId").equals(studentId).toArray()
+    ]);
+    const allowedSubjectIds = new Set(courseLinks.map((link) => link.subjectId));
+    return studentSubjectLinks
+      .filter((link) => !allowedSubjectIds.has(link.subjectId))
+      .map((link) => link.id);
+  };
+
+  const addStudentToCourse = async (studentId: string, courseId: string): Promise<void> => {
     const student = students.find((item) => item.id === studentId);
     if (!student) {
       return;
     }
-    await db.students.put({ ...student, classId: courseId });
-    setNotice("Alumno reasignado de curso.");
+    if (student.classId === courseId) {
+      setNotice("El alumno ya pertenece a ese curso.");
+      return;
+    }
+    const linksToDelete = await getSubjectLinksToDeleteForStudentCourse(studentId, courseId);
+    await db.transaction("rw", db.students, db.subjectStudentLinks, async () => {
+      await db.students.put({ ...student, classId: courseId });
+      if (linksToDelete.length > 0) {
+        await db.subjectStudentLinks.bulkDelete(linksToDelete);
+      }
+    });
+    setNotice("Alumno movido de curso.");
     await loadAll();
+  };
+
+  const removeStudentFromCourse = async (studentId: string, courseId: string): Promise<void> => {
+    const student = students.find((item) => item.id === studentId);
+    if (!student) {
+      return;
+    }
+    if (student.classId === courseId) {
+      setNotice("Un alumno debe estar asignado a un curso. Muévelo a otro curso antes.");
+      return;
+    }
   };
 
   const updateStudent = async (
     studentId: string,
     firstNameValue: string,
     lastNameValue: string,
-    courseId: string,
-    photoDataUrl?: string
+    courseIdValue: string,
+    photoDataUrl?: string,
+    commentsValue?: string
   ): Promise<void> => {
     const firstName = firstNameValue.trim();
     const lastName = lastNameValue.trim();
     const fullName = `${firstName} ${lastName}`.trim();
+    const courseId = courseIdValue.trim();
+    const comments = commentsValue?.trim() || undefined;
     if (!firstName || !lastName || !courseId) {
-      setNotice("Datos incompletos para editar alumno.");
+      setNotice("Datos incompletos: nombre, apellidos y al menos un curso.");
       return;
     }
     const current = students.find((student) => student.id === studentId);
     if (!current) {
       return;
     }
-    await db.students.put({
-      ...current,
-      classId: courseId,
-      firstName,
-      lastName,
-      fullName,
-      photoDataUrl
+    const linksToDelete = await getSubjectLinksToDeleteForStudentCourse(studentId, courseId);
+    await db.transaction("rw", db.students, db.subjectStudentLinks, async () => {
+      await db.students.put({
+        ...current,
+        classId: courseId,
+        firstName,
+        lastName,
+        fullName,
+        comments,
+        photoDataUrl
+      });
+      if (linksToDelete.length > 0) {
+        await db.subjectStudentLinks.bulkDelete(linksToDelete);
+      }
     });
     setNotice("Alumno actualizado.");
     await loadAll();
   };
 
   const deleteStudent = async (studentId: string): Promise<void> => {
-    const [gradesCount, attendanceCount, subjectAssignmentsCount, taskCommentsCount] = await Promise.all([
+    const [
+      gradesCount,
+      attendanceCount,
+      subjectAssignmentsCount,
+      taskCommentsCount,
+      rubricAssessmentsCount,
+      checklistAssessmentsCount
+    ] = await Promise.all([
       db.gradeEntries.where("studentId").equals(studentId).count(),
       db.attendanceEntries.where("studentId").equals(studentId).count(),
       db.subjectStudentLinks.where("studentId").equals(studentId).count(),
-      db.taskStudentComments.where("studentId").equals(studentId).count()
+      db.taskStudentComments.where("studentId").equals(studentId).count(),
+      db.taskRubricAssessments.where("studentId").equals(studentId).count(),
+      db.taskChecklistAssessments.where("studentId").equals(studentId).count()
     ]);
 
     const dependencies = [
       `notas:${gradesCount}`,
       `asistencia:${attendanceCount}`,
       `asignaciones_asignatura:${subjectAssignmentsCount}`,
-      `comentarios_tareas:${taskCommentsCount}`
+      `comentarios_tareas:${taskCommentsCount}`,
+      `evaluaciones_rubrica:${rubricAssessmentsCount}`,
+      `evaluaciones_checklist:${checklistAssessmentsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {
@@ -529,7 +632,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
     const uniqueCourseIds = Array.from(new Set(courseIds.filter(Boolean)));
 
-    await db.transaction("rw", db.subjects, db.subjectCourseLinks, async () => {
+    await db.transaction("rw", db.subjects, db.subjectCourseLinks, db.subjectStudentLinks, db.students, async () => {
       const subject = await db.subjects.get(subjectId);
       if (!subject) {
         return;
@@ -548,6 +651,19 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       for (const link of currentLinks) {
         if (!nextSet.has(link.classId)) {
           await db.subjectCourseLinks.delete(link.id);
+          // Clean up student subject links for students in the removed course
+          const studentsInCourse = await db.students.where("classId").equals(link.classId).toArray();
+          if (studentsInCourse.length > 0) {
+            const studentIds = new Set(studentsInCourse.map((s) => s.id));
+            const linksToDelete = await db.subjectStudentLinks
+              .where("subjectId")
+              .equals(subjectId)
+              .filter((sl) => studentIds.has(sl.studentId))
+              .toArray();
+            if (linksToDelete.length > 0) {
+              await db.subjectStudentLinks.bulkDelete(linksToDelete.map((sl) => sl.id));
+            }
+          }
         }
       }
 
@@ -567,39 +683,30 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteSubject = async (subjectId: string): Promise<void> => {
-    const [linksCount, studentLinksCount, unitsCount, tasksCount, gradebookGroupsCount] = await Promise.all([
-      db.subjectCourseLinks.where("subjectId").equals(subjectId).count(),
-      db.subjectStudentLinks.where("subjectId").equals(subjectId).count(),
+    // Borrado en cascada: links relacionales se eliminan siempre
+    // Solo se bloquea si hay contenido real (unidades, tareas vinculadas, carpetas del cuaderno)
+    const [unitsCount, tasksCount, gradebookGroupsCount, taskConfigsCount] = await Promise.all([
       db.unitBlocks.where("subjectId").equals(subjectId).count(),
-      db.tasks.where("subjectId").equals(subjectId).count(),
-      db.gradebookGroups.filter((group) => group.subjectId === subjectId).count()
+      db.taskSubjectLinks.where("subjectId").equals(subjectId).count(),
+      db.gradebookGroups.where("subjectId").equals(subjectId).count(),
+      db.taskGradebookConfigs.where("subjectId").equals(subjectId).count()
     ]);
 
-    const dependencies = [
-      `vinculos_curso:${linksCount}`,
-      `asignaciones_alumno:${studentLinksCount}`,
-      `unidades:${unitsCount}`,
-      `tareas:${tasksCount}`,
-      `carpetas_cuaderno:${gradebookGroupsCount}`
-    ].filter((item) => Number(item.split(":")[1]) > 0);
+    const blocking = [
+      unitsCount > 0 ? `${unitsCount} unidades` : "",
+      tasksCount > 0 ? `${tasksCount} tareas` : "",
+      gradebookGroupsCount > 0 ? `${gradebookGroupsCount} carpetas del cuaderno` : "",
+      taskConfigsCount > 0 ? `${taskConfigsCount} configuraciones de cuaderno` : ""
+    ].filter(Boolean);
 
-    if (dependencies.length > 0) {
-      setNotice(
-        `No se puede eliminar la asignatura porque tiene dependencias (${dependencies.join(
-          ", "
-        )}).`
-      );
+    if (blocking.length > 0) {
+      setNotice(`Elimina primero: ${blocking.join(", ")}.`);
       return;
     }
 
-    await db.transaction("rw", db.classGroups, db.subjects, async () => {
-      const legacyRefs = await db.classGroups.where("subjectId").equals(subjectId).toArray();
-      for (const group of legacyRefs) {
-        await db.classGroups.put({
-          ...group,
-          subjectId: undefined
-        });
-      }
+    await db.transaction("rw", db.subjects, db.subjectCourseLinks, db.subjectStudentLinks, async () => {
+      await db.subjectCourseLinks.where("subjectId").equals(subjectId).delete();
+      await db.subjectStudentLinks.where("subjectId").equals(subjectId).delete();
       await db.subjects.delete(subjectId);
     });
     setNotice("Asignatura eliminada.");
@@ -697,6 +804,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
 
       const nextBlocks = day.blocks ?? [];
       const previousIds = new Set(previousBlocks.map((block) => block.id));
+      const nextBreakIds = new Set(nextBlocks.filter((block) => block.isBreak).map((block) => block.id));
       const remap = new Map<string, string>();
       const usedNextIds = new Set<string>();
 
@@ -757,13 +865,18 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
         let changed = false;
 
         for (const slotId of currentSlotIds) {
+          if (nextBreakIds.has(slotId)) {
+            changed = true;
+            continue;
+          }
+
           if (!previousIds.has(slotId)) {
             nextSlotIds.push(slotId);
             continue;
           }
 
           const mappedId = remap.get(slotId);
-          if (!mappedId) {
+          if (!mappedId || nextBreakIds.has(mappedId)) {
             changed = true;
             continue;
           }
@@ -792,58 +905,31 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     await loadAll();
   };
 
-  const createDefaultScheduleDays = async (): Promise<void> => {
-    const existingCount = await db.scheduleDays.count();
-    if (existingCount > 0) {
-      return;
-    }
-    const baseDays: ScheduleDay[] = [
-      { id: "mon", dayOfWeek: 1, dayName: "Lunes", enabled: true, blocks: [] },
-      { id: "tue", dayOfWeek: 2, dayName: "Martes", enabled: true, blocks: [] },
-      { id: "wed", dayOfWeek: 3, dayName: "Miercoles", enabled: true, blocks: [] },
-      { id: "thu", dayOfWeek: 4, dayName: "Jueves", enabled: true, blocks: [] },
-      { id: "fri", dayOfWeek: 5, dayName: "Viernes", enabled: true, blocks: [] },
-      { id: "sat", dayOfWeek: 6, dayName: "Sabado", enabled: false, blocks: [] },
-      { id: "sun", dayOfWeek: 7, dayName: "Domingo", enabled: false, blocks: [] }
-    ];
-    await db.scheduleDays.bulkPut(baseDays);
-    if (!(await db.scheduleSettings.get("default"))) {
-      await db.scheduleSettings.put({
-        id: "default",
-        defaultBlockDurationMinutes: 50
-      });
-    }
-    setNotice("Dias del horario creados.");
-    await loadAll();
-  };
-
   const createUnit = async (
     subjectId: string,
     nameValue: string,
     descriptionValue: string,
-    startDate: string,
-    endDate: string,
     sessionCountValue: number
   ): Promise<void> => {
     const name = nameValue.trim();
     const description = descriptionValue.trim();
     const sessionCount = Math.max(1, Math.round(sessionCountValue));
-    if (!subjectId || name.length < 2 || !startDate || !endDate) {
-      setNotice("La unidad necesita asignatura, nombre y fechas.");
+    if (!subjectId || name.length < 2) {
+      setNotice("La unidad necesita asignatura y nombre.");
       return;
     }
     const currentUnits = await db.unitBlocks.where("subjectId").equals(subjectId).toArray();
     const maxPosition = currentUnits.reduce((max, item) => Math.max(max, item.position), 0);
+    const id = crypto.randomUUID();
     await db.unitBlocks.add({
-      id: crypto.randomUUID(),
+      id,
       subjectId,
       name,
       description,
-      startDate,
-      endDate,
       sessionCount,
       position: maxPosition + 1
     });
+
     setNotice("Unidad creada.");
     await loadAll();
   };
@@ -855,18 +941,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
     const currentUnits = await db.unitBlocks.where("subjectId").equals(subjectId).toArray();
     const maxPosition = currentUnits.reduce((max, item) => Math.max(max, item.position), 0);
-    const today = new Date().toISOString().slice(0, 10);
     const id = crypto.randomUUID();
     await db.unitBlocks.add({
       id,
       subjectId,
       name: "",
       description: "",
-      startDate: today,
-      endDate: today,
       sessionCount: 1,
       position: maxPosition + 1
     });
+
     setNotice("Unidad en blanco creada.");
     await loadAll();
     return id;
@@ -876,15 +960,13 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     unitId: string,
     nameValue: string,
     descriptionValue: string,
-    startDate: string,
-    endDate: string,
     sessionCountValue: number
   ): Promise<void> => {
     const name = nameValue.trim();
     const description = descriptionValue.trim();
     const sessionCount = Math.max(1, Math.round(sessionCountValue));
-    if (name.length < 2 || !startDate || !endDate) {
-      setNotice("La unidad necesita nombre y fechas.");
+    if (name.length < 2) {
+      setNotice("La unidad necesita nombre.");
       return;
     }
     const current = units.find((item) => item.id === unitId);
@@ -895,8 +977,6 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       ...current,
       name,
       description,
-      startDate,
-      endDate,
       sessionCount
     });
     setNotice("Unidad actualizada.");
@@ -904,8 +984,141 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteUnit = async (unitId: string): Promise<void> => {
+    const tasksCount = await db.taskSubjectLinks.where("unitId").equals(unitId).count();
+    if (tasksCount > 0) {
+      setNotice(`No se puede eliminar la unidad porque tiene dependencias (tareas:${tasksCount}).`);
+      return;
+    }
     await db.unitBlocks.delete(unitId);
     setNotice("Unidad eliminada.");
+    await loadAll();
+  };
+
+
+  const createEmptyTask = async (): Promise<string | null> => {
+    const id = crypto.randomUUID();
+    await db.tasks.add({
+      id,
+      title: "",
+      description: "",
+      sessionCount: 1,
+      sendToGradebook: false
+    });
+    setNotice("Tarea en blanco creada.");
+    await loadAll();
+    return id;
+  };
+
+  const updateTask = async (
+    taskId: string,
+    titleValue: string,
+    descriptionValue: string,
+    sessionCountValue: number,
+    sendToGradebook: boolean
+  ): Promise<void> => {
+    const title = titleValue.trim();
+    const description = descriptionValue.trim();
+    const sessionCount = Math.max(1, Math.round(sessionCountValue));
+    if (title.length < 2) {
+      setNotice("La tarea necesita un título (mínimo 2 caracteres).");
+      return;
+    }
+    const current = allTasks.find((t) => t.id === taskId);
+    if (!current) return;
+    await db.tasks.put({
+      ...current,
+      title,
+      description,
+      sessionCount,
+      sendToGradebook
+    });
+    setNotice("Tarea actualizada.");
+    await loadAll();
+  };
+
+  const deleteTask = async (taskId: string): Promise<void> => {
+    await db.transaction(
+      "rw",
+      [
+        db.tasks,
+        db.taskSubjectLinks,
+        db.taskGradebookConfigs,
+        db.taskSessions,
+        db.taskStudentComments,
+        db.taskDailyEvaluationSettings,
+        db.taskRubricAssessments,
+        db.taskChecklistAssessments,
+        db.rubricTemplates,
+        db.checklistTemplates
+      ],
+      async () => {
+        await db.tasks.delete(taskId);
+        await db.taskSubjectLinks.where("taskId").equals(taskId).delete();
+        await db.taskGradebookConfigs.where("taskId").equals(taskId).delete();
+        await db.taskSessions.where("taskId").equals(taskId).delete();
+        await db.taskStudentComments.where("taskId").equals(taskId).delete();
+        await db.taskDailyEvaluationSettings.where("taskId").equals(taskId).delete();
+        await db.taskRubricAssessments.where("taskId").equals(taskId).delete();
+        await db.taskChecklistAssessments.where("taskId").equals(taskId).delete();
+        const taskRubrics = await db.rubricTemplates.where("taskId").equals(taskId).toArray();
+        if (taskRubrics.length > 0) {
+          await db.rubricTemplates.bulkDelete(taskRubrics.map((t) => t.id));
+        }
+        const taskChecklists = await db.checklistTemplates.where("taskId").equals(taskId).toArray();
+        if (taskChecklists.length > 0) {
+          await db.checklistTemplates.bulkDelete(taskChecklists.map((t) => t.id));
+        }
+      }
+    );
+    setNotice("Tarea eliminada.");
+    await loadAll();
+  };
+
+  const addTaskSubjectLink = async (
+    taskId: string,
+    subjectId: string,
+    unitId?: string
+  ): Promise<void> => {
+    const existing = taskSubjectLinks.find(
+      (l) => l.taskId === taskId && l.subjectId === subjectId && (l.unitId ?? "") === (unitId ?? "")
+    );
+    if (existing) {
+      setNotice("La tarea ya está vinculada a esa asignatura/unidad.");
+      return;
+    }
+    await db.taskSubjectLinks.add({
+      id: crypto.randomUUID(),
+      taskId,
+      subjectId,
+      unitId: unitId || undefined
+    });
+    setNotice("Tarea vinculada.");
+    await loadAll();
+  };
+
+  const updateTaskSubjectLink = async (
+    linkId: string,
+    unitId: string | undefined
+  ): Promise<void> => {
+    const existing = await db.taskSubjectLinks.get(linkId);
+    if (!existing) return;
+    await db.taskSubjectLinks.put({ ...existing, unitId: unitId || undefined });
+    await loadAll();
+  };
+
+  const removeTaskSubjectLink = async (linkId: string): Promise<void> => {
+    const link = await db.taskSubjectLinks.get(linkId);
+    await db.transaction("rw", db.taskSubjectLinks, db.taskGradebookConfigs, async () => {
+      await db.taskSubjectLinks.delete(linkId);
+      if (link) {
+        await db.taskGradebookConfigs
+          .where("taskId")
+          .equals(link.taskId)
+          .filter((config) => config.subjectId === link.subjectId)
+          .delete();
+      }
+    });
+    setNotice("Vínculo eliminado.");
     await loadAll();
   };
 
@@ -917,6 +1130,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     scheduleDays,
     scheduleSettings,
     subjectCourseLinks,
+    taskSubjectLinks,
+    allTasks,
     notice,
     isBusy,
     setNotice,
@@ -928,7 +1143,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     createStudent: (...args) => runWithProgress(() => createStudent(...args)),
     createEmptyStudent: (...args) => runWithProgress(() => createEmptyStudent(...args)),
     updateStudent: (...args) => runWithProgress(() => updateStudent(...args)),
-    moveStudent: (...args) => runWithProgress(() => moveStudent(...args)),
+    addStudentToCourse: (...args) => runWithProgress(() => addStudentToCourse(...args)),
+    removeStudentFromCourse: (...args) => runWithProgress(() => removeStudentFromCourse(...args)),
     deleteStudent: (...args) => runWithProgress(() => deleteStudent(...args)),
     createSubject: (...args) => runWithProgress(() => createSubject(...args)),
     createEmptySubject: (...args) => runWithProgress(() => createEmptySubject(...args)),
@@ -940,11 +1156,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     getEnrollmentRows,
     updateScheduleDay: (...args) => runWithProgress(() => updateScheduleDay(...args)),
     updateScheduleSettings: (...args) => runWithProgress(() => updateScheduleSettings(...args)),
-    createDefaultScheduleDays: (...args) => runWithProgress(() => createDefaultScheduleDays(...args)),
     createUnit: (...args) => runWithProgress(() => createUnit(...args)),
     createEmptyUnit: (...args) => runWithProgress(() => createEmptyUnit(...args)),
     updateUnit: (...args) => runWithProgress(() => updateUnit(...args)),
-    deleteUnit: (...args) => runWithProgress(() => deleteUnit(...args))
+    deleteUnit: (...args) => runWithProgress(() => deleteUnit(...args)),
+    createEmptyTask: () => runWithProgress(() => createEmptyTask()),
+    updateTask: (...args) => runWithProgress(() => updateTask(...args)),
+    deleteTask: (...args) => runWithProgress(() => deleteTask(...args)),
+    addTaskSubjectLink: (...args) => runWithProgress(() => addTaskSubjectLink(...args)),
+    removeTaskSubjectLink: (...args) => runWithProgress(() => removeTaskSubjectLink(...args)),
+    updateTaskSubjectLink: (...args) => runWithProgress(() => updateTaskSubjectLink(...args))
   };
 
   return <ManagementContext.Provider value={value}>{children}</ManagementContext.Provider>;

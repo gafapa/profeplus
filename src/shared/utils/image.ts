@@ -1,4 +1,11 @@
 export async function resizeImageToMaxSide(file: File, maxSide = 200): Promise<string> {
+  const maxFileSizeBytes = 8 * 1024 * 1024;
+  if (!file.type.startsWith("image/")) {
+    throw new Error("El archivo seleccionado no es una imagen.");
+  }
+  if (file.size > maxFileSizeBytes) {
+    throw new Error("La imagen es demasiado grande. Usa un archivo de 8 MB o menos.");
+  }
   const dataUrl = await readFileAsDataUrl(file);
   const img = await loadImage(dataUrl);
 
@@ -35,4 +42,3 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.src = src;
   });
 }
-

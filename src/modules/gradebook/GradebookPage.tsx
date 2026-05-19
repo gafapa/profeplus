@@ -12,11 +12,13 @@ import type {
   Task,
   TaskChecklistAssessment,
   TaskDailyEvaluationSetting,
+  TaskGradebookConfig,
   TaskRubricAssessment,
   TaskSession,
   UnitBlock
 } from "../../shared/db/types";
-import { getStudentFullName } from "../../shared/utils/student";
+import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 type IncludedTaskRow = {
@@ -26,6 +28,7 @@ type IncludedTaskRow = {
   subjectName: string;
   unitName: string;
   sessionsCount: number;
+  plannedSessionsCount: number;
   weight: number;
   instrument: string;
   groupId?: string;
@@ -176,12 +179,13 @@ function IconTrash() {
 }
 
 export function GradebookPage() {
+  const { formatName, compareFn } = useStudentDisplay();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
   const [students, setStudents] = useState<Student[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [entries, setEntries] = useState<GradeEntry[]>([]);
-  const [includedTaskConfigs, setIncludedTaskConfigs] = useState<Task[]>([]);
+  const [includedTaskConfigs, setIncludedTaskConfigs] = useState<TaskGradebookConfig[]>([]);
   const [taskDailyEvaluationSettings, setTaskDailyEvaluationSettings] = useState<TaskDailyEvaluationSetting[]>([]);
   const [taskRubricAssessments, setTaskRubricAssessments] = useState<TaskRubricAssessment[]>([]);
   const [taskChecklistAssessments, setTaskChecklistAssessments] = useState<TaskChecklistAssessment[]>([]);
@@ -198,6 +202,8 @@ export function GradebookPage() {
   const [newGroupDraftByParent, setNewGroupDraftByParent] = useState<Record<string, string>>({});
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropTargetGroupId, setDropTargetGroupId] = useState<string>("");
+  const [selectedStudentId, setSelectedStudentId] = useState("");
+  const [isStudentGradeTreeCollapsed, setIsStudentGradeTreeCollapsed] = useState(false);
 
   const loadData = async (): Promise<void> => {
     if (!selectedClassId) {
@@ -218,6 +224,8 @@ export function GradebookPage() {
       setNewGroupDraftByParent({});
       setDraggedTaskId(null);
       setDropTargetGroupId("");
+      setSelectedStudentId("");
+      setIsStudentGradeTreeCollapsed(false);
       return;
     }
 
@@ -233,18 +241,21 @@ export function GradebookPage() {
       sessionsData,
       subjectsData,
       unitsData,
+      taskSubjectLinksData,
       taskDailySettingsData,
       taskRubricAssessmentsData,
       taskChecklistAssessmentsData,
       rubricTemplatesData,
       checklistTemplatesData,
-      gradebookGroupsData
+      gradebookGroupsData,
+      taskGradebookConfigsData
     ] = await Promise.all([
       db.subjectCourseLinks.where("classId").equals(selectedClassId).toArray(),
       db.tasks.filter((task) => Boolean(task.sendToGradebook)).toArray(),
-      db.taskSessions.toArray(),
+      db.taskSessions.where("classId").equals(selectedClassId).toArray(),
       db.subjects.toArray(),
       db.unitBlocks.toArray(),
+      db.taskSubjectLinks.toArray(),
       db.taskDailyEvaluationSettings.toArray(),
       db.taskRubricAssessments.toArray(),
       db.taskChecklistAssessments.toArray(),
@@ -252,6 +263,9 @@ export function GradebookPage() {
       db.checklistTemplates.where("classId").equals(selectedClassId).toArray(),
       selectedSubjectId
         ? db.gradebookGroups.where("[classId+subjectId]").equals([selectedClassId, selectedSubjectId]).toArray()
+        : Promise.resolve([]),
+      selectedSubjectId
+        ? db.taskGradebookConfigs.where("[classId+subjectId]").equals([selectedClassId, selectedSubjectId]).toArray()
         : Promise.resolve([])
     ]);
 
@@ -266,27 +280,73 @@ export function GradebookPage() {
       sessionsByTask.get(session.taskId)?.push(session);
     }
 
+    // Mapa taskId → {subjectId, unitId} usando la primera coincidencia de cada tarea
+    const taskById = new Map<string, Task>(tasksData.map((task) => [task.id, task]));
+    const taskLinkInfoById = new Map<string, { subjectId: string; unitId?: string }>();
+    for (const link of taskSubjectLinksData) {
+      if (!taskById.has(link.taskId)) continue;
+      if (!allowedSubjectIds.has(link.subjectId)) continue;
+      if (selectedSubjectId && link.subjectId !== selectedSubjectId) continue;
+      if (!taskLinkInfoById.has(link.taskId)) {
+        taskLinkInfoById.set(link.taskId, { subjectId: link.subjectId, unitId: link.unitId });
+      }
+    }
+
+    const configsByTaskSubject = new Map(
+      taskGradebookConfigsData.map((config) => [`${config.taskId}:${config.subjectId}`, config])
+    );
+    const createdConfigs: TaskGradebookConfig[] = [];
+    for (const [taskId, info] of taskLinkInfoById) {
+      const key = `${taskId}:${info.subjectId}`;
+      if (!configsByTaskSubject.has(key)) {
+        const config: TaskGradebookConfig = {
+          id: crypto.randomUUID(),
+          taskId,
+          subjectId: info.subjectId,
+          classId: selectedClassId,
+          gradebookWeight: 0
+        };
+        createdConfigs.push(config);
+        configsByTaskSubject.set(key, config);
+      }
+    }
+    if (createdConfigs.length > 0) {
+      await db.taskGradebookConfigs.bulkAdd(createdConfigs);
+    }
+
     const visibleTasks = tasksData
-      .filter((task: Task) => allowedSubjectIds.has(task.subjectId))
-      .map((task: Task) => ({
-        taskId: task.id,
-        subjectId: task.subjectId,
-        title: task.title || "Tarea sin titulo",
-        subjectName: subjectsById.get(task.subjectId)?.name ?? "-",
-        unitName: task.unitId ? unitsById.get(task.unitId)?.name ?? "-" : "-",
-        sessionsCount: sessionsByTask.get(task.id)?.length ?? 0,
-        weight: Number(task.gradebookWeight ?? 0),
-        instrument: task.rubricTemplateId ? "Rubrica" : task.checklistTemplateId ? "Lista de cotejo" : "-",
-        groupId: task.groupId
-      }))
+      .filter((task: Task) => {
+        const info = taskLinkInfoById.get(task.id);
+        return Boolean(info);
+      })
+      .map((task: Task) => {
+        const info = taskLinkInfoById.get(task.id);
+        const subjectId = info?.subjectId ?? "";
+        const unitId = info?.unitId;
+        const config = configsByTaskSubject.get(`${task.id}:${subjectId}`);
+        return {
+          taskId: task.id,
+          subjectId,
+          title: task.title || "Tarea sin titulo",
+          subjectName: subjectsById.get(subjectId)?.name ?? "-",
+          unitName: unitId ? (unitsById.get(unitId)?.name ?? "-") : "-",
+          sessionsCount: sessionsByTask.get(task.id)?.length ?? 0,
+          plannedSessionsCount: task.sessionCount ?? 1,
+          weight: Number(config?.gradebookWeight ?? 0),
+        instrument: config?.rubricTemplateId ? "Rúbrica" : config?.checklistTemplateId ? "Lista de cotejo" : "-",
+          groupId: config?.groupId
+        };
+      })
       .sort((a, b) => a.title.localeCompare(b.title));
 
     const visibleTaskIds = new Set(visibleTasks.map((item) => item.taskId));
 
-    setStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
+    setStudents(studentsData.sort(compareFn));
     setAssessments(assessmentsData);
     setEntries(gradeEntriesData);
-    setIncludedTaskConfigs(tasksData.filter((task) => visibleTaskIds.has(task.id)));
+    setIncludedTaskConfigs(
+      Array.from(configsByTaskSubject.values()).filter((config) => visibleTaskIds.has(config.taskId))
+    );
     setTaskDailyEvaluationSettings(taskDailySettingsData.filter((item) => visibleTaskIds.has(item.taskId)));
     setTaskRubricAssessments(taskRubricAssessmentsData.filter((item) => visibleTaskIds.has(item.taskId)));
     setTaskChecklistAssessments(taskChecklistAssessmentsData.filter((item) => visibleTaskIds.has(item.taskId)));
@@ -301,7 +361,20 @@ export function GradebookPage() {
 
   useEffect(() => {
     void loadData();
-  }, [selectedClassId, selectedSubjectId]);
+  }, [selectedClassId, selectedSubjectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setStudents((prev) => [...prev].sort(compareFn));
+  }, [compareFn]);
+
+  useEffect(() => {
+    setSelectedStudentId((current) => {
+      if (students.some((student) => student.id === current)) {
+        return current;
+      }
+      return students[0]?.id ?? "";
+    });
+  }, [students]);
 
   const orderedGroupRows = useMemo(() => buildOrderedGroupRows(gradebookGroups), [gradebookGroups]);
 
@@ -434,6 +507,25 @@ export function GradebookPage() {
     return map;
   }, [filteredIncludedTasks, gradebookGroups]);
 
+  const assessmentsByGroupId = useMemo(() => {
+    const byId = new Set(gradebookGroups.map((group) => group.id));
+    const map = new Map<string, Assessment[]>();
+
+    for (const assessment of filteredAssessments) {
+      const groupKey = assessment.groupId && byId.has(assessment.groupId) ? assessment.groupId : "";
+      if (!map.has(groupKey)) {
+        map.set(groupKey, []);
+      }
+      map.get(groupKey)?.push(assessment);
+    }
+
+    for (const rows of map.values()) {
+      rows.sort((a, b) => a.title.localeCompare(b.title));
+    }
+
+    return map;
+  }, [filteredAssessments, gradebookGroups]);
+
   const contributionData = useMemo(() => {
     const validGroupIds = new Set(gradebookGroups.map((group) => group.id));
 
@@ -446,7 +538,7 @@ export function GradebookPage() {
       assessmentsByParent.get(parentId)?.push(assessment);
     }
 
-    const tasksByParent = new Map<string, Task[]>();
+    const tasksByParent = new Map<string, TaskGradebookConfig[]>();
     for (const task of filteredIncludedTaskConfigs) {
       const parentId = task.groupId && validGroupIds.has(task.groupId) ? task.groupId : "";
       if (!tasksByParent.has(parentId)) {
@@ -528,7 +620,7 @@ export function GradebookPage() {
           assessmentContributionById.set(assessment.id, 0);
         }
         for (const task of directTasks) {
-          taskContributionById.set(task.id, 0);
+          taskContributionById.set(task.taskId, 0);
         }
         return 0;
       }
@@ -542,7 +634,7 @@ export function GradebookPage() {
         }
 
         for (const task of directTasks) {
-          taskContributionById.set(task.id, equalContribution);
+          taskContributionById.set(task.taskId, equalContribution);
           leafShare += equalContribution;
         }
 
@@ -568,7 +660,7 @@ export function GradebookPage() {
       for (const task of directTasks) {
         const weight = Math.max(0, Number(task.gradebookWeight ?? 0));
         const contribution = parentShare * (weight / totalWeight);
-        taskContributionById.set(task.id, contribution);
+        taskContributionById.set(task.taskId, contribution);
         leafShare += contribution;
       }
 
@@ -595,8 +687,8 @@ export function GradebookPage() {
       }
     }
     for (const task of filteredIncludedTaskConfigs) {
-      if (!taskContributionById.has(task.id)) {
-        taskContributionById.set(task.id, 0);
+      if (!taskContributionById.has(task.taskId)) {
+        taskContributionById.set(task.taskId, 0);
       }
     }
     for (const group of gradebookGroups) {
@@ -627,7 +719,7 @@ export function GradebookPage() {
   }, [entries]);
 
   const includedTaskConfigById = useMemo(
-    () => new Map(filteredIncludedTaskConfigs.map((task) => [task.id, task])),
+    () => new Map(filteredIncludedTaskConfigs.map((task) => [task.taskId, task])),
     [filteredIncludedTaskConfigs]
   );
   const includedTaskRowById = useMemo(
@@ -651,7 +743,7 @@ export function GradebookPage() {
     }
 
     for (const task of filteredIncludedTaskConfigs) {
-      const settings = settingsByTask.get(task.id) ?? [];
+      const settings = settingsByTask.get(task.taskId) ?? [];
       for (const student of students) {
         const sessionScores: number[] = [];
         for (const setting of settings) {
@@ -673,7 +765,7 @@ export function GradebookPage() {
             }
             const rows = taskRubricAssessments.filter(
               (row) =>
-                row.taskId === task.id &&
+                row.taskId === task.taskId &&
                 row.studentId === student.id &&
                 row.date === setting.date &&
                 (row.scheduleSlotId ?? "") === sessionSlotId
@@ -694,7 +786,7 @@ export function GradebookPage() {
             }
             const checkedCount = taskChecklistAssessments.filter(
               (row) =>
-                row.taskId === task.id &&
+                row.taskId === task.taskId &&
                 row.studentId === student.id &&
                 row.date === setting.date &&
                 (row.scheduleSlotId ?? "") === sessionSlotId &&
@@ -706,7 +798,7 @@ export function GradebookPage() {
 
         if (sessionScores.length > 0) {
           const averageScore = sessionScores.reduce((sum, value) => sum + value, 0) / sessionScores.length;
-          scoreMap.set(taskStudentKey(task.id, student.id), Number(averageScore.toFixed(2)));
+          scoreMap.set(taskStudentKey(task.taskId, student.id), Number(averageScore.toFixed(2)));
         }
       }
     }
@@ -752,11 +844,11 @@ export function GradebookPage() {
           if (!taskGroupId || !subtree.has(taskGroupId)) {
             continue;
           }
-          const contribution = contributionData.taskContributionById.get(task.id) ?? 0;
+          const contribution = contributionData.taskContributionById.get(task.taskId) ?? 0;
           if (contribution <= 0) {
             continue;
           }
-          const taskScore = taskScoreByTaskStudent.get(taskStudentKey(task.id, student.id));
+          const taskScore = taskScoreByTaskStudent.get(taskStudentKey(task.taskId, student.id));
           if (typeof taskScore !== "number") {
             continue;
           }
@@ -779,6 +871,57 @@ export function GradebookPage() {
     students,
     taskScoreByTaskStudent
   ]);
+
+  const finalByStudent = useMemo(() => {
+    const map = new Map<string, number | null>();
+
+    for (const student of students) {
+      let weightedSum = 0;
+      let usedWeight = 0;
+
+      for (const assessment of filteredAssessments) {
+        const contribution = contributionData.assessmentContributionById.get(assessment.id) ?? 0;
+        if (contribution <= 0) {
+          continue;
+        }
+        const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
+        if (typeof entry?.numericValue !== "number") {
+          continue;
+        }
+        weightedSum += entry.numericValue * contribution;
+        usedWeight += contribution;
+      }
+
+      for (const task of filteredIncludedTaskConfigs) {
+        const contribution = contributionData.taskContributionById.get(task.taskId) ?? 0;
+        if (contribution <= 0) {
+          continue;
+        }
+        const taskScore = taskScoreByTaskStudent.get(taskStudentKey(task.taskId, student.id));
+        if (typeof taskScore !== "number") {
+          continue;
+        }
+        weightedSum += taskScore * contribution;
+        usedWeight += contribution;
+      }
+
+      map.set(student.id, usedWeight > 0 ? weightedSum / usedWeight : null);
+    }
+
+    return map;
+  }, [
+    contributionData,
+    entriesByKey,
+    filteredAssessments,
+    filteredIncludedTaskConfigs,
+    students,
+    taskScoreByTaskStudent
+  ]);
+
+  const selectedStudent = useMemo(
+    () => students.find((student) => student.id === selectedStudentId) ?? students[0] ?? null,
+    [selectedStudentId, students]
+  );
 
   const createGradebookGroupAt = async (rawName: string, parentGroupId: string): Promise<boolean> => {
     if (!selectedClassId || !selectedSubjectId) {
@@ -821,7 +964,7 @@ export function GradebookPage() {
     const usedByAssessments = filteredAssessments.some((assessment) => assessment.groupId === groupId);
     const usedByTasks = filteredIncludedTaskConfigs.some((task) => task.groupId === groupId);
     if (usedByAssessments || usedByTasks) {
-      setGradebookNotice("No se puede borrar la carpeta porque esta asignada a evaluaciones o tareas.");
+      setGradebookNotice("No se puede borrar la carpeta porque está asignada a evaluaciones o tareas.");
       return;
     }
 
@@ -842,7 +985,7 @@ export function GradebookPage() {
       return;
     }
 
-    await db.tasks.put({
+    await db.taskGradebookConfigs.put({
       ...task,
       gradebookWeight: parsed
     });
@@ -867,7 +1010,7 @@ export function GradebookPage() {
       return;
     }
 
-    await db.tasks.put({
+    await db.taskGradebookConfigs.put({
       ...task,
       groupId: groupId || undefined
     });
@@ -1057,7 +1200,7 @@ export function GradebookPage() {
           <span className="gradebook-tree-node-main">
             <span className="gradebook-tree-node-name">{task.title}</span>
             <span className="gradebook-tree-node-meta">
-              {task.subjectName} | {task.unitName} | {task.sessionsCount} sesiones
+              {task.subjectName} | {task.unitName} | {task.sessionsCount}/{task.plannedSessionsCount} sesiones
             </span>
           </span>
           <input
@@ -1186,6 +1329,128 @@ export function GradebookPage() {
     );
   };
 
+  const renderStudentAssessmentNode = (student: Student, assessment: Assessment) => {
+    const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
+    const contribution = contributionData.assessmentContributionById.get(assessment.id) ?? 0;
+    const value = typeof entry?.numericValue === "number" ? entry.numericValue : null;
+
+    return (
+      <li key={`student-${student.id}-assessment-${assessment.id}`} className="gradebook-tree-item">
+        <div className="gradebook-tree-row assessment">
+          <span className="gradebook-tree-node-main">
+            <span className="gradebook-tree-node-name">{assessment.title}</span>
+            <span className="gradebook-tree-node-meta">Prueba | Peso {Number(assessment.weight ?? 0).toFixed(2)}</span>
+          </span>
+          <span className="pill">{typeof value === "number" ? value.toFixed(2) : "-"}</span>
+          <span className="pill">Aporta {formatContribution(contribution)}</span>
+        </div>
+      </li>
+    );
+  };
+
+  const renderStudentTaskNode = (student: Student, task: IncludedTaskRow) => {
+    const contribution = contributionData.taskContributionById.get(task.taskId) ?? 0;
+    const value = taskScoreByTaskStudent.get(taskStudentKey(task.taskId, student.id));
+
+    return (
+      <li key={`student-${student.id}-task-${task.taskId}`} className="gradebook-tree-item">
+        <div className="gradebook-tree-row task readonly">
+          <span className="gradebook-tree-node-main">
+            <span className="gradebook-tree-node-name">{task.title}</span>
+            <span className="gradebook-tree-node-meta">
+              Tarea | {task.unitName} | {task.instrument}
+            </span>
+          </span>
+          <span className="pill">{typeof value === "number" ? value.toFixed(2) : "-"}</span>
+          <span className="pill">Aporta {formatContribution(contribution)}</span>
+        </div>
+      </li>
+    );
+  };
+
+  const renderStudentGroupNode = (student: Student, groupId: string) => {
+    const group = gradebookGroupById.get(groupId);
+    if (!group) {
+      return null;
+    }
+
+    const childGroupIds = orderedGroupIdsByParent.get(groupId) ?? [];
+    const assessments = assessmentsByGroupId.get(groupId) ?? [];
+    const tasks = tasksByGroupId.get(groupId) ?? [];
+    const value = partialByStudentGroup.get(studentGroupKey(student.id, group.id));
+    const contribution = contributionData.groupLeafContributionById.get(groupId) ?? 0;
+    const hasChildren = childGroupIds.length > 0 || assessments.length > 0 || tasks.length > 0;
+
+    return (
+      <li key={`student-${student.id}-group-${groupId}`} className="gradebook-tree-item">
+        <div className="gradebook-tree-row group readonly">
+          <span className="gradebook-tree-node-main">
+            <span className="gradebook-tree-node-name">{group.name}</span>
+            <span className="gradebook-tree-node-meta">
+              {childGroupIds.length} subcarpetas | {assessments.length} pruebas | {tasks.length} tareas
+            </span>
+          </span>
+          <span className="pill">{typeof value === "number" ? value.toFixed(2) : "-"}</span>
+          <span className="pill">Aporta {formatContribution(contribution)}</span>
+        </div>
+
+        {hasChildren ? (
+          <ul className="gradebook-tree-list nested">
+            {childGroupIds.map((childId) => renderStudentGroupNode(student, childId))}
+            {assessments.map((assessment) => renderStudentAssessmentNode(student, assessment))}
+            {tasks.map((task) => renderStudentTaskNode(student, task))}
+          </ul>
+        ) : null}
+      </li>
+    );
+  };
+
+  const renderStudentGradeTree = (student: Student) => {
+    const rootGroupIds = orderedGroupIdsByParent.get("") ?? [];
+    const rootAssessments = assessmentsByGroupId.get("") ?? [];
+    const rootTasks = tasksByGroupId.get("") ?? [];
+    const finalValue = finalByStudent.get(student.id);
+    const hasChildren = rootGroupIds.length > 0 || rootAssessments.length > 0 || rootTasks.length > 0;
+
+    return (
+      <article
+        className={`student-grade-tree ${isStudentGradeTreeCollapsed ? "collapsed" : ""}`}
+        key={`student-tree-${student.id}`}
+      >
+        <div className="gradebook-tree-row group root readonly">
+          <span className="gradebook-tree-node-main">
+            <span className="gradebook-tree-node-name">{formatName(student)}</span>
+            <span className="gradebook-tree-node-meta">Nota final del cuaderno</span>
+          </span>
+          <span className="pill">{typeof finalValue === "number" ? finalValue.toFixed(2) : "-"}</span>
+          <span className="gradebook-tree-actions">
+            <button
+              type="button"
+              className="gradebook-tree-toggle"
+              onClick={() => setIsStudentGradeTreeCollapsed((current) => !current)}
+              aria-label={isStudentGradeTreeCollapsed ? "Desplegar arbol de notas" : "Plegar arbol de notas"}
+              title={isStudentGradeTreeCollapsed ? "Desplegar arbol de notas" : "Plegar arbol de notas"}
+              disabled={!hasChildren}
+            >
+              {isStudentGradeTreeCollapsed ? <IconChevronRight /> : <IconChevronDown />}
+            </button>
+          </span>
+        </div>
+
+        {!isStudentGradeTreeCollapsed && hasChildren ? (
+          <ul className="gradebook-tree-list root">
+            {rootGroupIds.map((groupId) => renderStudentGroupNode(student, groupId))}
+            {rootAssessments.map((assessment) => renderStudentAssessmentNode(student, assessment))}
+            {rootTasks.map((task) => renderStudentTaskNode(student, task))}
+          </ul>
+        ) : null}
+        {!isStudentGradeTreeCollapsed && !hasChildren ? (
+          <p className="hint">No hay pruebas ni tareas en el cuaderno.</p>
+        ) : null}
+      </article>
+    );
+  };
+
   const groupDraftDirty = Object.values(newGroupDraftByParent).some((value) => value.trim().length > 0);
   const hasUnsavedChanges =
     pendingTaskWeightKeys.size > 0 ||
@@ -1196,105 +1461,97 @@ export function GradebookPage() {
 
   return (
     <section className="module-card">
-      <h2>Cuaderno de calificaciones</h2>
+      <div className="courses-layout">
+        <aside className="courses-list-panel">
+          <ContextSidebarTabs />
+        </aside>
 
-      <section className="detail-section" style={{ marginTop: 10 }}>
-        <h5>Arbol de carpetas y tareas del cuaderno</h5>
-        <p className="hint">
-          Arrastra una tarea sobre una carpeta para moverla. Tambien puedes crear carpetas y subcarpetas directamente
-          en el arbol.
-        </p>
-        {gradebookNotice ? <p className="hint">{gradebookNotice}</p> : null}
-        <div className="gradebook-tree">
-          <div
-            className={`gradebook-tree-row group root ${dropTargetGroupId === "" ? "drop-target" : ""}`}
-            onDragOver={(event) => handleGroupDragOver(event, "")}
-            onDragLeave={() => handleGroupDragLeave("")}
-            onDrop={(event) => {
-              event.preventDefault();
-              void handleTaskDropToGroup("");
-            }}
-          >
-            <span className="gradebook-tree-node-main">
-              <span className="gradebook-tree-node-name">Cuaderno</span>
-              <span className="gradebook-tree-node-meta">
-                {(orderedGroupIdsByParent.get("") ?? []).length} carpetas raiz
-              </span>
-            </span>
-            <span className="gradebook-tree-actions">
-              <span className="gradebook-tree-node-icon" aria-hidden="true" title="Cuaderno">
-                <IconFolder />
-              </span>
-              <button
-                className="icon-btn"
-                type="button"
-                onClick={() => beginCreateSubgroup("")}
-                title="Nueva carpeta en Cuaderno"
-                aria-label="Nueva carpeta en Cuaderno"
+        <section className="course-detail-panel">
+          <section className="detail-section flush">
+            <h5>Arbol de carpetas y tareas del cuaderno</h5>
+            <p className="hint">
+              Arrastra una tarea sobre una carpeta para moverla. Tambien puedes crear carpetas y subcarpetas directamente
+              en el arbol.
+            </p>
+            {gradebookNotice ? <p className="hint">{gradebookNotice}</p> : null}
+            <div className="gradebook-tree">
+              <div
+                className={`gradebook-tree-row group root ${dropTargetGroupId === "" ? "drop-target" : ""}`}
+                onDragOver={(event) => handleGroupDragOver(event, "")}
+                onDragLeave={() => handleGroupDragLeave("")}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void handleTaskDropToGroup("");
+                }}
               >
-                <IconFolderPlus />
+                <span className="gradebook-tree-node-main">
+                  <span className="gradebook-tree-node-name">Cuaderno</span>
+                  <span className="gradebook-tree-node-meta">
+                    {(orderedGroupIdsByParent.get("") ?? []).length} carpetas raiz
+                  </span>
+                </span>
+                <span className="gradebook-tree-actions">
+                  <span className="gradebook-tree-node-icon" aria-hidden="true" title="Cuaderno">
+                    <IconFolder />
+                  </span>
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    onClick={() => beginCreateSubgroup("")}
+                    title="Nueva carpeta en Cuaderno"
+                    aria-label="Nueva carpeta en Cuaderno"
+                  >
+                    <IconFolderPlus />
+                  </button>
+                </span>
+              </div>
+
+              <ul className="gradebook-tree-list root">
+                {renderCreateGroupInline("")}
+                {(orderedGroupIdsByParent.get("") ?? []).map((groupId) => renderGroupNode(groupId))}
+                {(tasksByGroupId.get("") ?? []).map((task) => renderTaskNode(task))}
+              </ul>
+
+              {filteredIncludedTasks.length === 0 ? (
+                <p className="hint">No hay tareas marcadas para incluir en el cuaderno.</p>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="detail-section">
+            <h5>Arbol de notas por alumno</h5>
+            <div className="gradebook-student-toolbar">
+              <label className="detail-field">
+                <span>Alumno</span>
+                <select
+                  className="input"
+                  value={selectedStudent?.id ?? ""}
+                  onChange={(event) => setSelectedStudentId(event.target.value)}
+                  disabled={students.length === 0}
+                >
+                  {students.map((student) => (
+                    <option key={student.id} value={student.id}>
+                      {formatName(student)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => setIsStudentGradeTreeCollapsed((current) => !current)}
+                disabled={!selectedStudent}
+              >
+                {isStudentGradeTreeCollapsed ? "Desplegar arbol" : "Plegar arbol"}
               </button>
-            </span>
-          </div>
-
-          <ul className="gradebook-tree-list root">
-            {renderCreateGroupInline("")}
-            {(orderedGroupIdsByParent.get("") ?? []).map((groupId) => renderGroupNode(groupId))}
-            {(tasksByGroupId.get("") ?? []).map((task) => renderTaskNode(task))}
-          </ul>
-
-          {filteredIncludedTasks.length === 0 ? (
-            <p className="hint">No hay tareas marcadas para incluir en el cuaderno.</p>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="detail-section" style={{ marginTop: 10 }}>
-        <h5>Notas parciales por carpeta</h5>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Alumno</th>
-                {orderedGroupRows.map((group) => (
-                  <th key={group.id}>
-                    {group.pathLabel}
-                    <br />
-                    <small>
-                      Aporta {formatContribution(contributionData.groupLeafContributionById.get(group.id) ?? 0)}
-                    </small>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {students.map((student) => (
-                <tr key={`partial-${student.id}`}>
-                  <td>{getStudentFullName(student)}</td>
-                  {orderedGroupRows.map((group) => {
-                    const value = partialByStudentGroup.get(studentGroupKey(student.id, group.id));
-                    return (
-                      <td key={`${student.id}:${group.id}`}>
-                        <span className="pill">{typeof value === "number" ? value.toFixed(2) : "-"}</span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-              {students.length === 0 ? (
-                <tr>
-                  <td colSpan={Math.max(2, orderedGroupRows.length + 1)}>No hay alumnos en esta clase.</td>
-                </tr>
-              ) : null}
-              {students.length > 0 && orderedGroupRows.length === 0 ? (
-                <tr>
-                  <td colSpan={2}>Crea carpetas para ver las notas parciales y subcarpetas.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            </div>
+            <div className="student-grade-tree-list">
+              {selectedStudent ? renderStudentGradeTree(selectedStudent) : null}
+              {students.length === 0 ? <p className="empty-state">No hay alumnos en esta clase.</p> : null}
+            </div>
+          </section>
+        </section>
+      </div>
     </section>
   );
 }

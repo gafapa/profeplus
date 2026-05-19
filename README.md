@@ -1,32 +1,33 @@
 # ProfePlus
 
-Cuaderno digital docente en formato web app (PWA), con datos locales y soporte de IA en el navegador.
+Teacher notebook web app packaged as a PWA. Data is stored locally in IndexedDB and AI features are routed through the companion Chrome extension.
 
-## Estado actual
+## Current Scope
 
-- Interfaz principal por pestañas: Asistencia, Cuaderno, Planner, Evaluación e Informes.
-- Sección de Configuración con gestión académica y gestión de base de datos.
-- Evaluación con Rúbricas y Listas de cotejo (incluye generación con IA).
-- Persistencia local con IndexedDB (Dexie).
-- Sin datos de ejemplo al iniciar.
+- Main workspace with journal, gradebook, evaluation tools, reports, and academic management.
+- Academic management for courses, students, subjects, units, tasks, schedules, preferences, and database operations.
+- Rubric and checklist generation through the AI Proxy Bridge Chrome extension.
+- Local-first persistence with Dexie and IndexedDB.
+- Backup export/import with schema checks.
 
 ## Stack
 
-- React 19 + TypeScript
-- Vite 6
-- Redux Toolkit
-- Dexie (IndexedDB)
-- React Router
-- WebLLM (`@mlc-ai/web-llm`)
-- `vite-plugin-pwa`
+- React 19 + TypeScript 5.9
+- Vite 7
+- Redux Toolkit 2
+- Dexie 4
+- React Router 7
+- Vitest 4
+- vite-plugin-pwa 1.3
 
-## Requisitos
+## Requirements
 
-- Node.js 20+ (recomendado)
+- Node.js 22+
 - npm 10+
-- Navegador con soporte moderno (WebGPU recomendado para IA local)
+- Chrome or Chromium for AI features
+- AI Proxy Bridge extension loaded from `D:\ProyectosIA\ia extension\dist\extension`
 
-## Desarrollo local
+## Local Development
 
 ```bash
 npm install
@@ -39,69 +40,46 @@ npm run dev
 npm run build
 ```
 
-Salida en `dist/`.
+The production output is generated in `dist/`.
 
-## Despliegue en subdirectorio
+## Tests
 
-La app está preparada para desplegarse tanto en raíz (`/`) como en subruta (por ejemplo `/profeplus/`).
+```bash
+npm run test
+```
 
-Variables:
+## AI Extension
 
-- `VITE_BASE_PATH=/` para local o raíz de dominio.
-- `VITE_BASE_PATH=/profeplus/` para subdirectorio.
+ProfePlus does not include its own AI settings page. The AI Proxy Bridge Chrome extension injects its compact overlay in the page, and feature-level AI requests connect to that same extension runtime.
 
-Archivos de ejemplo:
+Configuration options:
+
+- `VITE_AI_RUNTIME_EXTENSION_ID`: optional default extension ID.
+- The app can also detect the extension through the content-script ready event on trusted origins.
+- The extension must authorize the current hostname, such as `localhost`, `127.0.0.1`, or the deployed domain.
+
+The extension project is external to this app and should be managed separately.
+
+## Deploying Under a Subdirectory
+
+The app supports root and subdirectory deployments.
+
+Environment variables:
+
+- `VITE_BASE_PATH=/` for local development or domain root.
+- `VITE_BASE_PATH=/profeplus/` for a subdirectory deployment.
+
+Relevant files:
 
 - `.env.example`
 - `.env.production`
 
-Puntos clave ya configurados:
+## Data Management
 
-- `vite.config.ts` usa `base` dinámico.
-- `src/main.tsx` configura `BrowserRouter basename` con `import.meta.env.BASE_URL`.
-- Manifest PWA con `start_url` y `scope` alineados al `base`.
+Database tools are available under `Configuracion > Base de datos`:
 
-## Scripts
+- Export a JSON backup.
+- Import a JSON backup after app/schema/table validation.
+- Delete all local app data.
 
-- `npm run dev`: entorno de desarrollo.
-- `npm run build`: compilación TypeScript + build Vite.
-- `npm run preview`: vista previa del build.
-- `npm run test`: pruebas con Vitest.
-
-## Gestión de datos
-
-En Configuración > Base de datos:
-
-- Exportar copia de seguridad (JSON).
-- Importar copia de seguridad.
-- Borrar todos los datos.
-
-## IA (WebLLM)
-
-- Selección de modelo en Configuración IA.
-- Descarga de modelos detectables desde fuentes públicas.
-- Generación asistida de rúbricas y listas de cotejo.
-
-## Estructura
-
-```txt
-src/
-  app/
-  modules/
-    attendance/
-    gradebook/
-    planner/
-    rubrics/
-    reports/
-    ai-assistant/
-    management/
-  shared/
-    db/
-    ui/
-    utils/
-```
-
-## Notas
-
-- El proyecto está orientado a uso local/offline-first.
-- Si se publica en hosting estático, asegúrate de servir correctamente los archivos de `dist/` respetando la subruta configurada.
+Backups include a `schemaVersion` field so future migrations can reject unsupported files.

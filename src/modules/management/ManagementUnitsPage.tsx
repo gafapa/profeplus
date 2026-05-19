@@ -1,193 +1,121 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
+import { useAppSelector } from "../../app/hooks";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
-import { Modal } from "../../shared/ui/Modal";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
-
-const today = new Date().toISOString().slice(0, 10);
 
 export function ManagementUnitsPage() {
-  const { subjects, units, createEmptyUnit, updateUnit, deleteUnit, setNotice } = useManagement();
+  const selectedSubjectId = useAppSelector((s) => s.app.selectedSubjectId);
 
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const { units, createEmptyUnit, updateUnit, deleteUnit } = useManagement();
+
   const [selectedUnitId, setSelectedUnitId] = useState("");
-
   const [detailName, setDetailName] = useState("");
   const [detailDescription, setDetailDescription] = useState("");
-  const [detailStartDate, setDetailStartDate] = useState(today);
-  const [detailEndDate, setDetailEndDate] = useState(today);
   const [detailSessionCount, setDetailSessionCount] = useState(1);
   const [unitDirty, setUnitDirty] = useState(false);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
-
-
-  useEffect(() => {
-    if (!selectedSubjectId && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-    const exists = subjects.some((subject) => subject.id === selectedSubjectId);
-    if (!exists && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-  }, [selectedSubjectId, subjects]);
 
   const unitsBySubject = useMemo(
-    () => units.filter((unit) => unit.subjectId === selectedSubjectId).sort((a, b) => a.position - b.position),
+    () =>
+      units
+        .filter((u) => u.subjectId === selectedSubjectId)
+        .sort((a, b) => a.position - b.position),
     [selectedSubjectId, units]
   );
 
   useEffect(() => {
-    if (!selectedUnitId && unitsBySubject.length > 0) {
-      setSelectedUnitId(unitsBySubject[0].id);
-    }
-    const exists = unitsBySubject.some((unit) => unit.id === selectedUnitId);
-    if (!exists && unitsBySubject.length > 0) {
-      setSelectedUnitId(unitsBySubject[0].id);
-    }
-    if (unitsBySubject.length === 0) {
-      setSelectedUnitId("");
-    }
-  }, [selectedUnitId, unitsBySubject]);
+    if (unitsBySubject.length === 0) { setSelectedUnitId(""); return; }
+    const exists = unitsBySubject.some((u) => u.id === selectedUnitId);
+    if (!exists) setSelectedUnitId(unitsBySubject[0].id);
+  }, [selectedSubjectId, unitsBySubject]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selectedUnit = unitsBySubject.find((unit) => unit.id === selectedUnitId) ?? null;
+  const selectedUnit = unitsBySubject.find((u) => u.id === selectedUnitId) ?? null;
 
   useEffect(() => {
     if (!selectedUnit) {
       setDetailName("");
       setDetailDescription("");
-      setDetailStartDate(today);
-      setDetailEndDate(today);
       setDetailSessionCount(1);
       setUnitDirty(false);
       return;
     }
     setDetailName(selectedUnit.name ?? "");
     setDetailDescription(selectedUnit.description ?? "");
-    setDetailStartDate(selectedUnit.startDate ?? today);
-    setDetailEndDate(selectedUnit.endDate ?? today);
     setDetailSessionCount(selectedUnit.sessionCount ?? 1);
     setUnitDirty(false);
   }, [selectedUnit]);
 
-  const persistUnit = useCallback(async (): Promise<boolean> => {
-    if (!selectedUnit || !unitDirty) {
-      return true;
-    }
-    if (detailName.trim().length < 2 || !detailStartDate || !detailEndDate) {
-      setNotice("La unidad necesita nombre (minimo 2 caracteres) y fechas de inicio y fin.");
-      return false;
-    }
+  // Auto-guardado con debounce (updateUnit excluido de deps: su referencia cambia en cada render del contexto)
+  useEffect(() => {
+    if (!unitDirty || !selectedUnit) return;
+    const name = detailName.trim();
+    if (name.length < 2) return;
+    const id = selectedUnit.id;
+    const desc = detailDescription;
+    const count = detailSessionCount;
+    const timer = setTimeout(() => {
+      void updateUnit(id, name, desc, count);
+      setUnitDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitDirty, detailName, detailDescription, detailSessionCount, selectedUnit?.id]);
 
-    await updateUnit(
-      selectedUnit.id,
-      detailName,
-      detailDescription,
-      detailStartDate,
-      detailEndDate,
-      detailSessionCount
-    );
+  const saveIfDirty = useCallback(async () => {
+    if (!unitDirty || !selectedUnit) return;
+    if (detailName.trim().length < 2) return;
+    await updateUnit(selectedUnit.id, detailName.trim(), detailDescription, detailSessionCount);
     setUnitDirty(false);
-    return true;
-  }, [
-    detailDescription,
-    detailEndDate,
-    detailName,
-    detailSessionCount,
-    detailStartDate,
-    selectedUnit,
-    setNotice,
-    unitDirty,
-    updateUnit
-  ]);
-
-  const ensureNoPendingChanges = (): boolean => {
-    if (!unitDirty) {
-      return true;
-    }
-    setShowUnsavedModal(true);
-    return false;
-  };
-
-  useUnsavedChangesGuard(unitDirty);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitDirty, detailName, detailDescription, detailSessionCount, selectedUnit?.id]);
 
   return (
-    <>
     <article className="management-card">
-      <h3>Unidades</h3>
-
-      <div className="module-subject-tabs section-tabs" role="tablist" aria-label="Asignaturas">
-        {subjects.map((subject) => (
-          <button
-            key={subject.id}
-            type="button"
-            role="tab"
-            aria-selected={selectedSubjectId === subject.id}
-            className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
-            onClick={() => {
-              if (!ensureNoPendingChanges()) {
-                return;
-              }
-              setSelectedSubjectId(subject.id);
-            }}
-          >
-            {subject.name}
-          </button>
-        ))}
-        {subjects.length === 0 ? <p className="hint">No hay asignaturas disponibles.</p> : null}
-      </div>
-
       <div className="courses-layout">
         <aside className="courses-list-panel">
+          <ContextSidebarTabs beforeChange={saveIfDirty} />
           <div className="courses-list-header">
             <strong>Unidades</strong>
             <IconButton
               icon="add"
               label="Crear unidad"
+              disabled={!selectedSubjectId}
               onClick={async () => {
-                if (!ensureNoPendingChanges()) {
-                  return;
-                }
+                await saveIfDirty();
                 const createdId = await createEmptyUnit(selectedSubjectId);
-                if (createdId) {
-                  setSelectedUnitId(createdId);
-                }
+                if (createdId) setSelectedUnitId(createdId);
               }}
             />
           </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Secciones de unidades">
-            {unitsBySubject.map((unit) => (
+          <div className="courses-list section-tabs" role="tablist" aria-label="Unidades">
+            {selectedSubjectId ? unitsBySubject.map((unit) => (
               <div key={unit.id} className="courses-list-row">
                 <button
                   type="button"
                   role="tab"
                   aria-selected={selectedUnitId === unit.id}
                   className={`section-tab ${selectedUnitId === unit.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
+                  onClick={async () => {
+                    await saveIfDirty();
                     setSelectedUnitId(unit.id);
                   }}
                 >
-                  <span>{unit.name}</span>
-                  <small>
-                    {unit.startDate} - {unit.endDate}
-                  </small>
-                  <small>{unit.sessionCount} sesiones</small>
+                  <span>{unit.name || "Sin nombre"}</span>
+                  <small>{unit.sessionCount} sesiones previstas</small>
                 </button>
                 <IconButton
                   icon="delete"
                   label={`Eliminar ${unit.name || "unidad"}`}
                   onClick={async () => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
-                    await deleteUnit(unit.id);
-                  }}
-                />
-              </div>
-            ))}
-            {unitsBySubject.length === 0 ? <p className="hint">No hay unidades en esta asignatura.</p> : null}
+                    await saveIfDirty();
+                  await deleteUnit(unit.id);
+                }}
+              />
+            </div>
+            )) : null}
+            {selectedSubjectId && unitsBySubject.length === 0 && (
+              <p className="hint">No hay unidades en esta asignatura.</p>
+            )}
           </div>
         </aside>
 
@@ -195,112 +123,59 @@ export function ManagementUnitsPage() {
           {selectedUnit ? (
             <>
               <div className="course-detail-header">
-                <div>
-                  <h4>Detalle de unidad</h4>
-                </div>
-                <div className="actions-cell">
-                  <IconButton
-                    icon="save"
-                    label="Guardar unidad"
-                    className={unitDirty ? "save-attention" : ""}
-                    disabled={!unitDirty}
-                    onClick={async () => {
-                      await persistUnit();
-                    }}
-                  />
-                </div>
+                <h4>Detalle de unidad</h4>
               </div>
 
-              <div className="unit-detail-layout">
-                <label className="unit-field unit-field-full">
-                  <span className="unit-field-label">Nombre</span>
-                  <input
-                    className="input"
-                    placeholder="Nombre de la unidad"
-                    value={detailName}
-                    onChange={(event) => {
-                      setDetailName(event.target.value);
-                      setUnitDirty(true);
-                    }}
-                  />
-                </label>
+              <section className="detail-section">
+                <div className="unit-detail-layout">
+                  <label className="unit-field unit-field-full">
+                    <span className="unit-field-label">Nombre</span>
+                    <input
+                      className="input"
+                      placeholder="Nombre de la unidad"
+                      value={detailName}
+                      onChange={(e) => { setDetailName(e.target.value); setUnitDirty(true); }}
+                    />
+                  </label>
 
-                <label className="unit-field unit-field-full">
-                  <span className="unit-field-label">Descripción</span>
-                  <textarea
-                    className="input"
-                    placeholder="Descripción de la unidad"
-                    value={detailDescription}
-                    onChange={(event) => {
-                      setDetailDescription(event.target.value);
-                      setUnitDirty(true);
-                    }}
-                  />
-                </label>
+                  <label className="unit-field unit-field-full">
+                    <span className="unit-field-label">Descripción</span>
+                    <textarea
+                      className="input"
+                      placeholder="Descripción de la unidad"
+                      value={detailDescription}
+                      onChange={(e) => { setDetailDescription(e.target.value); setUnitDirty(true); }}
+                    />
+                  </label>
 
-                <label className="unit-field">
-                  <span className="unit-field-label">Inicio</span>
-                  <input
-                    className="input"
-                    type="date"
-                    value={detailStartDate}
-                    onChange={(event) => {
-                      setDetailStartDate(event.target.value);
-                      setUnitDirty(true);
-                    }}
-                  />
-                </label>
+                  <label className="unit-field">
+                    <span className="unit-field-label">Sesiones previstas</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={detailSessionCount}
+                      onChange={(e) => {
+                        setDetailSessionCount(Math.max(1, Number(e.target.value) || 1));
+                        setUnitDirty(true);
+                      }}
+                    />
+                  </label>
+                </div>
 
-                <label className="unit-field">
-                  <span className="unit-field-label">Fin</span>
-                  <input
-                    className="input"
-                    type="date"
-                    value={detailEndDate}
-                    onChange={(event) => {
-                      setDetailEndDate(event.target.value);
-                      setUnitDirty(true);
-                    }}
-                  />
-                </label>
-
-                <label className="unit-field">
-                  <span className="unit-field-label">Sesiones</span>
-                  <input
-                    className="input"
-                    type="number"
-                    min={1}
-                    value={detailSessionCount}
-                    onChange={(event) => {
-                      setDetailSessionCount(Math.max(1, Number(event.target.value) || 1));
-                      setUnitDirty(true);
-                    }}
-                  />
-                </label>
-              </div>
+                <p className="hint">
+                  Las fechas de inicio y fin se calculan automáticamente a partir de las sesiones
+                  registradas en el Diario.
+                </p>
+              </section>
             </>
           ) : (
-            <p>Selecciona una unidad para editarla.</p>
+            <p className="empty-state">
+              {selectedSubjectId ? "Selecciona una unidad para editarla." : "Selecciona una asignatura en el panel izquierdo."}
+            </p>
           )}
         </section>
       </div>
-
     </article>
-    <Modal
-      open={showUnsavedModal}
-      title="Cambios sin guardar"
-      onClose={() => setShowUnsavedModal(false)}
-    >
-      <p>Tienes cambios sin guardar. Pulsa Guardar antes de continuar.</p>
-      <div className="inline-form">
-        <button type="button" className="btn" onClick={() => setShowUnsavedModal(false)}>
-          Entendido
-        </button>
-      </div>
-    </Modal>
-    </>
   );
 }
-
-
-

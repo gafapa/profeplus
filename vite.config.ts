@@ -12,8 +12,22 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
   const base = normalizeBasePath(env.VITE_BASE_PATH);
 
+  const serverPort = process.env.PORT ? parseInt(process.env.PORT, 10) : 5274;
+
   return {
     base,
+    server: { port: serverPort, host: "127.0.0.1" },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            "react-vendor": ["react", "react-dom", "react-router-dom", "history"],
+            "state-vendor": ["@reduxjs/toolkit", "react-redux"],
+            "db-vendor": ["dexie"]
+          }
+        }
+      }
+    },
     plugins: [
       react(),
       VitePWA({

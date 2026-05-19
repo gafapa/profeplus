@@ -1,28 +1,32 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "../../shared/db/database";
-import { useAppSelector } from "../../app/hooks";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { setSelectedClass, setSelectedSubject, type WeekStartsOn } from "../../app/store";
 import type {
   AttendanceEntry,
   ChecklistTemplate,
+  ClassGroup,
   RubricTemplate,
   ScheduleDay,
   Student,
   Subject,
+  SubjectCourseLink,
   SubjectStudentLink,
   Task,
   TaskChecklistAssessment,
   TaskDailyEvaluationSetting,
+  TaskGradebookConfig,
   TaskRubricAssessment,
   TaskSession,
-  TaskStudentComment
+  TaskStudentComment,
+  TaskSubjectLink,
+  UnitBlock
 } from "../../shared/db/types";
-import { getStudentFullName } from "../../shared/utils/student";
-import { IconButton } from "../../shared/ui/IconButton";
-import { Modal } from "../../shared/ui/Modal";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 
 const today = new Date().toISOString().slice(0, 10);
-const WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+const MONDAY_FIRST_WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+const SUNDAY_FIRST_WEEKDAY_LABELS = ["D", "L", "M", "X", "J", "V", "S"];
 const MONTH_LABELS = [
   "Enero",
   "Febrero",
@@ -37,10 +41,13 @@ const MONTH_LABELS = [
   "Noviembre",
   "Diciembre"
 ];
-const DAY_LABELS = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"];
+const DAY_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const WORK_DIARY_SLOT_ID = "work";
 
 type SubjectSlot = {
   key: string;
+  classId: string;
+  className: string;
   subjectId: string;
   subjectName: string;
   slotId: string;
@@ -73,8 +80,15 @@ function toIsoDate(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function mondayFirstIndex(value: Date): number {
+function weekStartIndex(value: Date, weekStartsOn: WeekStartsOn): number {
+  if (weekStartsOn === "sunday") {
+    return value.getDay();
+  }
   return (value.getDay() + 6) % 7;
+}
+
+function weekdayLabels(weekStartsOn: WeekStartsOn): string[] {
+  return weekStartsOn === "sunday" ? SUNDAY_FIRST_WEEKDAY_LABELS : MONDAY_FIRST_WEEKDAY_LABELS;
 }
 
 function monthStart(value: Date): Date {
@@ -95,9 +109,9 @@ function shiftIsoDate(value: string, deltaDays: number): string {
   return toIsoDate(date);
 }
 
-function monthGrid(value: Date): { date: Date; inMonth: boolean }[] {
+function monthGrid(value: Date, weekStartsOn: WeekStartsOn): { date: Date; inMonth: boolean }[] {
   const start = monthStart(value);
-  const startOffset = mondayFirstIndex(start);
+  const startOffset = weekStartIndex(start, weekStartsOn);
   const gridStart = new Date(start);
   gridStart.setDate(start.getDate() - startOffset);
 
@@ -111,16 +125,6 @@ function monthGrid(value: Date): { date: Date; inMonth: boolean }[] {
     });
   }
   return items;
-}
-
-function isoDayOfWeek(isoDate: string): number {
-  const [year, month, day] = isoDate.split("-").map((item) => Number(item));
-  if (!year || !month || !day) {
-    return 0;
-  }
-  const value = new Date(year, month - 1, day);
-  const jsDay = value.getDay();
-  return jsDay === 0 ? 7 : jsDay;
 }
 
 function getNearestSlotKey(slots: SubjectSlot[]): string {
@@ -150,14 +154,26 @@ function checklistDraftKey(studentId: string, itemId: string): string {
   return `${studentId}:${itemId}`;
 }
 
-export function AttendancePage() {
+type AttendancePageProps = {
+  mode: "attendance" | "work";
+};
+
+export function AttendancePage({ mode }: AttendancePageProps) {
+  const { formatName, compareFn } = useStudentDisplay();
+  const dispatch = useAppDispatch();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
+  const weekStartsOn = useAppSelector((state) => state.app.weekStartsOn);
+  const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
   const [scheduleDays, setScheduleDays] = useState<ScheduleDay[]>([]);
   const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [subjectStudentLinks, setSubjectStudentLinks] = useState<SubjectStudentLink[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskSubjectLinks, setTaskSubjectLinks] = useState<TaskSubjectLink[]>([]);
+  const [unitBlocks, setUnitBlocks] = useState<UnitBlock[]>([]);
+  const [taskGradebookConfigs, setTaskGradebookConfigs] = useState<TaskGradebookConfig[]>([]);
   const [taskSessions, setTaskSessions] = useState<TaskSession[]>([]);
   const [taskStudentComments, setTaskStudentComments] = useState<TaskStudentComment[]>([]);
   const [rubricTemplates, setRubricTemplates] = useState<RubricTemplate[]>([]);
@@ -167,8 +183,10 @@ export function AttendancePage() {
   const [taskChecklistAssessments, setTaskChecklistAssessments] = useState<TaskChecklistAssessment[]>([]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedSlotKey, setSelectedSlotKey] = useState("");
-  const [activeDiaryTab, setActiveDiaryTab] = useState<"attendance" | "tasks">("attendance");
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [selectedWorkUnitId, setSelectedWorkUnitId] = useState("");
+  const [selectedUnitToAssignId, setSelectedUnitToAssignId] = useState("");
+  const [selectedTaskToAssignId, setSelectedTaskToAssignId] = useState("");
   const [selectedTaskSessionSlotId, setSelectedTaskSessionSlotId] = useState("");
   const [taskGeneralCommentDraft, setTaskGeneralCommentDraft] = useState("");
   const [taskStudentCommentDraft, setTaskStudentCommentDraft] = useState<Map<string, string>>(new Map());
@@ -186,59 +204,61 @@ export function AttendancePage() {
     new Map()
   );
   const [isSavingAttendance, setIsSavingAttendance] = useState(false);
+  const [draftNoteByStudent, setDraftNoteByStudent] = useState<Map<string, string>>(new Map());
   const [attendanceNotice, setAttendanceNotice] = useState("");
-  const [attendanceRecordedByDate, setAttendanceRecordedByDate] = useState<Map<string, number>>(new Map());
-  const [attendanceExpectedByDate, setAttendanceExpectedByDate] = useState<Map<string, number>>(new Map());
-  const [coverageVersion, setCoverageVersion] = useState(0);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
-  const pendingContextChangeRef = useRef<(() => void) | null>(null);
+  const attendanceAutoSaveTimerRef = useRef<number | null>(null);
+  const taskAutoSaveTimerRef = useRef<number | null>(null);
+  const taskEditVersionRef = useRef(0);
 
   const loadMetadata = async (): Promise<void> => {
     const [
+      classGroupsData,
       subjectsData,
       scheduleDaysData,
       studentsData,
       subjectStudentLinksData,
       subjectCourseLinksData,
       tasksData,
+      taskSubjectLinksData,
+      unitBlocksData,
       taskSessionsData,
       taskStudentCommentsData,
       rubricTemplatesData,
       checklistTemplatesData,
       taskDailyEvaluationSettingsData,
       taskRubricAssessmentsData,
-      taskChecklistAssessmentsData
+      taskChecklistAssessmentsData,
+      taskGradebookConfigsData
     ] = await Promise.all([
+      db.classGroups.orderBy("name").toArray(),
       db.subjects.orderBy("name").toArray(),
       db.scheduleDays.orderBy("dayOfWeek").toArray(),
       db.students.toArray(),
       db.subjectStudentLinks.toArray(),
       db.subjectCourseLinks.toArray(),
       db.tasks.toArray(),
+      db.taskSubjectLinks.toArray(),
+      db.unitBlocks.toArray(),
       db.taskSessions.toArray(),
       db.taskStudentComments.toArray(),
-      selectedClassId ? db.rubricTemplates.where("classId").equals(selectedClassId).toArray() : Promise.resolve([]),
-      selectedClassId
-        ? db.checklistTemplates.where("classId").equals(selectedClassId).toArray()
-        : Promise.resolve([]),
+      db.rubricTemplates.toArray(),
+      db.checklistTemplates.toArray(),
       db.taskDailyEvaluationSettings.toArray(),
       db.taskRubricAssessments.toArray(),
-      db.taskChecklistAssessments.toArray()
+      db.taskChecklistAssessments.toArray(),
+      db.taskGradebookConfigs.toArray()
     ]);
-    const linkedSubjectIds = new Set(
-      subjectCourseLinksData
-        .filter((item) => (selectedClassId ? item.classId === selectedClassId : true))
-        .map((item) => item.subjectId)
-    );
-    const filteredSubjects = subjectsData.filter((item) => linkedSubjectIds.has(item.id));
-    const visibleSubjects =
-      filteredSubjects.length > 1 || subjectsData.length <= 1 ? filteredSubjects : subjectsData;
 
-    setSubjects(visibleSubjects);
+    setClassGroups(classGroupsData);
+    setSubjects(subjectsData);
+    setSubjectCourseLinks(subjectCourseLinksData);
     setScheduleDays(scheduleDaysData);
-    setAllStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
+    setAllStudents(studentsData.sort(compareFn));
     setSubjectStudentLinks(subjectStudentLinksData);
     setTasks(tasksData);
+    setTaskSubjectLinks(taskSubjectLinksData);
+    setUnitBlocks(unitBlocksData);
+    setTaskGradebookConfigs(taskGradebookConfigsData);
     setTaskSessions(taskSessionsData);
     setTaskStudentComments(taskStudentCommentsData);
     setRubricTemplates(rubricTemplatesData);
@@ -261,29 +281,40 @@ export function AttendancePage() {
     if (!day) {
       return slots;
     }
-    if (!selectedSubjectId) {
-      return slots;
-    }
-    const subject = subjects.find((item) => item.id === selectedSubjectId);
-    if (!subject) {
-      return slots;
+    const classGroupById = new Map(classGroups.map((item) => [item.id, item]));
+    const linksBySubjectId = new Map<string, SubjectCourseLink[]>();
+    for (const link of subjectCourseLinks) {
+      const links = linksBySubjectId.get(link.subjectId) ?? [];
+      links.push(link);
+      linksBySubjectId.set(link.subjectId, links);
     }
 
-    const subjectSlotIds = new Set(subject.scheduleSlotIds ?? []);
     for (const block of day.blocks) {
-      if (!subjectSlotIds.has(block.id)) {
+      if (block.isBreak) {
         continue;
       }
-      slots.push({
-        key: `${subject.id}:${block.id}`,
-        subjectId: subject.id,
-        subjectName: subject.name,
-        slotId: block.id,
-        dayOfWeek: day.dayOfWeek,
-        dayName: day.dayName,
-        startTime: block.startTime,
-        endTime: block.endTime
-      });
+      for (const subject of subjects) {
+        const subjectSlotIds = new Set(subject.scheduleSlotIds ?? []);
+        if (!subjectSlotIds.has(block.id)) {
+          continue;
+        }
+        const links = linksBySubjectId.get(subject.id) ?? [];
+        for (const link of links) {
+          const classGroup = classGroupById.get(link.classId);
+          slots.push({
+            key: `${link.classId}:${subject.id}:${block.id}`,
+            classId: link.classId,
+            className: classGroup?.name ?? "Curso sin nombre",
+            subjectId: subject.id,
+            subjectName: subject.name,
+            slotId: block.id,
+            dayOfWeek: day.dayOfWeek,
+            dayName: day.dayName,
+            startTime: block.startTime,
+            endTime: block.endTime
+          });
+        }
+      }
     }
 
     return slots.sort((a, b) => {
@@ -291,13 +322,19 @@ export function AttendancePage() {
       if (byStart !== 0) {
         return byStart;
       }
-      return a.slotId.localeCompare(b.slotId);
+      return (
+        a.className.localeCompare(b.className) ||
+        a.subjectName.localeCompare(b.subjectName) ||
+        a.slotId.localeCompare(b.slotId)
+      );
     });
-  }, [dayOfWeek, scheduleDays, selectedSubjectId, subjects]);
+  }, [classGroups, dayOfWeek, scheduleDays, subjectCourseLinks, subjects]);
 
   useEffect(() => {
     if (subjectSlotsForDate.length === 0) {
-      setSelectedSlotKey("");
+      if (selectedSlotKey) {
+        setSelectedSlotKey("");
+      }
       return;
     }
     const exists = subjectSlotsForDate.some((slot) => slot.key === selectedSlotKey);
@@ -311,11 +348,33 @@ export function AttendancePage() {
     () => subjectSlotsForDate.find((slot) => slot.key === selectedSlotKey) ?? null,
     [selectedSlotKey, subjectSlotsForDate]
   );
-  const selectedSubject = useMemo(
-    () => subjects.find((item) => item.id === selectedSubjectId) ?? null,
-    [selectedSubjectId, subjects]
-  );
-
+  const activeClassId = mode === "work" ? selectedClassId : (selectedSubjectSlot?.classId ?? "");
+  const activeSubjectId = mode === "work" ? selectedSubjectId : (selectedSubjectSlot?.subjectId ?? "");
+  const workSubjects = useMemo(() => {
+    if (!selectedClassId) {
+      return [];
+    }
+    const linkedSubjectIds = new Set(
+      subjectCourseLinks
+        .filter((link) => link.classId === selectedClassId)
+        .map((link) => link.subjectId)
+    );
+    return subjects
+      .filter((subject) => linkedSubjectIds.has(subject.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [selectedClassId, subjectCourseLinks, subjects]);
+  const workUnits = useMemo(() => {
+    if (!selectedSubjectId) {
+      return [];
+    }
+    return unitBlocks
+      .filter((unit) => unit.subjectId === selectedSubjectId)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  }, [selectedSubjectId, unitBlocks]);
+  const workDiaryDateKey = mode === "work" && activeClassId && activeSubjectId
+    ? `work:${activeClassId}:${activeSubjectId}`
+    : selectedDate;
+  const workDiarySlotId = mode === "work" ? WORK_DIARY_SLOT_ID : "";
   useEffect(() => {
     const [year, month] = selectedDate.split("-").map((item) => Number(item));
     if (!year || !month) {
@@ -344,17 +403,69 @@ export function AttendancePage() {
       db.attendanceEntries.where("studentId").anyOf(studentIds).toArray()
     ]);
 
-    setStudents(studentsData.sort((a, b) => getStudentFullName(a).localeCompare(getStudentFullName(b))));
+    setStudents(studentsData.filter((student) => student.classId === selectedSubjectSlot.classId).sort(compareFn));
     setAttendanceEntries(
       attendanceData.filter(
-        (entry) => entry.date === selectedDate && (entry.scheduleSlotId ?? "") === selectedSubjectSlot.slotId
+        (entry) =>
+          entry.classId === selectedSubjectSlot.classId &&
+          entry.date === selectedDate &&
+          (entry.scheduleSlotId ?? "") === selectedSubjectSlot.slotId
       )
     );
   };
 
   useEffect(() => {
     void loadMetadata();
-  }, [selectedClassId]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (mode !== "work") {
+      return;
+    }
+    if (workSubjects.length === 0) {
+      if (selectedSubjectId) {
+        dispatch(setSelectedSubject(""));
+      }
+      return;
+    }
+    if (!workSubjects.some((subject) => subject.id === selectedSubjectId)) {
+      dispatch(setSelectedSubject(workSubjects[0].id));
+    }
+  }, [dispatch, mode, selectedSubjectId, workSubjects]);
+
+  useEffect(() => {
+    if (mode !== "work") {
+      return;
+    }
+    if (workUnits.length === 0) {
+      setSelectedWorkUnitId("");
+      return;
+    }
+    if (!workUnits.some((unit) => unit.id === selectedWorkUnitId)) {
+      setSelectedWorkUnitId(workUnits[0].id);
+    }
+  }, [mode, selectedWorkUnitId, workUnits]);
+
+  useEffect(() => {
+    if (mode !== "attendance") {
+      return;
+    }
+    if (!selectedSubjectSlot) {
+      return;
+    }
+    if (selectedClassId !== selectedSubjectSlot.classId) {
+      dispatch(setSelectedClass(selectedSubjectSlot.classId));
+    }
+    if (selectedSubjectId !== selectedSubjectSlot.subjectId) {
+      dispatch(setSelectedSubject(selectedSubjectSlot.subjectId));
+    }
+  }, [dispatch, mode, selectedClassId, selectedSubjectId, selectedSubjectSlot]);
+
+  // Re-ordenar alumnos cuando cambia la preferencia sin recargar la BD
+  useEffect(() => {
+    setAllStudents((prev) => [...prev].sort(compareFn));
+    setStudents((prev) => [...prev].sort(compareFn));
+  }, [compareFn]);
 
   useEffect(() => {
     void loadData();
@@ -364,84 +475,6 @@ export function AttendancePage() {
     setDraftStatusByStudent(new Map());
     setAttendanceNotice("");
   }, [selectedDate, selectedSubjectSlot?.key, students.length, attendanceEntries.length]);
-
-  useEffect(() => {
-    const loadCalendarCoverage = async () => {
-      if (!selectedSubject) {
-        setAttendanceRecordedByDate(new Map());
-        setAttendanceExpectedByDate(new Map());
-        return;
-      }
-
-      const monthStartDate = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
-      const monthEndDate = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0);
-      const fromIso = toIsoDate(monthStartDate);
-      const toIso = toIsoDate(monthEndDate);
-
-      const links = await db.subjectStudentLinks.where("subjectId").equals(selectedSubject.id).toArray();
-      const studentIds = links.map((item) => item.studentId);
-      if (studentIds.length === 0) {
-        setAttendanceRecordedByDate(new Map());
-        setAttendanceExpectedByDate(new Map());
-        return;
-      }
-
-      const subjectSlotIds = new Set(selectedSubject.scheduleSlotIds ?? []);
-      const slotIdsByDayOfWeek = new Map<number, string[]>();
-      for (const day of scheduleDays) {
-        if (!day.enabled) {
-          continue;
-        }
-        const slotIds = day.blocks
-          .map((block) => block.id)
-          .filter((slotId) => subjectSlotIds.has(slotId));
-        if (slotIds.length > 0) {
-          slotIdsByDayOfWeek.set(day.dayOfWeek, slotIds);
-        }
-      }
-
-      const expectedByDate = new Map<string, number>();
-      const dateCursor = new Date(monthStartDate);
-      while (dateCursor <= monthEndDate) {
-        const iso = toIsoDate(dateCursor);
-        const dow = isoDayOfWeek(iso);
-        const slotIds = slotIdsByDayOfWeek.get(dow) ?? [];
-        if (slotIds.length > 0) {
-          expectedByDate.set(iso, slotIds.length * studentIds.length);
-        }
-        dateCursor.setDate(dateCursor.getDate() + 1);
-      }
-
-      const monthEntries = (
-        await db.attendanceEntries.where("studentId").anyOf(studentIds).toArray()
-      ).filter(
-        (entry) =>
-          subjectSlotIds.has(entry.scheduleSlotId ?? "") &&
-          entry.date >= fromIso &&
-          entry.date <= toIso
-      );
-
-      const uniquePairsByDate = new Map<string, Set<string>>();
-      for (const entry of monthEntries) {
-        if (!expectedByDate.has(entry.date)) {
-          continue;
-        }
-        const pairSet = uniquePairsByDate.get(entry.date) ?? new Set<string>();
-        pairSet.add(`${entry.studentId}:${entry.scheduleSlotId ?? ""}`);
-        uniquePairsByDate.set(entry.date, pairSet);
-      }
-
-      const recordedByDate = new Map<string, number>();
-      for (const [date, pairSet] of uniquePairsByDate.entries()) {
-        recordedByDate.set(date, pairSet.size);
-      }
-
-      setAttendanceExpectedByDate(expectedByDate);
-      setAttendanceRecordedByDate(recordedByDate);
-    };
-
-    void loadCalendarCoverage();
-  }, [calendarMonth, coverageVersion, scheduleDays, selectedSubject]);
 
   const attendanceByStudent = useMemo(() => {
     const map = new Map<string, AttendanceEntry>();
@@ -467,11 +500,12 @@ export function AttendancePage() {
     return map;
   }, [attendanceByStudent, students]);
 
-  const subjectById = useMemo(() => new Map(subjects.map((item) => [item.id, item])), [subjects]);
+  // Task id to subject id map (first match per task).
   const slotTimeLabelById = useMemo(() => {
     const map = new Map<string, string>();
     for (const day of scheduleDays) {
       for (const block of day.blocks) {
+        if (block.isBreak) continue;
         map.set(block.id, `${block.startTime} - ${block.endTime}`);
       }
     }
@@ -489,6 +523,7 @@ export function AttendancePage() {
         return a.startTime.localeCompare(b.startTime);
       });
       for (const block of sortedBlocks) {
+        if (block.isBreak) continue;
         if (!map.has(block.id)) {
           map.set(block.id, index);
           index += 1;
@@ -499,10 +534,12 @@ export function AttendancePage() {
   }, [scheduleDays]);
 
   const tasksForSelectedDate = useMemo(() => {
-    if (!selectedSubjectId) {
+    if (!selectedSubjectSlot) {
       return [];
     }
-    const sessionRows = taskSessions.filter((item) => item.date === selectedDate);
+    const sessionRows = taskSessions.filter(
+      (item) => item.classId === selectedSubjectSlot.classId && item.date === selectedDate
+    );
     const sessionsByTask = new Map<string, TaskSession[]>();
     for (const session of sessionRows) {
       if (!sessionsByTask.has(session.taskId)) {
@@ -510,9 +547,14 @@ export function AttendancePage() {
       }
       sessionsByTask.get(session.taskId)?.push(session);
     }
+    const taskIdsForSubject = new Set(
+      taskSubjectLinks
+        .filter((link) => link.subjectId === selectedSubjectSlot.subjectId)
+        .map((link) => link.taskId)
+    );
 
     const visible = tasks
-      .filter((task) => task.subjectId === selectedSubjectId)
+      .filter((task) => taskIdsForSubject.has(task.id))
       .filter((task) => sessionsByTask.has(task.id))
       .map((task) => ({
         task,
@@ -539,23 +581,218 @@ export function AttendancePage() {
       });
 
     return visible;
-  }, [selectedDate, selectedSubjectId, slotOrderById, slotTimeLabelById, taskSessions, tasks]);
+  }, [selectedDate, selectedSubjectSlot, slotOrderById, slotTimeLabelById, taskSessions, taskSubjectLinks, tasks]);
 
-  const selectedTaskForDay = useMemo(
-    () => tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.task ?? null,
-    [selectedTaskId, tasksForSelectedDate]
+  const unitsForSelectedSubject = useMemo(() => {
+    if (!selectedSubjectSlot) {
+      return [];
+    }
+    return unitBlocks
+      .filter((unit) => unit.subjectId === selectedSubjectSlot.subjectId)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  }, [selectedSubjectSlot, unitBlocks]);
+
+  const tasksForSelectedUnit = useMemo(() => {
+    if (!selectedSubjectSlot || !selectedUnitToAssignId) {
+      return [];
+    }
+    const linkedTaskIds = new Set(
+      taskSubjectLinks
+        .filter(
+          (link) =>
+            link.subjectId === selectedSubjectSlot.subjectId &&
+            (link.unitId ?? "") === selectedUnitToAssignId
+        )
+        .map((link) => link.taskId)
+    );
+    return tasks
+      .filter((task) => linkedTaskIds.has(task.id))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [selectedSubjectSlot, selectedUnitToAssignId, taskSubjectLinks, tasks]);
+
+  const availableTasksToAssign = useMemo(() => {
+    if (!selectedSubjectSlot || !selectedUnitToAssignId) {
+      return [];
+    }
+    const linkedTaskIds = new Set(
+      taskSubjectLinks
+        .filter(
+          (link) =>
+            link.subjectId === selectedSubjectSlot.subjectId &&
+            (link.unitId ?? "") === selectedUnitToAssignId
+        )
+        .map((link) => link.taskId)
+    );
+    const currentSlotSessions = taskSessions.filter(
+      (session) =>
+        session.classId === selectedSubjectSlot.classId &&
+        session.date === selectedDate &&
+        session.scheduleSlotId === selectedSubjectSlot.slotId
+    );
+    const assignedToCurrentSlot = new Set(currentSlotSessions.map((session) => session.taskId));
+    const currentTaskId = currentSlotSessions[0]?.taskId ?? "";
+    return tasks
+      .filter((task) => linkedTaskIds.has(task.id) && (!assignedToCurrentSlot.has(task.id) || task.id === currentTaskId))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [selectedDate, selectedSubjectSlot, selectedUnitToAssignId, taskSessions, taskSubjectLinks, tasks]);
+
+  const taskSessionForSelectedSlot = useMemo(() => {
+    if (!selectedSubjectSlot) {
+      return null;
+    }
+    return (
+      taskSessions.find(
+        (session) =>
+          session.classId === selectedSubjectSlot.classId &&
+          session.date === selectedDate &&
+          session.scheduleSlotId === selectedSubjectSlot.slotId
+      ) ?? null
+    );
+  }, [selectedDate, selectedSubjectSlot, taskSessions]);
+
+  const taskForSelectedSlot = useMemo(
+    () => tasks.find((task) => task.id === taskSessionForSelectedSlot?.taskId) ?? null,
+    [taskSessionForSelectedSlot?.taskId, tasks]
   );
-  const selectedTaskSessionsForDay = useMemo(
-    () => tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.sessions ?? [],
-    [selectedTaskId, tasksForSelectedDate]
-  );
+
+  const taskTitleByClassSlot = useMemo(() => {
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
+    const subjectLinkByTaskId = new Map(taskSubjectLinks.map((link) => [link.taskId, link]));
+    const map = new Map<string, string>();
+    for (const session of taskSessions) {
+      if (session.date !== selectedDate) {
+        continue;
+      }
+      const task = taskById.get(session.taskId);
+      if (!task) {
+        continue;
+      }
+      const link = subjectLinkByTaskId.get(session.taskId);
+      const unit = link?.unitId ? unitById.get(link.unitId) : null;
+      const unitName = unit?.name || "Sin unidad";
+      const taskTitle = task.title || "Tarea sin título";
+      map.set(`${session.classId}:${session.scheduleSlotId}`, `${unitName} / ${taskTitle}`);
+    }
+    return map;
+  }, [selectedDate, taskSessions, taskSubjectLinks, tasks, unitBlocks]);
+
+  const taskPickerOptions = mode === "work" ? tasksForSelectedUnit : availableTasksToAssign;
+
+  const unitNameByTaskId = useMemo(() => {
+    const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
+    const map = new Map<string, string>();
+    for (const link of taskSubjectLinks) {
+      if (!link.unitId || map.has(link.taskId)) {
+        continue;
+      }
+      const unit = unitById.get(link.unitId);
+      if (unit) {
+        map.set(link.taskId, unit.name);
+      }
+    }
+    return map;
+  }, [taskSubjectLinks, unitBlocks]);
+
+  const workTaskOptions = useMemo(() => {
+    if (!selectedClassId || !selectedSubjectId || !selectedWorkUnitId) {
+      return [];
+    }
+    const taskIdsForSubject = new Set(
+      taskSubjectLinks
+        .filter((link) => link.subjectId === selectedSubjectId && (link.unitId ?? "") === selectedWorkUnitId)
+        .map((link) => link.taskId)
+    );
+    const sessionCountByTask = new Map<string, number>();
+    for (const session of taskSessions) {
+      if (session.classId !== selectedClassId || session.subjectId !== selectedSubjectId) {
+        continue;
+      }
+      sessionCountByTask.set(session.taskId, (sessionCountByTask.get(session.taskId) ?? 0) + 1);
+    }
+    return tasks
+      .filter((task) => taskIdsForSubject.has(task.id))
+      .map((task) => ({
+        task,
+        unitName: unitNameByTaskId.get(task.id) ?? "Sin unidad",
+        sessionCount: sessionCountByTask.get(task.id) ?? 0
+      }))
+      .sort((a, b) => {
+        return a.task.title.localeCompare(b.task.title);
+      });
+  }, [selectedClassId, selectedSubjectId, selectedWorkUnitId, taskSessions, taskSubjectLinks, tasks, unitNameByTaskId]);
+
+  const selectedTaskForDay = useMemo(() => {
+    if (mode === "work") {
+      return workTaskOptions.find((item) => item.task.id === selectedTaskId)?.task ?? null;
+    }
+    return tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.task ?? null;
+  }, [mode, selectedTaskId, tasksForSelectedDate, workTaskOptions]);
+
+  const workTaskSessions = useMemo(() => {
+    if (mode !== "work" || !selectedTaskForDay || !selectedClassId || !selectedSubjectId) {
+      return [];
+    }
+    return taskSessions
+      .filter(
+        (session) =>
+          session.taskId === selectedTaskForDay.id &&
+          session.classId === selectedClassId &&
+          session.subjectId === selectedSubjectId
+      )
+      .sort((a, b) => {
+        const byDate = a.date.localeCompare(b.date);
+        if (byDate !== 0) {
+          return byDate;
+        }
+        const orderA = slotOrderById.get(a.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
+        const orderB = slotOrderById.get(b.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
+        return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
+      });
+  }, [mode, selectedClassId, selectedSubjectId, selectedTaskForDay, slotOrderById, taskSessions]);
+
+  const selectedTaskSessionsForDay = useMemo(() => {
+    if (mode === "work") {
+      return [];
+    }
+    return tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.sessions ?? [];
+  }, [
+    mode,
+    selectedClassId,
+    selectedSubjectId,
+    selectedSubjectSlot,
+    selectedTaskForDay,
+    selectedTaskId,
+    slotOrderById,
+    taskSessions,
+    tasksForSelectedDate
+  ]);
   const selectedTaskSessionForDay = useMemo(
     () =>
+      selectedTaskSessionsForDay.find(
+        (item) => item.scheduleSlotId === selectedTaskSessionSlotId && item.date === selectedDate
+      ) ??
       selectedTaskSessionsForDay.find((item) => item.scheduleSlotId === selectedTaskSessionSlotId) ??
       selectedTaskSessionsForDay[0] ??
       null,
-    [selectedTaskSessionSlotId, selectedTaskSessionsForDay]
+    [selectedDate, selectedTaskSessionSlotId, selectedTaskSessionsForDay]
   );
+  const selectedTaskGradebookConfig = useMemo(() => {
+    if (!selectedTaskForDay || !activeClassId || !activeSubjectId) {
+      return null;
+    }
+    return (
+      taskGradebookConfigs.find(
+        (config) =>
+          config.taskId === selectedTaskForDay.id &&
+          config.subjectId === activeSubjectId &&
+          config.classId === activeClassId
+      ) ?? null
+    );
+  }, [activeClassId, activeSubjectId, selectedTaskForDay, taskGradebookConfigs]);
 
   const taskStudents = useMemo(() => {
     if (!selectedTaskForDay) {
@@ -563,13 +800,13 @@ export function AttendancePage() {
     }
     const studentSet = new Set(
       subjectStudentLinks
-        .filter((link) => link.subjectId === selectedTaskForDay.subjectId)
+        .filter((link) => link.subjectId === activeSubjectId)
         .map((link) => link.studentId)
     );
     return allStudents
       .filter((student) => studentSet.has(student.id))
-      .filter((student) => (selectedClassId ? student.classId === selectedClassId : true));
-  }, [allStudents, selectedClassId, selectedTaskForDay, subjectStudentLinks]);
+      .filter((student) => student.classId === activeClassId);
+  }, [activeClassId, activeSubjectId, allStudents, selectedTaskForDay, subjectStudentLinks]);
 
   const selectedRubricTemplate = useMemo(
     () => rubricTemplates.find((item) => item.id === selectedRubricTemplateId) ?? null,
@@ -579,18 +816,18 @@ export function AttendancePage() {
     () => checklistTemplates.find((item) => item.id === selectedChecklistTemplateId) ?? null,
     [checklistTemplates, selectedChecklistTemplateId]
   );
-  const taskHasFixedRubric = Boolean(selectedTaskForDay?.rubricTemplateId);
-  const taskHasFixedChecklist = !taskHasFixedRubric && Boolean(selectedTaskForDay?.checklistTemplateId);
-  const diaryRubricTemplates = useMemo(
-    () => rubricTemplates.filter((item) => !item.taskId || item.taskId === selectedTaskForDay?.id),
-    [rubricTemplates, selectedTaskForDay]
-  );
-  const diaryChecklistTemplates = useMemo(
-    () => checklistTemplates.filter((item) => !item.taskId || item.taskId === selectedTaskForDay?.id),
-    [checklistTemplates, selectedTaskForDay]
+  const taskHasFixedRubric = Boolean(selectedTaskGradebookConfig?.rubricTemplateId);
+  const taskHasFixedChecklist = !taskHasFixedRubric && Boolean(selectedTaskGradebookConfig?.checklistTemplateId);
+  const diaryRubricTemplates = selectedRubricTemplate ? [selectedRubricTemplate] : [];
+  const diaryChecklistTemplates = selectedChecklistTemplate ? [selectedChecklistTemplate] : [];
+  const taskHasAssignedInstrument = Boolean(
+    selectedTaskGradebookConfig?.rubricTemplateId || selectedTaskGradebookConfig?.checklistTemplateId
   );
 
   useEffect(() => {
+    if (mode !== "attendance") {
+      return;
+    }
     if (tasksForSelectedDate.length === 0) {
       setSelectedTaskId("");
       return;
@@ -598,21 +835,88 @@ export function AttendancePage() {
     if (!tasksForSelectedDate.some((item) => item.task.id === selectedTaskId)) {
       setSelectedTaskId(tasksForSelectedDate[0].task.id);
     }
-  }, [selectedTaskId, tasksForSelectedDate]);
+  }, [mode, selectedTaskId, tasksForSelectedDate]);
+
+  useEffect(() => {
+    if (mode !== "work") {
+      return;
+    }
+    if (workTaskOptions.length === 0) {
+      setSelectedTaskId("");
+      return;
+    }
+    if (!workTaskOptions.some((item) => item.task.id === selectedTaskId)) {
+      setSelectedTaskId(workTaskOptions[0].task.id);
+    }
+  }, [mode, selectedTaskId, workTaskOptions]);
+
+  useEffect(() => {
+    if (unitsForSelectedSubject.length === 0) {
+      setSelectedUnitToAssignId("");
+      return;
+    }
+    const currentTaskUnitId = taskSubjectLinks.find(
+      (link) =>
+        link.subjectId === selectedSubjectSlot?.subjectId &&
+        link.taskId === taskForSelectedSlot?.id
+    )?.unitId;
+    const hasCurrentTaskUnit = Boolean(
+      currentTaskUnitId && unitsForSelectedSubject.some((unit) => unit.id === currentTaskUnitId)
+    );
+    if (
+      !unitsForSelectedSubject.some((unit) => unit.id === selectedUnitToAssignId) ||
+      (hasCurrentTaskUnit && selectedUnitToAssignId !== currentTaskUnitId)
+    ) {
+      const preferredUnitId = hasCurrentTaskUnit && currentTaskUnitId ? currentTaskUnitId : unitsForSelectedSubject[0].id;
+      setSelectedUnitToAssignId(preferredUnitId);
+    }
+  }, [
+    selectedSubjectSlot?.subjectId,
+    selectedUnitToAssignId,
+    taskForSelectedSlot?.id,
+    taskSubjectLinks,
+    unitsForSelectedSubject
+  ]);
+
+  useEffect(() => {
+    if (mode !== "attendance") {
+      return;
+    }
+    if (taskPickerOptions.length === 0) {
+      setSelectedTaskToAssignId("");
+      return;
+    }
+    const currentTaskId = taskForSelectedSlot?.id;
+    if (mode === "attendance" && currentTaskId && taskPickerOptions.some((task) => task.id === currentTaskId)) {
+      setSelectedTaskToAssignId(currentTaskId);
+      return;
+    }
+    if (!taskPickerOptions.some((task) => task.id === selectedTaskToAssignId)) {
+      setSelectedTaskToAssignId(taskPickerOptions[0].id);
+    }
+  }, [mode, selectedTaskToAssignId, taskForSelectedSlot?.id, taskPickerOptions]);
 
   useEffect(() => {
     if (selectedTaskSessionsForDay.length === 0) {
       setSelectedTaskSessionSlotId("");
       return;
     }
-    const exists = selectedTaskSessionsForDay.some((item) => item.scheduleSlotId === selectedTaskSessionSlotId);
+    const exists = selectedTaskSessionsForDay.some(
+      (item) =>
+        item.scheduleSlotId === selectedTaskSessionSlotId &&
+        (mode !== "work" || item.date === selectedDate)
+    );
     if (!exists) {
-      setSelectedTaskSessionSlotId(selectedTaskSessionsForDay[0].scheduleSlotId);
+      const firstSession = selectedTaskSessionsForDay[0];
+      setSelectedTaskSessionSlotId(firstSession.scheduleSlotId);
+      if (mode === "work" && selectedDate !== firstSession.date) {
+        setSelectedDate(firstSession.date);
+      }
     }
-  }, [selectedTaskSessionSlotId, selectedTaskSessionsForDay]);
+  }, [mode, selectedDate, selectedTaskSessionSlotId, selectedTaskSessionsForDay]);
 
   useEffect(() => {
-    if (!selectedTaskForDay || !selectedTaskSessionForDay) {
+    if (!selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay)) {
       setTaskGeneralCommentDraft("");
       setTaskStudentCommentDraft(new Map());
       setSelectedRubricTemplateId("");
@@ -623,28 +927,27 @@ export function AttendancePage() {
       setTaskDirty(false);
       return;
     }
-    const slotId = selectedTaskSessionForDay.scheduleSlotId;
+    const diaryDate = mode === "work" ? workDiaryDateKey : selectedDate;
+    const slotId = mode === "work" ? workDiarySlotId : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
     const setting =
       taskDailyEvaluationSettings.find(
         (item) =>
           item.taskId === selectedTaskForDay.id &&
-          item.date === selectedDate &&
+          item.date === diaryDate &&
           (item.scheduleSlotId ?? "") === slotId
       ) ?? null;
     const legacySetting =
       taskDailyEvaluationSettings.find(
-        (item) => item.taskId === selectedTaskForDay.id && item.date === selectedDate && !item.scheduleSlotId
+        (item) => item.taskId === selectedTaskForDay.id && item.date === diaryDate && !item.scheduleSlotId
       ) ?? null;
 
-    setTaskGeneralCommentDraft(
-      setting?.generalComment ?? legacySetting?.generalComment ?? selectedTaskForDay.generalComment ?? ""
-    );
+    setTaskGeneralCommentDraft(setting?.generalComment ?? legacySetting?.generalComment ?? "");
     const commentsMap = new Map<string, string>();
     let hasScopedComments = false;
     for (const row of taskStudentComments) {
       if (
         row.taskId === selectedTaskForDay.id &&
-        row.date === selectedDate &&
+        row.date === diaryDate &&
         (row.scheduleSlotId ?? "") === slotId
       ) {
         hasScopedComments = true;
@@ -660,18 +963,14 @@ export function AttendancePage() {
     }
     setTaskStudentCommentDraft(commentsMap);
 
-    const taskRubricId = selectedTaskForDay.rubricTemplateId ?? "";
-    const taskChecklistId = selectedTaskForDay.checklistTemplateId ?? "";
-    const loadedRubricId =
-      taskRubricId || setting?.rubricTemplateId || legacySetting?.rubricTemplateId || "";
-    const loadedChecklistId =
-      taskChecklistId || setting?.checklistTemplateId || legacySetting?.checklistTemplateId || "";
-    if (loadedRubricId) {
-      setSelectedRubricTemplateId(loadedRubricId);
+    const taskRubricId = selectedTaskGradebookConfig?.rubricTemplateId ?? "";
+    const taskChecklistId = selectedTaskGradebookConfig?.checklistTemplateId ?? "";
+    if (taskRubricId) {
+      setSelectedRubricTemplateId(taskRubricId);
       setSelectedChecklistTemplateId("");
-    } else if (loadedChecklistId) {
+    } else if (taskChecklistId) {
       setSelectedRubricTemplateId("");
-      setSelectedChecklistTemplateId(loadedChecklistId);
+      setSelectedChecklistTemplateId(taskChecklistId);
     } else {
       setSelectedRubricTemplateId("");
       setSelectedChecklistTemplateId("");
@@ -681,7 +980,7 @@ export function AttendancePage() {
     for (const row of taskRubricAssessments) {
       if (
         row.taskId !== selectedTaskForDay.id ||
-        row.date !== selectedDate ||
+        row.date !== diaryDate ||
         (row.scheduleSlotId ?? "") !== slotId
       ) {
         continue;
@@ -694,7 +993,7 @@ export function AttendancePage() {
     for (const row of taskChecklistAssessments) {
       if (
         row.taskId !== selectedTaskForDay.id ||
-        row.date !== selectedDate ||
+        row.date !== diaryDate ||
         (row.scheduleSlotId ?? "") !== slotId
       ) {
         continue;
@@ -706,15 +1005,38 @@ export function AttendancePage() {
     setTaskDirty(false);
   }, [
     selectedDate,
+    selectedTaskGradebookConfig,
     selectedTaskForDay,
     selectedTaskSessionForDay,
     taskChecklistAssessments,
     taskDailyEvaluationSettings,
     taskRubricAssessments,
-    taskStudentComments
+    taskStudentComments,
+    mode,
+    workDiaryDateKey,
+    workDiarySlotId
   ]);
 
-  const attendanceDirty = draftStatusByStudent.size > 0;
+  const attendanceDirty = draftStatusByStudent.size > 0 || draftNoteByStudent.size > 0;
+
+  const markTaskDirty = (): void => {
+    taskEditVersionRef.current += 1;
+    setTaskDirty(true);
+  };
+
+  const setDraftNote = (studentId: string, note: string): void => {
+    const existingNote = attendanceByStudent.get(studentId)?.note ?? "";
+    setDraftNoteByStudent((prev) => {
+      const next = new Map(prev);
+      if (note === existingNote) {
+        next.delete(studentId);
+      } else {
+        next.set(studentId, note);
+      }
+      return next;
+    });
+    setAttendanceNotice("");
+  };
 
   const setDraftStatus = (studentId: string, status: AttendanceEntry["status"]): void => {
     const baseStatus = baseStatusByStudent.get(studentId) ?? "present";
@@ -734,12 +1056,18 @@ export function AttendancePage() {
     if (!selectedSubjectSlot) {
       return false;
     }
+    if (attendanceAutoSaveTimerRef.current !== null) {
+      window.clearTimeout(attendanceAutoSaveTimerRef.current);
+      attendanceAutoSaveTimerRef.current = null;
+    }
+    const statusDraftSnapshot = new Map(draftStatusByStudent);
+    const noteDraftSnapshot = new Map(draftNoteByStudent);
     setIsSavingAttendance(true);
     try {
       for (const student of students) {
         const studentId = student.id;
         const status =
-          draftStatusByStudent.get(studentId) ??
+          statusDraftSnapshot.get(studentId) ??
           attendanceByStudent.get(studentId)?.status ??
           "present";
         const studentRecord = studentsById.get(studentId);
@@ -751,18 +1079,34 @@ export function AttendancePage() {
           id:
             existing?.id ??
             `att-${selectedSubjectSlot.subjectId}-${studentId}-${selectedDate}-${selectedSubjectSlot.slotId}`,
-          classId: studentRecord.classId,
+          classId: selectedSubjectSlot.classId,
           studentId,
           date: selectedDate,
           scheduleSlotId: selectedSubjectSlot.slotId,
           status,
-          note: existing?.note
+          note: noteDraftSnapshot.get(studentId) ?? existing?.note
         });
       }
-      setDraftStatusByStudent(new Map());
-      setAttendanceNotice("Asistencia guardada.");
+      setDraftStatusByStudent((current) => {
+        const next = new Map(current);
+        for (const [studentId, status] of statusDraftSnapshot) {
+          if (next.get(studentId) === status) {
+            next.delete(studentId);
+          }
+        }
+        return next;
+      });
+      setDraftNoteByStudent((current) => {
+        const next = new Map(current);
+        for (const [studentId, note] of noteDraftSnapshot) {
+          if (next.get(studentId) === note) {
+            next.delete(studentId);
+          }
+        }
+        return next;
+      });
+      setAttendanceNotice("Asistencia guardada automaticamente.");
       await loadData();
-      setCoverageVersion((current) => current + 1);
       return true;
     } finally {
       setIsSavingAttendance(false);
@@ -770,20 +1114,28 @@ export function AttendancePage() {
   };
 
   const saveTaskDiary = async (): Promise<boolean> => {
-    if (!selectedTaskForDay || !selectedTaskSessionForDay) {
+    if (!selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay)) {
       return false;
     }
+    if (taskAutoSaveTimerRef.current !== null) {
+      window.clearTimeout(taskAutoSaveTimerRef.current);
+      taskAutoSaveTimerRef.current = null;
+    }
 
+    const saveVersion = taskEditVersionRef.current;
     const taskId = selectedTaskForDay.id;
-    const scheduleSlotId = selectedTaskSessionForDay.scheduleSlotId;
+    const diaryDate = mode === "work" ? workDiaryDateKey : selectedDate;
+    const scheduleSlotId = mode === "work" ? workDiarySlotId : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
     const normalizedGeneralComment = taskGeneralCommentDraft.trim();
-    const effectiveRubricTemplateId = selectedRubricTemplateId || "";
-    const effectiveChecklistTemplateId = effectiveRubricTemplateId ? "" : selectedChecklistTemplateId || "";
+    const effectiveRubricTemplateId = selectedTaskGradebookConfig?.rubricTemplateId ?? "";
+    const effectiveChecklistTemplateId = effectiveRubricTemplateId
+      ? ""
+      : (selectedTaskGradebookConfig?.checklistTemplateId ?? "");
     const normalizedComments = taskStudents
       .map((student) => ({
         id: crypto.randomUUID(),
         taskId,
-        date: selectedDate,
+        date: diaryDate,
         scheduleSlotId,
         studentId: student.id,
         comment: (taskStudentCommentDraft.get(student.id) ?? "").trim()
@@ -803,7 +1155,7 @@ export function AttendancePage() {
         async () => {
           await db.taskStudentComments
             .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, selectedDate, scheduleSlotId])
+            .equals([taskId, diaryDate, scheduleSlotId])
             .delete();
           if (normalizedComments.length > 0) {
             await db.taskStudentComments.bulkAdd(normalizedComments);
@@ -811,13 +1163,13 @@ export function AttendancePage() {
 
           await db.taskDailyEvaluationSettings
             .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, selectedDate, scheduleSlotId])
+            .equals([taskId, diaryDate, scheduleSlotId])
             .delete();
           if (normalizedGeneralComment || effectiveRubricTemplateId || effectiveChecklistTemplateId) {
             await db.taskDailyEvaluationSettings.add({
-              id: `task-eval-${taskId}-${selectedDate}-${scheduleSlotId}`,
+              id: `task-eval-${taskId}-${diaryDate}-${scheduleSlotId}`,
               taskId,
-              date: selectedDate,
+              date: diaryDate,
               scheduleSlotId,
               generalComment: normalizedGeneralComment || undefined,
               rubricTemplateId: effectiveRubricTemplateId || undefined,
@@ -827,7 +1179,7 @@ export function AttendancePage() {
 
           await db.taskRubricAssessments
             .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, selectedDate, scheduleSlotId])
+            .equals([taskId, diaryDate, scheduleSlotId])
             .delete();
           if (effectiveRubricTemplateId && selectedRubricTemplate) {
             const rubricRows: TaskRubricAssessment[] = [];
@@ -842,7 +1194,7 @@ export function AttendancePage() {
                 rubricRows.push({
                   id: crypto.randomUUID(),
                   taskId,
-                  date: selectedDate,
+                  date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
                   rubricTemplateId: selectedRubricTemplate.id,
@@ -859,7 +1211,7 @@ export function AttendancePage() {
 
           await db.taskChecklistAssessments
             .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, selectedDate, scheduleSlotId])
+            .equals([taskId, diaryDate, scheduleSlotId])
             .delete();
           if (effectiveChecklistTemplateId && selectedChecklistTemplate) {
             const checklistRows: TaskChecklistAssessment[] = [];
@@ -871,7 +1223,7 @@ export function AttendancePage() {
                 checklistRows.push({
                   id: crypto.randomUUID(),
                   taskId,
-                  date: selectedDate,
+                  date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
                   checklistTemplateId: selectedChecklistTemplate.id,
@@ -887,13 +1239,85 @@ export function AttendancePage() {
         }
       );
 
-      setTaskDirty(false);
-      setTaskNotice("Registro de tarea guardado.");
-      await loadMetadata();
+      if (taskEditVersionRef.current === saveVersion) {
+        setTaskDirty(false);
+        setTaskNotice("Registro de tarea guardado automaticamente.");
+        await loadMetadata();
+      }
       return true;
     } finally {
       setIsSavingTask(false);
     }
+  };
+
+  const assignTaskToSelectedClass = async (taskId = selectedTaskToAssignId): Promise<void> => {
+    if (!selectedSubjectSlot || !taskId) {
+      return;
+    }
+    const occupied = taskSessionForSelectedSlot;
+    if (occupied && occupied.taskId !== taskId) {
+      await db.transaction(
+        "rw",
+        db.tables,
+        async () => {
+          await db.taskSessions.where("id").equals(occupied.id).delete();
+          await db.taskDailyEvaluationSettings
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
+            .delete();
+          await db.taskStudentComments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
+            .delete();
+          await db.taskRubricAssessments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
+            .delete();
+          await db.taskChecklistAssessments
+            .where("[taskId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
+            .delete();
+          await db.taskSessions.add({
+            id: crypto.randomUUID(),
+            taskId,
+            subjectId: selectedSubjectSlot.subjectId,
+            classId: selectedSubjectSlot.classId,
+            date: selectedDate,
+            scheduleSlotId: selectedSubjectSlot.slotId
+          });
+        }
+      );
+      setSelectedTaskId(taskId);
+      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
+      setTaskNotice("Tarea cambiada en esta hora.");
+      await loadMetadata();
+      return;
+    }
+    const duplicate = taskSessions.some(
+      (session) =>
+        session.taskId === taskId &&
+        session.classId === selectedSubjectSlot.classId &&
+        session.date === selectedDate &&
+        session.scheduleSlotId === selectedSubjectSlot.slotId
+    );
+    if (duplicate) {
+      setSelectedTaskId(taskId);
+      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
+      return;
+    }
+
+    await db.taskSessions.add({
+      id: crypto.randomUUID(),
+      taskId,
+      subjectId: selectedSubjectSlot.subjectId,
+      classId: selectedSubjectSlot.classId,
+      date: selectedDate,
+      scheduleSlotId: selectedSubjectSlot.slotId
+    });
+    setSelectedTaskId(taskId);
+    setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
+    setTaskNotice("Tarea asignada a la clase.");
+    await loadMetadata();
   };
 
   const hasUnsavedChanges = attendanceDirty || taskDirty;
@@ -903,181 +1327,408 @@ export function AttendancePage() {
       action();
       return;
     }
-    pendingContextChangeRef.current = action;
-    setShowUnsavedModal(true);
+    void (async () => {
+      const attendanceSaved = attendanceDirty ? await saveAttendance() : true;
+      if (!attendanceSaved) {
+        return;
+      }
+      const taskSaved = taskDirty ? await saveTaskDiary() : true;
+      if (!taskSaved) {
+        return;
+      }
+      action();
+    })();
   };
 
-  useUnsavedChangesGuard(hasUnsavedChanges);
+  useEffect(() => {
+    if (!attendanceDirty || !selectedSubjectSlot || isSavingAttendance) {
+      return;
+    }
+    if (attendanceAutoSaveTimerRef.current !== null) {
+      window.clearTimeout(attendanceAutoSaveTimerRef.current);
+    }
+    attendanceAutoSaveTimerRef.current = window.setTimeout(() => {
+      attendanceAutoSaveTimerRef.current = null;
+      void saveAttendance();
+    }, 600);
+    return () => {
+      if (attendanceAutoSaveTimerRef.current !== null) {
+        window.clearTimeout(attendanceAutoSaveTimerRef.current);
+        attendanceAutoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    attendanceDirty,
+    draftNoteByStudent,
+    draftStatusByStudent,
+    isSavingAttendance,
+    selectedDate,
+    selectedSubjectSlot?.key
+  ]);
 
-  const calendarCells = useMemo(() => monthGrid(calendarMonth), [calendarMonth]);
+  useEffect(() => {
+    if (!taskDirty || !selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay) || isSavingTask) {
+      return;
+    }
+    if (taskAutoSaveTimerRef.current !== null) {
+      window.clearTimeout(taskAutoSaveTimerRef.current);
+    }
+    taskAutoSaveTimerRef.current = window.setTimeout(() => {
+      taskAutoSaveTimerRef.current = null;
+      void saveTaskDiary();
+    }, 700);
+    return () => {
+      if (taskAutoSaveTimerRef.current !== null) {
+        window.clearTimeout(taskAutoSaveTimerRef.current);
+        taskAutoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    isSavingTask,
+    mode,
+    selectedDate,
+    selectedTaskForDay?.id,
+    selectedTaskSessionForDay?.scheduleSlotId,
+    taskChecklistDraft,
+    taskDirty,
+    taskGeneralCommentDraft,
+    taskRubricDraft,
+    taskStudentCommentDraft,
+    workDiaryDateKey
+  ]);
+
+  const calendarCells = useMemo(() => monthGrid(calendarMonth, weekStartsOn), [calendarMonth, weekStartsOn]);
+  const calendarWeekdayLabels = useMemo(() => weekdayLabels(weekStartsOn), [weekStartsOn]);
+  const renderStudentCommentInput = (student: Student) => (
+    <textarea
+      className="input"
+      value={taskStudentCommentDraft.get(student.id) ?? ""}
+      placeholder="Comentario individual"
+      onChange={(event) => {
+        const value = event.target.value;
+        setTaskStudentCommentDraft((current) => {
+          const next = new Map(current);
+          if (value.trim().length === 0) {
+            next.delete(student.id);
+          } else {
+            next.set(student.id, value);
+          }
+          return next;
+        });
+        setTaskNotice("");
+        markTaskDirty();
+      }}
+    />
+  );
+  const savePendingWorkChanges = async (): Promise<void> => {
+    if (attendanceDirty) {
+      await saveAttendance();
+    }
+    if (taskDirty) {
+      await saveTaskDiary();
+    }
+  };
 
   return (
     <section className="module-card">
-      <h2>Diario</h2>
-
       <div className="courses-layout">
         <aside className="courses-list-panel">
-          <div className="attendance-day-nav">
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="Dia anterior"
-              onClick={() => {
-                runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, -1)));
-              }}
-            >
-              {"<"}
-            </button>
-            <div className="attendance-day-nav-center">
-              <strong>{selectedDayName}</strong>
-              <small>{selectedDate}</small>
-            </div>
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="Dia siguiente"
-              onClick={() => {
-                runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, 1)));
-              }}
-            >
-              {">"}
-            </button>
-          </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Horas de la asignatura">
-            {subjectSlotsForDate.map((slot) => (
-              <button
-                key={slot.key}
-                type="button"
-                role="tab"
-                aria-selected={selectedSlotKey === slot.key}
-                className={`section-tab ${selectedSlotKey === slot.key ? "active" : ""}`}
-                onClick={() => {
-                  runWithContextGuard(() => {
-                    setSelectedSlotKey(slot.key);
-                  });
-                }}
-              >
-                <span>{slot.subjectName}</span>
-                <small>
-                  {slot.startTime} - {slot.endTime}
-                </small>
-              </button>
-            ))}
-            {subjectSlotsForDate.length === 0 ? (
-              <p className="hint">No hay horas para la asignatura seleccionada en este dia.</p>
-            ) : null}
-          </div>
-          <section className="attendance-calendar">
-            <div className="attendance-calendar-header">
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Mes anterior"
-                onClick={() => setCalendarMonth((current) => addMonths(current, -1))}
-              >
-                {"<"}
-              </button>
-              <strong>
-                {MONTH_LABELS[calendarMonth.getMonth()]} {calendarMonth.getFullYear()}
-              </strong>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Mes siguiente"
-                onClick={() => setCalendarMonth((current) => addMonths(current, 1))}
-              >
-                {">"}
-              </button>
-            </div>
-            <div className="attendance-calendar-grid" role="grid" aria-label="Calendario de asistencia">
-              {WEEKDAY_LABELS.map((item) => (
-                <span key={item} className="attendance-calendar-weekday">
-                  {item}
-                </span>
-              ))}
-              {calendarCells.map((cell) => {
-                const iso = toIsoDate(cell.date);
-                const expectedCount = attendanceExpectedByDate.get(iso) ?? 0;
-                const isClassDay = expectedCount > 0;
-                const entriesCount = attendanceRecordedByDate.get(iso) ?? 0;
-                const isFuture = iso > today;
-                const isToday = iso === today;
-                const isDone = isClassDay && entriesCount >= expectedCount;
-                const isMissing =
-                  isClassDay && !isFuture && entriesCount === 0;
-                const isPartial =
-                  isClassDay &&
-                  !isFuture &&
-                  entriesCount > 0 &&
-                  entriesCount < expectedCount;
-                const isSelected = selectedDate === iso;
-                return (
+          {mode === "attendance" ? (
+            <>
+              <section className="attendance-calendar">
+                <div className="attendance-calendar-header">
                   <button
-                    key={iso}
                     type="button"
-                    className={`attendance-calendar-day ${cell.inMonth ? "" : "outside"} ${
-                      isDone ? "done" : isMissing ? "missing" : isPartial ? "partial" : ""
-                    } ${isSelected ? "selected" : ""} ${isToday ? "today" : ""}`}
+                    className="icon-btn"
+                    aria-label="Mes anterior"
+                    onClick={() => setCalendarMonth((current) => addMonths(current, -1))}
+                  >
+                    {"<"}
+                  </button>
+                  <strong>
+                    {MONTH_LABELS[calendarMonth.getMonth()]} {calendarMonth.getFullYear()}
+                  </strong>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Mes siguiente"
+                    onClick={() => setCalendarMonth((current) => addMonths(current, 1))}
+                  >
+                    {">"}
+                  </button>
+                </div>
+                <div className="attendance-calendar-grid" role="grid" aria-label="Calendario de asistencia">
+                  {calendarWeekdayLabels.map((item) => (
+                    <span key={item} className="attendance-calendar-weekday">
+                      {item}
+                    </span>
+                  ))}
+                  {calendarCells.map((cell) => {
+                    const iso = toIsoDate(cell.date);
+                    const isToday = iso === today;
+                    const isSelected = selectedDate === iso;
+                    return (
+                      <button
+                        key={iso}
+                        type="button"
+                        className={`attendance-calendar-day ${cell.inMonth ? "" : "outside"} ${
+                          isSelected ? "selected" : ""
+                        } ${isToday ? "today" : ""}`}
+                        onClick={() => {
+                          runWithContextGuard(() => setSelectedDate(iso));
+                        }}
+                      >
+                        {cell.date.getDate()}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="attendance-calendar-legend">
+                  <span className="attendance-dot today">Hoy</span>
+                </div>
+              </section>
+              <div className="attendance-day-nav">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Día anterior"
+                  onClick={() => {
+                    runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, -1)));
+                  }}
+                >
+                  {"<"}
+                </button>
+                <div className="attendance-day-nav-center">
+                  <strong>{selectedDayName}</strong>
+                  <small>{selectedDate}</small>
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Día siguiente"
+                  onClick={() => {
+                    runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, 1)));
+                  }}
+                >
+                  {">"}
+                </button>
+              </div>
+              <div className="courses-list-header">
+                <strong>Clases del día</strong>
+              </div>
+              <div className="courses-list section-tabs" role="tablist" aria-label="Clases del día">
+                {subjectSlotsForDate.map((slot) => (
+                  <button
+                    key={slot.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedSlotKey === slot.key}
+                    className={`section-tab ${selectedSlotKey === slot.key ? "active" : ""}`}
                     onClick={() => {
-                      runWithContextGuard(() => setSelectedDate(iso));
+                      runWithContextGuard(() => {
+                        setSelectedSlotKey(slot.key);
+                      });
                     }}
                   >
-                    {cell.date.getDate()}
+                    <span>{slot.subjectName}</span>
+                    <small>
+                      {taskTitleByClassSlot.get(`${slot.classId}:${slot.slotId}`) ?? "Sin unidad / Sin tarea"}
+                    </small>
+                    <small>
+                      {slot.className} · {slot.startTime} - {slot.endTime}
+                    </small>
                   </button>
-                );
-              })}
-            </div>
-            <div className="attendance-calendar-legend">
-              <span className="attendance-dot today">Hoy</span>
-              <span className="attendance-dot done">Lista pasada</span>
-              <span className="attendance-dot partial">Parcial</span>
-              <span className="attendance-dot missing">Sin pasar lista</span>
-            </div>
-          </section>
+                ))}
+                {subjectSlotsForDate.length === 0 ? (
+                  <p className="hint">No hay clases programadas para este día.</p>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="context-sidebar-tabs">
+                <div className="context-sidebar-group">
+                  <strong>Curso</strong>
+                  {classGroups.length > 0 ? (
+                    <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Curso">
+                      {classGroups.map((classGroup) => (
+                        <button
+                          key={classGroup.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={selectedClassId === classGroup.id}
+                          className={`section-tab ${selectedClassId === classGroup.id ? "active" : ""}`}
+                          onClick={async () => {
+                            await savePendingWorkChanges();
+                            dispatch(setSelectedClass(classGroup.id));
+                          }}
+                        >
+                          <span>{classGroup.name || "Curso sin nombre"}</span>
+                          <small>{classGroup.schoolYear}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="hint">No hay cursos creados.</p>
+                  )}
+                </div>
+
+                {selectedClassId ? (
+                  <>
+                    <div className="context-sidebar-separator" aria-hidden="true" />
+                    <div className="context-sidebar-group">
+                      <strong>Asignatura</strong>
+                      {workSubjects.length > 0 ? (
+                        <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Asignatura">
+                          {workSubjects.map((subject) => (
+                            <button
+                              key={subject.id}
+                              type="button"
+                              role="tab"
+                              aria-selected={selectedSubjectId === subject.id}
+                              className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
+                              onClick={async () => {
+                                await savePendingWorkChanges();
+                                dispatch(setSelectedSubject(subject.id));
+                              }}
+                            >
+                              <span>{subject.name || "Asignatura sin nombre"}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="hint">No hay asignaturas asociadas a este curso.</p>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              {selectedSubjectId ? (
+                <div className="context-sidebar-tabs">
+                  <div className="context-sidebar-separator" aria-hidden="true" />
+                  <div className="context-sidebar-group">
+                    <strong>Unidades</strong>
+                    {workUnits.length > 0 ? (
+                      <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Unidades">
+                        {workUnits.map((unit) => (
+                          <button
+                            key={unit.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={selectedWorkUnitId === unit.id}
+                            className={`section-tab ${selectedWorkUnitId === unit.id ? "active" : ""}`}
+                            onClick={async () => {
+                              await savePendingWorkChanges();
+                              setSelectedWorkUnitId(unit.id);
+                            }}
+                          >
+                            <span>{unit.name || "Unidad sin nombre"}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="hint">No hay unidades creadas para esta asignatura.</p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              <div className="courses-list-header">
+                <strong>Tareas</strong>
+              </div>
+              <div className="courses-list section-tabs" role="tablist" aria-label="Listado de tareas">
+                {workTaskOptions.map(({ task, unitName, sessionCount }) => (
+                  <div key={task.id} className="courses-list-row">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedTaskId === task.id}
+                      className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
+                      onClick={() => {
+                        runWithContextGuard(() => setSelectedTaskId(task.id));
+                      }}
+                    >
+                      <span>{task.title || "Tarea sin título"}</span>
+                      <small>{unitName}</small>
+                      <small>{sessionCount} sesiones</small>
+                    </button>
+                  </div>
+                ))}
+                {workTaskOptions.length === 0 ? (
+                  <p className="hint">
+                    {selectedWorkUnitId ? "No hay tareas en esta unidad." : "Selecciona una unidad."}
+                  </p>
+                ) : null}
+              </div>
+            </>
+          )}
         </aside>
 
         <section className="course-detail-panel">
-          <div className="evaluation-tool-buttons" aria-label="Tabs del diario">
-            <button
-              type="button"
-              className={`btn secondary ${activeDiaryTab === "attendance" ? "active" : ""}`}
-              onClick={() => runWithContextGuard(() => setActiveDiaryTab("attendance"))}
-            >
-              Asistencia
-            </button>
-            <button
-              type="button"
-              className={`btn secondary ${activeDiaryTab === "tasks" ? "active" : ""}`}
-              onClick={() => runWithContextGuard(() => setActiveDiaryTab("tasks"))}
-            >
-              Tareas
-            </button>
-          </div>
-
-          {activeDiaryTab === "attendance" ? (
+          {mode === "attendance" ? (
             selectedSubjectSlot ? (
             <>
-              <div className="course-detail-header">
+              <div className="course-detail-header compact-hour-header">
                 <div>
                   <h4>{selectedSubjectSlot.subjectName}</h4>
                   <p>
+                    {selectedSubjectSlot.className}{" · "}
                     {selectedSubjectSlot.dayName} · {selectedSubjectSlot.startTime} - {selectedSubjectSlot.endTime}
                   </p>
                 </div>
               </div>
 
-              <div className="actions-cell" style={{ marginBottom: 8 }}>
-                <IconButton
-                  icon="save"
-                  label="Guardar asistencia"
-                  className={attendanceDirty ? "save-attention" : ""}
-                  disabled={isSavingAttendance}
-                  onClick={async () => {
-                    await saveAttendance();
-                  }}
-                />
-              </div>
+              {isSavingAttendance ? <p className="hint">Guardando asistencia...</p> : null}
               {attendanceNotice ? <p className="hint">{attendanceNotice}</p> : null}
+              <section className="detail-section diary-work-section">
+                <h5>Trabajo realizado en esta hora</h5>
+                <div className="diary-task-picker">
+                  <label className="diary-inline-select">
+                    <span>Unidad:</span>
+                    <select
+                      className="input"
+                      value={selectedUnitToAssignId}
+                      disabled={unitsForSelectedSubject.length === 0}
+                      onChange={(event) => setSelectedUnitToAssignId(event.target.value)}
+                    >
+                      {unitsForSelectedSubject.map((unit) => (
+                        <option key={unit.id} value={unit.id}>
+                            {unit.name || "Unidad sin título"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="diary-inline-select">
+                    <span>Tarea:</span>
+                    <select
+                      className="input"
+                      value={selectedTaskToAssignId}
+                      disabled={availableTasksToAssign.length === 0}
+                      onChange={(event) => {
+                        const taskId = event.target.value;
+                        setSelectedTaskToAssignId(taskId);
+                        runWithContextGuard(() => {
+                          void assignTaskToSelectedClass(taskId);
+                        });
+                      }}
+                    >
+                      {availableTasksToAssign.map((task) => (
+                        <option key={task.id} value={task.id}>
+                          {task.title || "Tarea sin título"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {availableTasksToAssign.length === 0 ? (
+                  <p className="hint">
+                    {unitsForSelectedSubject.length === 0
+                      ? "No hay unidades para esta asignatura."
+                      : taskForSelectedSlot
+                      ? "No hay otras tareas disponibles para esta asignatura y hora."
+                      : "No hay tareas disponibles para esta asignatura y hora."}
+                  </p>
+                ) : null}
+              </section>
               <div className="table-scroll">
                 <table>
                   <thead>
@@ -1094,7 +1745,7 @@ export function AttendancePage() {
 
                       return (
                         <tr key={student.id}>
-                          <td>{getStudentFullName(student)}</td>
+                          <td>{formatName(student)}</td>
                           <td>
                             <select
                               className="status-select"
@@ -1108,7 +1759,19 @@ export function AttendancePage() {
                               <option value="absent">Ausente</option>
                             </select>
                           </td>
-                          <td>{entry?.note ?? statusLabel(status)}</td>
+                          <td>
+                            <input
+                              type="text"
+                              className="attendance-note-input"
+                              value={
+                                draftNoteByStudent.has(student.id)
+                                  ? (draftNoteByStudent.get(student.id) ?? "")
+                                  : (entry?.note ?? "")
+                              }
+                              placeholder={statusLabel(status)}
+                              onChange={(event) => setDraftNote(student.id, event.target.value)}
+                            />
+                          </td>
                         </tr>
                       );
                     })}
@@ -1122,75 +1785,47 @@ export function AttendancePage() {
               </div>
             </>
           ) : (
-            <p>Selecciona una combinacion de asignatura y hora para pasar lista.</p>
+            <p>Selecciona una clase del día para pasar lista.</p>
           )
           ) : (
             <>
-              <div className="course-detail-header">
-                <h4>Tareas del {selectedDate}</h4>
-              </div>
+              {!selectedClassId || !selectedSubjectId ? (
+                <p className="hint">Selecciona curso y asignatura para revisar el trabajo.</p>
+              ) : null}
 
-              <div className="courses-list section-tabs" role="tablist" aria-label="Tareas del día">
-                {tasksForSelectedDate.map((item) => (
-                  <button
-                    key={item.task.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={selectedTaskId === item.task.id}
-                    className={`section-tab ${selectedTaskId === item.task.id ? "active" : ""}`}
-                    onClick={() => runWithContextGuard(() => setSelectedTaskId(item.task.id))}
-                  >
-                    <span>{item.task.title || "Tarea sin título"}</span>
-                    <small>{subjectById.get(item.task.subjectId)?.name ?? "-"}</small>
-                    <small>
-                      {item.sessions
-                        .map((session) => slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
-                        .join(" · ")}
-                    </small>
-                  </button>
-                ))}
-                {tasksForSelectedDate.length === 0 ? (
-                  <p className="hint">No hay tareas programadas para este día.</p>
-                ) : null}
-              </div>
-
-              {selectedTaskForDay ? (
+              {selectedClassId && selectedSubjectId && selectedTaskForDay ? (
                 <>
-                  <section className="detail-section">
-                    <h5>Hora de la tarea</h5>
-                    <div className="inline-form">
-                      <select
-                        className="input"
-                        value={selectedTaskSessionSlotId}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          runWithContextGuard(() => setSelectedTaskSessionSlotId(value));
-                        }}
-                      >
-                        {selectedTaskSessionsForDay.map((session) => (
-                          <option key={`${session.scheduleSlotId}:${session.id}`} value={session.scheduleSlotId}>
-                            {slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </section>
-
-                  <div className="actions-cell" style={{ marginTop: 8, marginBottom: 8 }}>
-                    <IconButton
-                      icon="save"
-                      label="Guardar registro de tarea"
-                      className={taskDirty ? "save-attention" : ""}
-                      disabled={isSavingTask || !taskDirty || !selectedTaskSessionForDay}
-                      onClick={async () => {
-                        await saveTaskDiary();
-                      }}
-                    />
-                  </div>
+                  {isSavingTask ? <p className="hint">Guardando registro de tarea...</p> : null}
                   {taskNotice ? <p className="hint">{taskNotice}</p> : null}
 
                   <section className="detail-section">
-                    <h5>Comentario general (tarea + hora)</h5>
+                    <h5>Horas de la tarea</h5>
+                    {workTaskSessions.length > 0 ? (
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Fecha</th>
+                              <th>Hora</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {workTaskSessions.map((session) => (
+                              <tr key={session.id}>
+                                <td>{session.date}</td>
+                                <td>{slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="hint">No hay horas registradas para esta tarea.</p>
+                    )}
+                  </section>
+
+                  <section className="detail-section">
+                    <h5>Comentario general</h5>
                     <textarea
                       className="input"
                       value={taskGeneralCommentDraft}
@@ -1198,61 +1833,44 @@ export function AttendancePage() {
                       onChange={(event) => {
                         setTaskGeneralCommentDraft(event.target.value);
                         setTaskNotice("");
-                        setTaskDirty(true);
+                        markTaskDirty();
                       }}
                     />
                   </section>
 
-                  <section className="detail-section">
-                    <h5>Comentarios por alumno (tarea + hora)</h5>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Alumno</th>
-                            <th>Comentario</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {taskStudents.map((student) => (
-                            <tr key={student.id}>
-                              <td>{getStudentFullName(student)}</td>
-                              <td>
-                                <textarea
-                                  className="input"
-                                  value={taskStudentCommentDraft.get(student.id) ?? ""}
-                                  placeholder="Comentario individual"
-                                  onChange={(event) => {
-                                    const value = event.target.value;
-                                    setTaskStudentCommentDraft((current) => {
-                                      const next = new Map(current);
-                                      if (value.trim().length === 0) {
-                                        next.delete(student.id);
-                                      } else {
-                                        next.set(student.id, value);
-                                      }
-                                      return next;
-                                    });
-                                    setTaskNotice("");
-                                    setTaskDirty(true);
-                                  }}
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                          {taskStudents.length === 0 ? (
+                  {!selectedRubricTemplate && !selectedChecklistTemplate ? (
+                    <section className="detail-section">
+                      <h5>Comentarios por alumno</h5>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
                             <tr>
-                              <td colSpan={2}>No hay alumnos asociados a esta tarea.</td>
+                              <th>Alumno</th>
+                              <th>Comentario</th>
                             </tr>
-                          ) : null}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                          </thead>
+                          <tbody>
+                            {taskStudents.map((student) => (
+                              <tr key={student.id}>
+                                <td>{formatName(student)}</td>
+                                <td>{renderStudentCommentInput(student)}</td>
+                              </tr>
+                            ))}
+                            {taskStudents.length === 0 ? (
+                              <tr>
+                                <td colSpan={2}>No hay alumnos asociados a esta tarea.</td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  ) : null}
 
-                  {!taskHasFixedChecklist ? (
+                  {selectedRubricTemplate ? (
                     <section className="detail-section">
                       <h5>Rúbrica</h5>
+                      {false ? (
                       <div className="inline-form">
                         <select
                           className="input"
@@ -1265,7 +1883,7 @@ export function AttendancePage() {
                               setSelectedChecklistTemplateId("");
                             }
                             setTaskNotice("");
-                            setTaskDirty(true);
+                            markTaskDirty();
                           }}
                         >
                           <option value="">Sin rúbrica</option>
@@ -1276,12 +1894,14 @@ export function AttendancePage() {
                           ))}
                         </select>
                       </div>
+                      ) : null}
                       {selectedRubricTemplate ? (
                         <div className="table-scroll">
                           <table>
                             <thead>
                               <tr>
                                 <th>Alumno</th>
+                                <th>Comentario</th>
                                 {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
                                   <th key={criterion.id}>{criterion.name}</th>
                                 ))}
@@ -1290,7 +1910,8 @@ export function AttendancePage() {
                             <tbody>
                               {taskStudents.map((student) => (
                                 <tr key={student.id}>
-                                  <td>{getStudentFullName(student)}</td>
+                                  <td>{formatName(student)}</td>
+                                  <td>{renderStudentCommentInput(student)}</td>
                                   {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
                                     <td key={`${student.id}:${criterion.id}`}>
                                       <select
@@ -1308,13 +1929,13 @@ export function AttendancePage() {
                                             return next;
                                           });
                                           setTaskNotice("");
-                                          setTaskDirty(true);
+                                          markTaskDirty();
                                         }}
                                       >
                                         <option value="">-</option>
                                         {(criterion.levels ?? []).map((level) => (
                                           <option key={level.id} value={level.id}>
-                                            {level.name} ({level.score})
+                                            {level.name} · {level.score} puntos
                                           </option>
                                         ))}
                                       </select>
@@ -1331,9 +1952,10 @@ export function AttendancePage() {
                     </section>
                   ) : null}
 
-                  {!taskHasFixedRubric ? (
+                  {selectedChecklistTemplate ? (
                     <section className="detail-section">
                       <h5>Lista de cotejo</h5>
+                      {false ? (
                       <div className="inline-form">
                         <select
                           className="input"
@@ -1346,7 +1968,7 @@ export function AttendancePage() {
                               setSelectedRubricTemplateId("");
                             }
                             setTaskNotice("");
-                            setTaskDirty(true);
+                            markTaskDirty();
                           }}
                         >
                           <option value="">Sin lista de cotejo</option>
@@ -1357,12 +1979,14 @@ export function AttendancePage() {
                           ))}
                         </select>
                       </div>
+                      ) : null}
                       {selectedChecklistTemplate ? (
                         <div className="table-scroll">
                           <table>
                             <thead>
                               <tr>
                                 <th>Alumno</th>
+                                <th>Comentario</th>
                                 {(selectedChecklistTemplate.items ?? []).map((item) => (
                                   <th key={item.id}>{item.text}</th>
                                 ))}
@@ -1371,7 +1995,8 @@ export function AttendancePage() {
                             <tbody>
                               {taskStudents.map((student) => (
                                 <tr key={student.id}>
-                                  <td>{getStudentFullName(student)}</td>
+                                  <td>{formatName(student)}</td>
+                                  <td>{renderStudentCommentInput(student)}</td>
                                   {(selectedChecklistTemplate.items ?? []).map((item) => (
                                     <td key={`${student.id}:${item.id}`}>
                                       <input
@@ -1389,7 +2014,7 @@ export function AttendancePage() {
                                             return next;
                                           });
                                           setTaskNotice("");
-                                          setTaskDirty(true);
+                                          markTaskDirty();
                                         }}
                                       />
                                     </td>
@@ -1405,88 +2030,27 @@ export function AttendancePage() {
                     </section>
                   ) : null}
 
-                  <p className="hint">
-                    Sesiones del día:{" "}
-                    {selectedTaskSessionsForDay
-                      .map((session) => slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId)
-                      .join(" · ") || "-"}
-                  </p>
-                  <p className="hint">
-                    Hora activa:{" "}
-                    {selectedTaskSessionForDay
-                      ? slotTimeLabelById.get(selectedTaskSessionForDay.scheduleSlotId) ??
-                        selectedTaskSessionForDay.scheduleSlotId
-                      : "-"}
-                  </p>
+                  {!taskHasAssignedInstrument ? (
+                    <p className="hint">
+                      Esta tarea no tiene rúbrica ni lista de cotejo asignada. Asigna el instrumento en Tareas.
+                    </p>
+                  ) : null}
+
+                  {false && !taskHasAssignedInstrument ? (
+                    <p className="hint">
+            Esta tarea no tiene rúbrica ni lista de cotejo asignada. Asigna el instrumento en Tareas.
+                    </p>
+                  ) : null}
+
                 </>
               ) : (
                 <p>Selecciona una tarea para registrar comentarios y evaluación.</p>
               )}
             </>
           )}
+
         </section>
       </div>
-
-      <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => {
-          setShowUnsavedModal(false);
-          pendingContextChangeRef.current = null;
-        }}
-      >
-        <p>Tienes cambios sin guardar en Diario.</p>
-        <div className="inline-form">
-          <button
-            type="button"
-            className="btn secondary"
-            onClick={() => {
-              setShowUnsavedModal(false);
-              pendingContextChangeRef.current = null;
-            }}
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            onClick={() => {
-              setDraftStatusByStudent(new Map());
-              setAttendanceNotice("");
-              setTaskDirty(false);
-              setTaskNotice("");
-              void loadMetadata();
-              setShowUnsavedModal(false);
-              const action = pendingContextChangeRef.current;
-              pendingContextChangeRef.current = null;
-              action?.();
-            }}
-          >
-            Descartar y continuar
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={isSavingAttendance || isSavingTask}
-            onClick={async () => {
-              const attendanceSaved = attendanceDirty ? await saveAttendance() : true;
-              if (!attendanceSaved) {
-                return;
-              }
-              const taskSaved = taskDirty ? await saveTaskDiary() : true;
-              if (!taskSaved) {
-                return;
-              }
-              setShowUnsavedModal(false);
-              const action = pendingContextChangeRef.current;
-              pendingContextChangeRef.current = null;
-              action?.();
-            }}
-          >
-            Guardar y continuar
-          </button>
-        </div>
-      </Modal>
     </section>
   );
 }

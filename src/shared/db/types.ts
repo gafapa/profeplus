@@ -10,16 +10,16 @@ export type UnitBlock = {
   subjectId: string;
   name: string;
   description: string;
-  startDate: string;
-  endDate: string;
   sessionCount: number;
   position: number;
 };
+
 
 export type ScheduleBlock = {
   id: string;
   startTime: string;
   endTime: string;
+  isBreak?: boolean;
 };
 
 export type ScheduleDay = {
@@ -35,12 +35,16 @@ export type ScheduleSettings = {
   defaultBlockDurationMinutes: number;
 };
 
+export type AppPreferences = {
+  id: string;
+  studentSortBy: "lastName" | "firstName";
+  studentNameFormat: "firstLast" | "lastFirst";
+  weekStartsOn: "monday" | "sunday";
+};
+
 export type ClassGroup = {
   id: string;
   name: string;
-  courseId?: string;
-  subjectId?: string;
-  section?: string;
   level: string;
   schoolYear: string;
   comments?: string;
@@ -52,6 +56,7 @@ export type Student = {
   firstName: string;
   lastName: string;
   fullName: string;
+  comments?: string;
   photoDataUrl?: string;
   email?: string;
 };
@@ -59,7 +64,7 @@ export type Student = {
 export type Assessment = {
   id: string;
   classId: string;
-  subjectId?: string;
+  subjectId: string;
   title: string;
   weight: number;
   period: string;
@@ -101,24 +106,38 @@ export type LessonPlan = {
   status?: "planned" | "taught";
 };
 
+/** Reusable task definition. Subject, unit, and gradebook settings live in related tables. */
 export type Task = {
   id: string;
-  subjectId: string;
-  unitId?: string;
   title: string;
   description: string;
+  sessionCount: number;
   sendToGradebook: boolean;
-  gradebookWeight?: number;
+};
+
+/** Links a task to a subject and optionally to a unit. */
+export type TaskSubjectLink = {
+  id: string;
+  taskId: string;
+  subjectId: string;
+  unitId?: string;
+};
+
+export type TaskGradebookConfig = {
+  id: string;
+  taskId: string;
+  subjectId: string;
+  classId: string;
+  gradebookWeight: number;
   groupId?: string;
   rubricTemplateId?: string;
   checklistTemplateId?: string;
-  generalComment?: string;
 };
 
 export type GradebookGroup = {
   id: string;
   classId: string;
-  subjectId?: string;
+  subjectId: string;
   name: string;
   parentId?: string;
   position: number;
@@ -129,6 +148,8 @@ export type TaskSession = {
   id: string;
   taskId: string;
   subjectId: string;
+  /** Curso para el que se planifica esta sesión (la misma tarea puede tener sesiones distintas por curso). */
+  classId: string;
   date: string;
   scheduleSlotId: string;
 };
@@ -224,11 +245,4 @@ export type SubjectStudentLink = {
   id: string;
   subjectId: string;
   studentId: string;
-};
-
-export type SubjectStudentOverride = {
-  id: string;
-  subjectId: string;
-  studentId: string;
-  included: boolean;
 };

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAppSelector } from "../../app/hooks";
 import { db } from "../../shared/db/database";
 import type { ChecklistItem, ChecklistTemplate } from "../../shared/db/types";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { generateAiText } from "../../shared/ai/extensionRuntime";
 
 const AI_GENERATION_TIMEOUT_MS = 180000;
 const CHECKLIST_AI_LOG_PREFIX = "[ChecklistAI]";
@@ -38,12 +39,9 @@ function normalizeChecklist(template: ChecklistTemplate): ChecklistTemplate {
   };
 }
 
-function logChecklistAI(step: string, meta?: Record<string, unknown>): void {
-  if (meta) {
-    console.log(`${CHECKLIST_AI_LOG_PREFIX} ${step}`, meta);
-    return;
-  }
-  console.log(`${CHECKLIST_AI_LOG_PREFIX} ${step}`);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function logChecklistAI(_step: string, _meta?: Record<string, unknown>): void {
+  // no-op in production
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -151,53 +149,6 @@ function parseFirstJsonObject(raw: string): GeneratedChecklist | null {
   return null;
 }
 
-function extractMessageText(response: any): string {
-  const content = response?.choices?.[0]?.message?.content ?? response?.choices?.[0]?.delta?.content ?? "";
-  const normalize = (input: unknown): string => {
-    if (typeof input === "string") {
-      return input;
-    }
-    if (Array.isArray(input)) {
-      return input
-        .map((item) => {
-          if (typeof item === "string") {
-            return item;
-          }
-          if (!item || typeof item !== "object") {
-            return "";
-          }
-          const typed = item as Record<string, unknown>;
-          const itemType = String(typed.type ?? "");
-          if (itemType.toLowerCase().includes("reason")) {
-            return "";
-          }
-          if (typeof typed.text === "string") {
-            return typed.text;
-          }
-          return "";
-        })
-        .join("");
-    }
-    if (input && typeof input === "object") {
-      const obj = input as Record<string, unknown>;
-      if (typeof obj.text === "string") {
-        return obj.text;
-      }
-    }
-    return String(input ?? "");
-  };
-
-  const primaryText = normalize(content);
-  const reasoningText =
-    normalize(response?.choices?.[0]?.message?.reasoning_content) ||
-    normalize(response?.choices?.[0]?.delta?.reasoning_content);
-
-  if (primaryText.trim().length > 0) {
-    return primaryText;
-  }
-  return reasoningText;
-}
-
 function toChecklistItems(rawItems: unknown): ChecklistItem[] {
   if (!Array.isArray(rawItems)) {
     return [];
@@ -262,7 +213,6 @@ function buildFallbackChecklist(theme: string): {
 }
 
 export function ChecklistsSection({ selectedClassId, onDirtyChange }: ChecklistsSectionProps) {
-  const aiModel = useAppSelector((state) => state.app.aiModel);
   const [templates, setTemplates] = useState<ChecklistTemplate[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState("");
   const [checklistDirty, setChecklistDirty] = useState(false);
@@ -275,12 +225,8 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
   const [aiStatus, setAiStatus] = useState("");
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
-  const [isModelLoadingOpen, setIsModelLoadingOpen] = useState(false);
-  const [modelLoadStatus, setModelLoadStatus] = useState("Preparando modelo...");
-  const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [showUnsavedModal, setShowUnsavedModal] = useState(false);
 
-  const engineRef = useRef<any>(null);
   const pendingChecklistActionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   const loadTemplates = async (): Promise<void> => {
@@ -328,10 +274,6 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
     setDetailItems(selectedTemplate.items ?? []);
     setChecklistDirty(false);
   }, [selectedTemplate]);
-
-  useEffect(() => {
-    engineRef.current = null;
-  }, [aiModel]);
 
   useUnsavedChangesGuard(checklistDirty);
   useEffect(() => {
@@ -407,13 +349,32 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
   };
 
   const removeChecklist = async (checklistId: string): Promise<void> => {
-    await db.checklistTemplates.delete(checklistId);
+    const assessmentsCount = await db.taskChecklistAssessments.where("checklistTemplateId").equals(checklistId).count();
+    if (assessmentsCount > 0) {
+      setAiStatus("No se puede eliminar la lista porque ya tiene evaluaciones.");
+      return;
+    }
+    await db.transaction("rw", db.checklistTemplates, db.taskGradebookConfigs, db.taskDailyEvaluationSettings, async () => {
+      await db.checklistTemplates.delete(checklistId);
+      const configs = await db.taskGradebookConfigs.where("checklistTemplateId").equals(checklistId).toArray();
+      if (configs.length > 0) {
+        await db.taskGradebookConfigs.bulkPut(
+          configs.map((config) => ({ ...config, checklistTemplateId: undefined }))
+        );
+      }
+      const settings = await db.taskDailyEvaluationSettings.where("checklistTemplateId").equals(checklistId).toArray();
+      if (settings.length > 0) {
+        await db.taskDailyEvaluationSettings.bulkPut(
+          settings.map((setting) => ({ ...setting, checklistTemplateId: undefined }))
+        );
+      }
+    });
     await loadTemplates();
   };
 
   const generateChecklistWithAI = async (): Promise<void> => {
     const startedAt = Date.now();
-    logChecklistAI("generate.start", { selectedClassId, selectedChecklistId, aiModel });
+    logChecklistAI("generate.start", { selectedClassId, selectedChecklistId });
 
     if (!selectedTemplate && !selectedClassId) {
       setAiStatus("Selecciona una clase para generar la lista.");
@@ -422,7 +383,7 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
 
     const theme = aiPrompt.trim();
     if (!theme) {
-      setAiStatus("Escribe una indicacion para generar la lista de cotejo.");
+      setAiStatus("Escribe una indicación para generar la lista de cotejo.");
       return;
     }
 
@@ -444,104 +405,55 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
         setSelectedChecklistId(id);
       }
 
-      let webllm: any = null;
-      try {
-        webllm = await import("@mlc-ai/web-llm");
-      } catch {
-        webllm = null;
-      }
-      if (!webllm) {
-        setAiStatus("No se pudo cargar WebLLM en este navegador.");
-        return;
-      }
-
-      const createEngine =
-        webllm.CreateMLCEngine ??
-        webllm.CreateWebWorkerMLCEngine ??
-        webllm.createMLCEngine;
-      if (!createEngine) {
-        setAiStatus("WebLLM no expone un inicializador compatible.");
-        return;
-      }
-
-      if (!engineRef.current) {
-        setIsModelLoadingOpen(true);
-        setModelLoadStatus(`Cargando modelo ${aiModel}...`);
-        setModelLoadProgress(0);
-        try {
-          engineRef.current = await createEngine(aiModel, {
-            initProgressCallback: (report: any) => {
-              const progress =
-                typeof report?.progress === "number"
-                  ? Math.max(0, Math.min(100, Math.round(report.progress * 100)))
-                  : null;
-              const text = typeof report?.text === "string" ? report.text : "";
-              if (progress !== null) {
-                setModelLoadProgress(progress);
-              }
-              if (text) {
-                setModelLoadStatus(text);
-              } else if (progress !== null) {
-                setModelLoadStatus(`Cargando modelo... ${progress}%`);
-              }
-            }
-          });
-        } catch {
-          engineRef.current = await createEngine(aiModel);
-        } finally {
-          setIsModelLoadingOpen(false);
+      const completionMessages = [
+        {
+          role: "system" as const,
+          content:
+            "Genera listas de cotejo académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
+        },
+        {
+          role: "user" as const,
+          content: [
+            `Tema: ${theme}`,
+            "Formato JSON exacto:",
+            '{"name":"","description":"","items":[{"text":""}]}',
+            "Reglas:",
+            "- Mínimo 5 ítems.",
+            "- Ítems claros, observables y evaluables.",
+            "- Evita texto extra fuera del JSON."
+          ].join("\n")
         }
-      }
+      ];
 
-      const engine = engineRef.current;
-      const completionPayload = {
-        messages: [
-          {
-            role: "system",
-            content:
-              "Genera listas de cotejo académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
-          },
-          {
-            role: "user",
-            content: [
-              `Tema: ${theme}`,
-              "Formato JSON exacto:",
-              '{"name":"","description":"","items":[{"text":""}]}',
-              "Reglas:",
-              "- Minimo 5 items.",
-              "- Items claros, observables y evaluables.",
-              "- Evita texto extra fuera del JSON."
-            ].join("\n")
-          }
-        ],
-        temperature: 0.2,
-        max_tokens: 450,
-        enable_thinking: false
-      };
-
-      let response: any;
+      let raw: string;
       try {
-        response = await withTimeout<any>(
-          engine.chat.completions.create(completionPayload),
+        const response = await withTimeout(
+          generateAiText(completionMessages, {
+            temperature: 0.2,
+            maxOutputTokens: 450,
+            responseFormat: "json"
+          }),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
+        raw = response.text;
       } catch (error) {
         if (!isTimeoutError(error)) {
           throw error;
         }
-        setAiStatus("La generacion va lenta. Reintentando con salida reducida...");
-        response = await withTimeout<any>(
-          engine.chat.completions.create({
-            ...completionPayload,
-            max_tokens: 280
+        setAiStatus("La generación va lenta. Reintentando con salida reducida...");
+        const response = await withTimeout(
+          generateAiText(completionMessages, {
+            temperature: 0.2,
+            maxOutputTokens: 280,
+            responseFormat: "json"
           }),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
+        raw = response.text;
       }
 
-      const raw = extractMessageText(response);
       logChecklistAI("completion.output.received", {
         textLength: raw.length,
         previewStart: raw.slice(0, 140),
@@ -553,13 +465,12 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
 
       if (!normalized) {
         setAiStatus("Reformateando respuesta a JSON...");
-        const repairResponse: any = await withTimeout<any>(
-          engine.chat.completions.create({
-            messages: [
+        const repairResponse = await withTimeout(
+          generateAiText(
+            [
               {
                 role: "system",
-                content:
-                  "Convierte el contenido recibido a JSON válido y devuelve SOLO JSON sin markdown."
+                content: "Convierte el contenido recibido a JSON válido y devuelve SOLO JSON sin markdown."
               },
               {
                 role: "user",
@@ -570,15 +481,16 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
                 ].join("\n")
               }
             ],
-            temperature: 0,
-            max_tokens: 350,
-            enable_thinking: false
-          }),
+            {
+              temperature: 0,
+              maxOutputTokens: 350,
+              responseFormat: "json"
+            }
+          ),
           AI_GENERATION_TIMEOUT_MS,
-          "La generacion ha tardado demasiado. Prueba con un modelo mas rapido o una consigna mas corta."
+          "La generación ha tardado demasiado. Prueba con un proveedor más rápido o una consigna más corta."
         );
-        const repairedRaw = extractMessageText(repairResponse);
-        parsed = parseFirstJsonObject(repairedRaw);
+        parsed = parseFirstJsonObject(repairResponse.text);
         normalized = parsed ? normalizeGeneratedChecklist(parsed, theme) : null;
       }
 
@@ -608,11 +520,11 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
       logChecklistAI("generate.end", { elapsedMs: Date.now() - startedAt });
     }
   };
-
   return (
     <>
       <div className="courses-layout">
         <aside className="courses-list-panel">
+          <ContextSidebarTabs />
           <div className="courses-list-header">
             <strong>Listas de cotejo</strong>
             <div className="actions-cell">
@@ -694,7 +606,7 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
                     />
                   </div>
                   <div className="detail-field full">
-                    <label>Descripcion</label>
+              <label>Descripción</label>
                     <textarea
                       className="input"
                       value={detailDescription}
@@ -870,14 +782,6 @@ export function ChecklistsSection({ selectedClassId, onDirtyChange }: Checklists
           >
             {isGeneratingAI ? "Generando..." : "Generar"}
           </button>
-        </div>
-      </Modal>
-
-      <Modal open={isModelLoadingOpen} title="Cargando modelo IA" onClose={() => undefined}>
-        <p className="hint">{modelLoadStatus}</p>
-        <div style={{ marginTop: 8 }}>
-          <progress value={modelLoadProgress} max={100} style={{ width: "100%" }} />
-          <p className="hint">{modelLoadProgress}%</p>
         </div>
       </Modal>
     </>

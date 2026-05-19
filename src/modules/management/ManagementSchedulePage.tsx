@@ -1,9 +1,7 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
 import { IconButton } from "../../shared/ui/IconButton";
-import { Modal } from "../../shared/ui/Modal";
 import type { ScheduleBlock, ScheduleDay } from "../../shared/db/types";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
 const MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, "0"));
@@ -12,9 +10,7 @@ function snapTimeToFiveMinutes(value: string): string {
   const [hourRaw, minuteRaw] = value.split(":");
   const hour = Number(hourRaw);
   const minute = Number(minuteRaw);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) {
-    return value;
-  }
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return value;
   const snappedMinute = Math.round(minute / 5) * 5;
   if (snappedMinute === 60) {
     const nextHour = (hour + 1) % 24;
@@ -26,20 +22,24 @@ function snapTimeToFiveMinutes(value: string): string {
 function sortBlocksByTime(blocks: ScheduleBlock[]): ScheduleBlock[] {
   return [...blocks].sort((a, b) => {
     const byStart = a.startTime.localeCompare(b.startTime);
-    if (byStart !== 0) {
-      return byStart;
-    }
+    if (byStart !== 0) return byStart;
     return a.endTime.localeCompare(b.endTime);
   });
+}
+
+function formatBlockSummary(blocks: ScheduleBlock[]): string {
+  const breakCount = blocks.filter((block) => block.isBreak).length;
+  const classCount = blocks.length - breakCount;
+  if (breakCount === 0) return `${classCount} bloques`;
+  if (classCount === 0) return `${breakCount} descansos`;
+  return `${classCount} clases · ${breakCount} descansos`;
 }
 
 function addMinutesToTime(value: string, minutesToAdd: number): string {
   const [hourRaw, minuteRaw] = value.split(":");
   const hour = Number(hourRaw);
   const minute = Number(minuteRaw);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) {
-    return value;
-  }
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return value;
   const totalMinutes = (hour * 60 + minute + minutesToAdd + 24 * 60) % (24 * 60);
   const nextHour = Math.floor(totalMinutes / 60);
   const nextMinute = totalMinutes % 60;
@@ -47,9 +47,7 @@ function addMinutesToTime(value: string, minutesToAdd: number): string {
 }
 
 function normalizeDurationMinutes(value: number): number {
-  if (Number.isNaN(value) || value <= 0) {
-    return 50;
-  }
+  if (Number.isNaN(value) || value <= 0) return 50;
   const snapped = Math.round(value / 5) * 5;
   return Math.max(5, snapped);
 }
@@ -75,9 +73,7 @@ function TimeSelect({
         onChange={(event) => onChange(`${event.target.value}:${minute}`)}
       >
         {HOUR_OPTIONS.map((item) => (
-          <option key={item} value={item}>
-            {item}
-          </option>
+          <option key={item} value={item}>{item}</option>
         ))}
       </select>
       <span className="time-separator">:</span>
@@ -88,9 +84,7 @@ function TimeSelect({
         onChange={(event) => onChange(`${hour}:${event.target.value}`)}
       >
         {MINUTE_OPTIONS.map((item) => (
-          <option key={item} value={item}>
-            {item}
-          </option>
+          <option key={item} value={item}>{item}</option>
         ))}
       </select>
     </span>
@@ -102,8 +96,7 @@ export function ManagementSchedulePage() {
     scheduleDays,
     scheduleSettings,
     updateScheduleDay,
-    updateScheduleSettings,
-    createDefaultScheduleDays
+    updateScheduleSettings
   } = useManagement();
 
   const [selectedDayId, setSelectedDayId] = useState("");
@@ -113,7 +106,6 @@ export function ManagementSchedulePage() {
   const [dirty, setDirty] = useState(false);
   const [durationDirty, setDurationDirty] = useState(false);
   const [defaultDuration, setDefaultDuration] = useState(50);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
 
   useEffect(() => {
     if (!selectedDayId && scheduleDays.length > 0) {
@@ -145,58 +137,60 @@ export function ManagementSchedulePage() {
     setDurationDirty(false);
   }, [scheduleSettings]);
 
-  const persistSchedule = useCallback(async (): Promise<void> => {
+  // Auto-guardado del día con debounce (updateScheduleDay excluido de deps: referencia inestable del contexto)
+  useEffect(() => {
+    if (!dirty || !detailDay) return;
+    const day = detailDay;
+    const timer = setTimeout(() => {
+      void updateScheduleDay(day);
+      setDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, detailDay]);
+
+  // Auto-guardado de la duración con debounce
+  useEffect(() => {
+    if (!durationDirty) return;
+    const mins = normalizeDurationMinutes(defaultDuration);
+    const timer = setTimeout(() => {
+      void updateScheduleSettings({ id: "default", defaultBlockDurationMinutes: mins });
+      setDurationDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [durationDirty, defaultDuration]);
+
+  const saveIfDirty = useCallback(async () => {
     if (durationDirty) {
-      await updateScheduleSettings({
-        id: "default",
-        defaultBlockDurationMinutes: normalizeDurationMinutes(defaultDuration)
-      });
+      await updateScheduleSettings({ id: "default", defaultBlockDurationMinutes: normalizeDurationMinutes(defaultDuration) });
       setDurationDirty(false);
     }
-    if (detailDay && dirty) {
+    if (dirty && detailDay) {
       await updateScheduleDay(detailDay);
       setDirty(false);
     }
-  }, [defaultDuration, detailDay, dirty, durationDirty, updateScheduleDay, updateScheduleSettings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [durationDirty, defaultDuration, dirty, detailDay]);
 
   const patchDetail = (next: ScheduleDay) => {
     setDetailDay(next);
     setDirty(true);
   };
 
-  const hasPendingChanges = durationDirty || dirty;
-
-  const ensureNoPendingChanges = (): boolean => {
-    if (!hasPendingChanges) {
-      return true;
-    }
-    setShowUnsavedModal(true);
-    return false;
-  };
-
-  useUnsavedChangesGuard(hasPendingChanges);
-
   const addBlock = () => {
-    if (!detailDay) {
-      return;
-    }
+    if (!detailDay) return;
     const sortedExisting = sortBlocksByTime(detailDay.blocks);
     const previousBlock = sortedExisting[sortedExisting.length - 1];
     const durationMinutes = normalizeDurationMinutes(defaultDuration);
     const startTime = previousBlock ? previousBlock.endTime : "08:00";
     const endTime = addMinutesToTime(startTime, durationMinutes);
-    const newBlock: ScheduleBlock = {
-      id: crypto.randomUUID(),
-      startTime,
-      endTime
-    };
+    const newBlock: ScheduleBlock = { id: crypto.randomUUID(), startTime, endTime, isBreak: false };
     patchDetail({ ...detailDay, blocks: sortBlocksByTime([...sortedExisting, newBlock]) });
   };
 
   const updateBlock = (blockId: string, field: "startTime" | "endTime", value: string) => {
-    if (!detailDay) {
-      return;
-    }
+    if (!detailDay) return;
     patchDetail({
       ...detailDay,
       blocks: sortBlocksByTime(
@@ -208,41 +202,38 @@ export function ManagementSchedulePage() {
   };
 
   const removeBlock = (blockId: string) => {
-    if (!detailDay) {
-      return;
-    }
+    if (!detailDay) return;
     patchDetail({ ...detailDay, blocks: detailDay.blocks.filter((block) => block.id !== blockId) });
   };
 
+  const toggleBlockBreak = (blockId: string, isBreak: boolean) => {
+    if (!detailDay) return;
+    patchDetail({
+      ...detailDay,
+      blocks: detailDay.blocks.map((block) => (block.id === blockId ? { ...block, isBreak } : block))
+    });
+  };
+
   const copyDaySchedule = (sourceDayId: string, targetDayId: string) => {
-    if (sourceDayId === targetDayId) {
-      return;
-    }
+    if (sourceDayId === targetDayId) return;
     const sourceDay = scheduleDays.find((day) => day.id === sourceDayId);
     const targetDay = scheduleDays.find((day) => day.id === targetDayId);
-    if (!sourceDay || !targetDay) {
-      return;
-    }
+    if (!sourceDay || !targetDay) return;
 
     const sourceBlocks = sortBlocksByTime(sourceDay.blocks);
     const targetBlocks = sortBlocksByTime(targetDay.blocks);
     const copiedBlocks = sourceBlocks.map((block, index) => ({
       id: targetBlocks[index]?.id ?? crypto.randomUUID(),
       startTime: block.startTime,
-      endTime: block.endTime
+      endTime: block.endTime,
+      isBreak: block.isBreak
     }));
-    void updateScheduleDay({
-      ...targetDay,
-      enabled: sourceDay.enabled,
-      blocks: sortBlocksByTime(copiedBlocks)
-    });
+    void updateScheduleDay({ ...targetDay, enabled: sourceDay.enabled, blocks: sortBlocksByTime(copiedBlocks) });
   };
 
   return (
-    <>
-      <article className="management-card">
-      <h3>Horario</h3>
-      <div className="inline-form">
+    <article className="management-card">
+      <div className="inline-form split">
         <label>
           Duración global (min)
           <input
@@ -257,15 +248,6 @@ export function ManagementSchedulePage() {
             }}
           />
         </label>
-        <IconButton
-          icon="save"
-          label="Guardar horario"
-          className={hasPendingChanges ? "save-attention" : ""}
-          disabled={!hasPendingChanges}
-          onClick={async () => {
-            await persistSchedule();
-          }}
-        />
       </div>
 
       <div className="courses-layout">
@@ -283,10 +265,8 @@ export function ManagementSchedulePage() {
                 className={`section-tab ${selectedDayId === day.id ? "active" : ""} ${
                   dropDayId === day.id ? "drop-target" : ""
                 }`}
-                onClick={() => {
-                  if (!ensureNoPendingChanges()) {
-                    return;
-                  }
+                onClick={async () => {
+                  await saveIfDirty();
                   setSelectedDayId(day.id);
                 }}
                 draggable
@@ -304,11 +284,6 @@ export function ManagementSchedulePage() {
                   event.preventDefault();
                   const sourceDayId = event.dataTransfer.getData("text/day-id") || draggingDayId;
                   if (sourceDayId) {
-                    if (!ensureNoPendingChanges()) {
-                      setDraggingDayId(null);
-                      setDropDayId(null);
-                      return;
-                    }
                     copyDaySchedule(sourceDayId, day.id);
                   }
                   setDraggingDayId(null);
@@ -320,23 +295,9 @@ export function ManagementSchedulePage() {
                 }}
               >
                 <span>{day.dayName}</span>
-                <small>{day.enabled ? `Activo · ${day.blocks.length} bloques` : "Desactivado"}</small>
+                <small>{day.enabled ? `Activo · ${formatBlockSummary(day.blocks)}` : "Desactivado"}</small>
               </button>
             ))}
-            {scheduleDays.length === 0 ? (
-              <div className="hint">
-                <p>No hay dias creados.</p>
-                <button
-                  type="button"
-                  className="btn secondary"
-                  onClick={async () => {
-                    await createDefaultScheduleDays();
-                  }}
-                >
-                  Crear dias de la semana
-                </button>
-              </div>
-            ) : null}
           </div>
         </aside>
 
@@ -355,7 +316,7 @@ export function ManagementSchedulePage() {
                     Activo
                   </label>
                 </div>
-                <div className="inline-form" style={{ margin: 0 }}>
+                <div className="inline-form flush">
                   <IconButton icon="add" label="Añadir bloque" onClick={addBlock} disabled={!detailDay.enabled} />
                 </div>
               </div>
@@ -367,12 +328,13 @@ export function ManagementSchedulePage() {
                       <tr>
                         <th>Inicio</th>
                         <th>Fin</th>
+                        <th>Tipo</th>
                         <th>Acción</th>
                       </tr>
                     </thead>
                     <tbody>
                       {detailDay.blocks.map((block) => (
-                        <tr key={block.id}>
+                        <tr key={block.id} className={block.isBreak ? "schedule-break-row" : ""}>
                           <td>
                             <TimeSelect
                               value={block.startTime}
@@ -385,6 +347,16 @@ export function ManagementSchedulePage() {
                               onChange={(nextValue) => updateBlock(block.id, "endTime", nextValue)}
                             />
                           </td>
+                          <td>
+                            <label className="chip-toggle schedule-break-toggle">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(block.isBreak)}
+                                onChange={(event) => toggleBlockBreak(block.id, event.target.checked)}
+                              />
+                              {block.isBreak ? "Descanso" : "Clase"}
+                            </label>
+                          </td>
                           <td className="actions-cell">
                             <IconButton
                               icon="remove"
@@ -396,37 +368,21 @@ export function ManagementSchedulePage() {
                       ))}
                       {detailDay.blocks.length === 0 ? (
                         <tr>
-                          <td colSpan={3}>No hay bloques para este día.</td>
+                          <td colSpan={4}>No hay bloques para este día.</td>
                         </tr>
                       ) : null}
                     </tbody>
                   </table>
                 </div>
               ) : (
-                <p>Día desactivado.</p>
+                <p className="empty-state">Día desactivado.</p>
               )}
             </>
           ) : (
-            <p>No hay días de horario configurados.</p>
+            <p className="empty-state">No hay días de horario configurados.</p>
           )}
         </section>
       </div>
-      </article>
-      <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => setShowUnsavedModal(false)}
-      >
-        <p>Tienes cambios sin guardar. Pulsa Guardar antes de continuar.</p>
-        <div className="inline-form">
-          <button type="button" className="btn" onClick={() => setShowUnsavedModal(false)}>
-            Entendido
-          </button>
-        </div>
-      </Modal>
-    </>
+    </article>
   );
 }
-
-
-

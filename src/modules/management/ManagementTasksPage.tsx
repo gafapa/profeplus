@@ -1,0 +1,1322 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useManagement } from "./ManagementContext";
+import { useAppSelector } from "../../app/hooks";
+import { db } from "../../shared/db/database";
+import type { ChecklistItem, ChecklistTemplate, RubricCriterion, RubricLevel, RubricTemplate, TaskGradebookConfig } from "../../shared/db/types";
+import { generateAiText } from "../../shared/ai/extensionRuntime";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
+import { IconButton } from "../../shared/ui/IconButton";
+import { Modal } from "../../shared/ui/Modal";
+
+type InstrumentKind = "rubric" | "checklist";
+
+type GeneratedRubric = {
+  name?: string;
+  description?: string;
+  criteria?: Array<{
+    name?: string;
+    description?: string;
+    levels?: Array<{
+      name?: string;
+      score?: number;
+    }>;
+  }>;
+};
+
+type GeneratedChecklist = {
+  name?: string;
+  title?: string;
+  description?: string;
+  items?: Array<string | { text?: string; name?: string; item?: string }>;
+  checklist?: {
+    name?: string;
+    title?: string;
+    description?: string;
+    items?: Array<string | { text?: string; name?: string; item?: string }>;
+  };
+};
+
+function extractFirstBalancedJSONObject(text: string): string | null {
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let end = start; end < text.length; end += 1) {
+      const ch = text[end];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === "\"") inString = false;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return text.slice(start, end + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function parseFirstJsonObject<T>(raw: string): T | null {
+  const cleaned = raw
+    .trim()
+    .replace(/<think>[\s\S]*?(<\/think>|$)/gi, "")
+    .replace(/```json/gi, "```")
+    .replace(/```([\s\S]*?)```/g, "$1")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/[\u201C\u201D]/g, "\"")
+    .replace(/[\u2018\u2019]/g, "'");
+
+  const candidates = [cleaned, extractFirstBalancedJSONObject(cleaned)].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function defaultRubric(taskTitle: string): { name: string; description: string; criteria: RubricCriterion[] } {
+  const levels: RubricLevel[] = [
+    { id: crypto.randomUUID(), name: "Excelente", score: 4 },
+    { id: crypto.randomUUID(), name: "Notable", score: 3 },
+    { id: crypto.randomUUID(), name: "Basico", score: 2 },
+    { id: crypto.randomUUID(), name: "Inicial", score: 1 }
+  ];
+  const criteria = ["Contenido", "Proceso", "Presentacion"].map((name) => ({
+    id: crypto.randomUUID(),
+    name,
+    levels: levels.map((level) => ({ ...level, id: crypto.randomUUID() }))
+  }));
+  return {
+    name: `Rúbrica: ${taskTitle || "tarea"}`,
+    description: "",
+    criteria
+  };
+}
+
+function defaultChecklist(taskTitle: string): { name: string; description: string; items: ChecklistItem[] } {
+  const items = [
+    "Completa todos los apartados solicitados",
+    "Usa los contenidos trabajados en clase",
+    "Explica el procedimiento o razonamiento",
+    "Presenta el trabajo de forma clara y ordenada",
+    "Entrega en el plazo indicado"
+  ].map((text) => ({ id: crypto.randomUUID(), text }));
+  return {
+    name: `Lista de cotejo: ${taskTitle || "tarea"}`,
+    description: "",
+    items
+  };
+}
+
+function normalizeGeneratedRubric(
+  generated: GeneratedRubric,
+  fallbackTitle: string
+): { name: string; description: string; criteria: RubricCriterion[] } | null {
+  const criteria = (generated.criteria ?? [])
+    .map((criterion) => ({
+      id: crypto.randomUUID(),
+      name: criterion.name?.trim() || "",
+      description: criterion.description?.trim() || undefined,
+      levels: (criterion.levels ?? [])
+        .map((level) => ({
+          id: crypto.randomUUID(),
+          name: level.name?.trim() || "",
+          score: Number(level.score)
+        }))
+        .filter((level) => level.name.length > 0 && Number.isFinite(level.score))
+    }))
+    .filter((criterion) => criterion.name.length > 0 && (criterion.levels?.length ?? 0) >= 2);
+
+  if (criteria.length === 0) return null;
+  return {
+      name: generated.name?.trim() || `Rúbrica: ${fallbackTitle || "tarea"}`,
+    description: generated.description?.trim() || "",
+    criteria
+  };
+}
+
+function normalizeGeneratedChecklist(
+  generated: GeneratedChecklist,
+  fallbackTitle: string
+): { name: string; description: string; items: ChecklistItem[] } | null {
+  const source = generated.checklist ?? generated;
+  const items = (source.items ?? [])
+    .map((item): ChecklistItem | null => {
+      const text =
+        typeof item === "string"
+          ? item.trim()
+          : String(item.text ?? item.name ?? item.item ?? "").trim();
+      return text ? { id: crypto.randomUUID(), text } : null;
+    })
+    .filter((item): item is ChecklistItem => Boolean(item));
+
+  if (items.length === 0) return null;
+  return {
+    name: String(source.name ?? source.title ?? "").trim() || `Lista de cotejo: ${fallbackTitle || "tarea"}`,
+    description: String(source.description ?? "").trim(),
+    items
+  };
+}
+
+export function ManagementTasksPage() {
+  const selectedClassId = useAppSelector((s) => s.app.selectedClassId);
+  const selectedSubjectId = useAppSelector((s) => s.app.selectedSubjectId);
+
+  const {
+    allTasks,
+    taskSubjectLinks,
+    units,
+    createEmptyTask,
+    updateTask,
+    deleteTask,
+    addTaskSubjectLink,
+    removeTaskSubjectLink,
+    updateTaskSubjectLink,
+    setNotice,
+  } = useManagement();
+
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [detailTitle, setDetailTitle] = useState("");
+  const [detailDescription, setDetailDescription] = useState("");
+  const [detailSessionCount, setDetailSessionCount] = useState(1);
+  const [detailSendToGradebook, setDetailSendToGradebook] = useState(false);
+  const [detailUnitId, setDetailUnitId] = useState("");
+  const [taskDirty, setTaskDirty] = useState(false);
+  const [selectedUnitFilterId, setSelectedUnitFilterId] = useState("");
+  const [rubricTemplates, setRubricTemplates] = useState<RubricTemplate[]>([]);
+  const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
+  const [taskGradebookConfigs, setTaskGradebookConfigs] = useState<TaskGradebookConfig[]>([]);
+  const [rubricName, setRubricName] = useState("");
+  const [rubricDescription, setRubricDescription] = useState("");
+  const [rubricCriteria, setRubricCriteria] = useState<RubricCriterion[]>([]);
+  const [checklistName, setChecklistName] = useState("");
+  const [checklistDescription, setChecklistDescription] = useState("");
+  const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
+  const [instrumentDirty, setInstrumentDirty] = useState(false);
+  const [aiInstrumentKind, setAiInstrumentKind] = useState<InstrumentKind>("rubric");
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiStatus, setAiStatus] = useState("");
+  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+
+  const unitsForSubject = useMemo(
+    () => units.filter((u) => u.subjectId === selectedSubjectId).sort((a, b) => a.position - b.position),
+    [units, selectedSubjectId]
+  );
+
+  const linksForSubject = useMemo(
+    () => taskSubjectLinks.filter((l) => l.subjectId === selectedSubjectId),
+    [taskSubjectLinks, selectedSubjectId]
+  );
+
+  const linkByTaskId = useMemo(
+    () => new Map(linksForSubject.map((link) => [link.taskId, link])),
+    [linksForSubject]
+  );
+
+  const taskIdsForSubject = useMemo(
+    () => new Set(linksForSubject.map((l) => l.taskId)),
+    [linksForSubject]
+  );
+
+  const tasksForSubject = useMemo(
+    () => allTasks.filter((t) => taskIdsForSubject.has(t.id)),
+    [allTasks, taskIdsForSubject]
+  );
+
+  const tasksForUnitFilter = useMemo(() => {
+    if (!selectedUnitFilterId) return [];
+    return tasksForSubject.filter((task) => linkByTaskId.get(task.id)?.unitId === selectedUnitFilterId);
+  }, [linkByTaskId, selectedUnitFilterId, tasksForSubject]);
+
+  useEffect(() => {
+    if (!selectedSubjectId) {
+      setSelectedUnitFilterId("");
+      return;
+    }
+    if (unitsForSubject.length === 0) {
+      setSelectedUnitFilterId("");
+      return;
+    }
+    if (!unitsForSubject.some((unit) => unit.id === selectedUnitFilterId)) {
+      setSelectedUnitFilterId(unitsForSubject[0].id);
+    }
+  }, [selectedSubjectId, selectedUnitFilterId, unitsForSubject]);
+
+  useEffect(() => {
+    if (tasksForUnitFilter.length === 0) { setSelectedTaskId(""); return; }
+    const exists = tasksForUnitFilter.some((t) => t.id === selectedTaskId);
+    if (!exists) setSelectedTaskId(tasksForUnitFilter[0].id);
+  }, [selectedSubjectId, selectedUnitFilterId, tasksForUnitFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedTask = useMemo(
+    () => allTasks.find((t) => t.id === selectedTaskId) ?? null,
+    [allTasks, selectedTaskId]
+  );
+
+  const currentLink = useMemo(
+    () => linksForSubject.find((l) => l.taskId === selectedTaskId) ?? null,
+    [linksForSubject, selectedTaskId]
+  );
+
+  const selectedUnitName = useMemo(
+    () => unitsForSubject.find((unit) => unit.id === selectedUnitFilterId)?.name || "Unidad seleccionada",
+    [selectedUnitFilterId, unitsForSubject]
+  );
+
+  const loadInstrumentData = useCallback(async (): Promise<void> => {
+    if (!selectedClassId || !selectedSubjectId) {
+      setRubricTemplates([]);
+      setChecklistTemplates([]);
+      setTaskGradebookConfigs([]);
+      return;
+    }
+    const [rubrics, checklists, configs] = await Promise.all([
+      db.rubricTemplates.where("classId").equals(selectedClassId).toArray(),
+      db.checklistTemplates.where("classId").equals(selectedClassId).toArray(),
+      db.taskGradebookConfigs.where("[classId+subjectId]").equals([selectedClassId, selectedSubjectId]).toArray()
+    ]);
+    setRubricTemplates(rubrics);
+    setChecklistTemplates(checklists);
+    setTaskGradebookConfigs(configs);
+  }, [selectedClassId, selectedSubjectId]);
+
+  useEffect(() => {
+    void loadInstrumentData();
+  }, [loadInstrumentData]);
+
+  const currentTaskConfig = useMemo(
+    () =>
+      taskGradebookConfigs.find(
+        (config) =>
+          config.taskId === selectedTaskId &&
+          config.subjectId === selectedSubjectId &&
+          config.classId === selectedClassId
+      ) ?? null,
+    [selectedClassId, selectedSubjectId, selectedTaskId, taskGradebookConfigs]
+  );
+
+  const selectedRubricTemplate = useMemo(
+    () =>
+      currentTaskConfig?.rubricTemplateId
+        ? rubricTemplates.find((template) => template.id === currentTaskConfig.rubricTemplateId) ?? null
+        : null,
+    [currentTaskConfig?.rubricTemplateId, rubricTemplates]
+  );
+
+  const selectedChecklistTemplate = useMemo(
+    () =>
+      currentTaskConfig?.checklistTemplateId
+        ? checklistTemplates.find((template) => template.id === currentTaskConfig.checklistTemplateId) ?? null
+        : null,
+    [checklistTemplates, currentTaskConfig?.checklistTemplateId]
+  );
+
+  const activeInstrumentKind: InstrumentKind | "" = selectedRubricTemplate
+    ? "rubric"
+    : selectedChecklistTemplate
+      ? "checklist"
+      : "";
+
+  useEffect(() => {
+    if (!selectedTask) {
+      setDetailTitle(""); setDetailDescription("");
+      setDetailSessionCount(1);
+      setDetailSendToGradebook(false);
+      setDetailUnitId(""); setTaskDirty(false);
+      return;
+    }
+    setDetailTitle(selectedTask.title);
+    setDetailDescription(selectedTask.description);
+    setDetailSessionCount(selectedTask.sessionCount ?? 1);
+    setDetailSendToGradebook(selectedTask.sendToGradebook);
+    setDetailUnitId(currentLink?.unitId ?? "");
+    setTaskDirty(false);
+  }, [selectedTask, currentLink]);
+
+  useEffect(() => {
+    if (!selectedRubricTemplate) {
+      setRubricName("");
+      setRubricDescription("");
+      setRubricCriteria([]);
+      setInstrumentDirty(false);
+      return;
+    }
+    setRubricName(selectedRubricTemplate.name);
+    setRubricDescription(selectedRubricTemplate.description ?? "");
+    setRubricCriteria(selectedRubricTemplate.criteria ?? []);
+    setInstrumentDirty(false);
+  }, [selectedRubricTemplate]);
+
+  useEffect(() => {
+    if (!selectedChecklistTemplate) {
+      setChecklistName("");
+      setChecklistDescription("");
+      setChecklistItems([]);
+      if (!selectedRubricTemplate) {
+        setInstrumentDirty(false);
+      }
+      return;
+    }
+    setChecklistName(selectedChecklistTemplate.name);
+    setChecklistDescription(selectedChecklistTemplate.description ?? "");
+    setChecklistItems(selectedChecklistTemplate.items ?? []);
+    setInstrumentDirty(false);
+  }, [selectedChecklistTemplate, selectedRubricTemplate]);
+
+  // Auto-guardado con debounce (funciones de contexto excluidas de deps: su referencia cambia en cada render)
+  useEffect(() => {
+    if (!taskDirty || !selectedTask) return;
+    const title = detailTitle.trim();
+    if (title.length < 2) return;
+    const taskId = selectedTask.id;
+    const desc = detailDescription;
+    const sessionCount = detailSessionCount;
+    const toGradebook = detailSendToGradebook;
+    const unitId = detailUnitId;
+    const linkId = currentLink?.id;
+    const timer = setTimeout(async () => {
+      await updateTask(taskId, title, desc, sessionCount, toGradebook);
+      if (linkId) await updateTaskSubjectLink(linkId, unitId || undefined);
+      setTaskDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskDirty, detailTitle, detailDescription, detailSessionCount, detailSendToGradebook, detailUnitId, selectedTask?.id, currentLink?.id]);
+
+  const ensureTaskGradebookConfig = async (): Promise<TaskGradebookConfig | null> => {
+    if (!selectedTask || !selectedClassId || !selectedSubjectId) {
+      setNotice("Selecciona curso, asignatura y tarea para asignar un instrumento.");
+      return null;
+    }
+    const existing =
+      (await db.taskGradebookConfigs
+        .where("[taskId+subjectId+classId]")
+        .equals([selectedTask.id, selectedSubjectId, selectedClassId])
+        .first()) ?? null;
+    if (existing) {
+      return existing;
+    }
+    const created: TaskGradebookConfig = {
+      id: crypto.randomUUID(),
+      taskId: selectedTask.id,
+      subjectId: selectedSubjectId,
+      classId: selectedClassId,
+      gradebookWeight: 0
+    };
+    await db.taskGradebookConfigs.add(created);
+    return created;
+  };
+
+  const assignRubricTemplate = async (rubricTemplateId: string): Promise<void> => {
+    const config = await ensureTaskGradebookConfig();
+    if (!config) return;
+    await db.taskGradebookConfigs.put({
+      ...config,
+      rubricTemplateId,
+      checklistTemplateId: undefined
+    });
+    await loadInstrumentData();
+  };
+
+  const assignChecklistTemplate = async (checklistTemplateId: string): Promise<void> => {
+    const config = await ensureTaskGradebookConfig();
+    if (!config) return;
+    await db.taskGradebookConfigs.put({
+      ...config,
+      rubricTemplateId: undefined,
+      checklistTemplateId
+    });
+    await loadInstrumentData();
+  };
+
+  const createTaskRubric = async (initial = defaultRubric(detailTitle.trim())): Promise<void> => {
+    if (!selectedClassId || !selectedTask) {
+      setNotice("Selecciona curso y tarea para crear la rúbrica.");
+      return;
+    }
+    await saveIfDirty();
+    const id = crypto.randomUUID();
+    await db.rubricTemplates.add({
+      id,
+      classId: selectedClassId,
+      taskId: selectedTask.id,
+      name: initial.name,
+      description: initial.description,
+      criteria: initial.criteria,
+      criteriaCount: initial.criteria.length,
+      levelCount: initial.criteria[0]?.levels?.length ?? 0
+    });
+    await assignRubricTemplate(id);
+    setNotice("Rúbrica creada y asignada a la tarea.");
+  };
+
+  const createTaskChecklist = async (initial = defaultChecklist(detailTitle.trim())): Promise<void> => {
+    if (!selectedClassId || !selectedTask) {
+      setNotice("Selecciona curso y tarea para crear la lista de cotejo.");
+      return;
+    }
+    await saveIfDirty();
+    const id = crypto.randomUUID();
+    await db.checklistTemplates.add({
+      id,
+      classId: selectedClassId,
+      taskId: selectedTask.id,
+      name: initial.name,
+      description: initial.description,
+      items: initial.items
+    });
+    await assignChecklistTemplate(id);
+    setNotice("Lista de cotejo creada y asignada a la tarea.");
+  };
+
+  const deleteAssignedRubric = async (): Promise<void> => {
+    if (!selectedRubricTemplate) {
+      return;
+    }
+    const assessmentsCount = await db.taskRubricAssessments
+      .where("rubricTemplateId")
+      .equals(selectedRubricTemplate.id)
+      .count();
+    if (assessmentsCount > 0) {
+      setNotice("No se puede eliminar la rúbrica porque ya tiene evaluaciones.");
+      return;
+    }
+    await db.transaction("rw", db.rubricTemplates, db.taskGradebookConfigs, db.taskDailyEvaluationSettings, async () => {
+      await db.rubricTemplates.delete(selectedRubricTemplate.id);
+      const configs = await db.taskGradebookConfigs.where("rubricTemplateId").equals(selectedRubricTemplate.id).toArray();
+      if (configs.length > 0) {
+        await db.taskGradebookConfigs.bulkPut(
+          configs.map((config) => ({
+            ...config,
+            rubricTemplateId: undefined
+          }))
+        );
+      }
+      const settings = await db.taskDailyEvaluationSettings.where("rubricTemplateId").equals(selectedRubricTemplate.id).toArray();
+      if (settings.length > 0) {
+        await db.taskDailyEvaluationSettings.bulkPut(
+          settings.map((setting) => ({
+            ...setting,
+            rubricTemplateId: undefined
+          }))
+        );
+      }
+    });
+    setInstrumentDirty(false);
+    setRubricName("");
+    setRubricDescription("");
+    setRubricCriteria([]);
+    setNotice("Rúbrica eliminada.");
+    await loadInstrumentData();
+  };
+
+  const persistInstrument = async (): Promise<boolean> => {
+    if (!instrumentDirty) return true;
+    if (selectedRubricTemplate) {
+      const name = rubricName.trim();
+      const criteria = rubricCriteria
+        .map((criterion) => ({
+          ...criterion,
+          name: criterion.name.trim(),
+          description: criterion.description?.trim() || undefined,
+          levels: (criterion.levels ?? [])
+            .map((level) => ({ ...level, name: level.name.trim(), score: Number(level.score) }))
+            .filter((level) => level.name.length > 0 && Number.isFinite(level.score))
+        }))
+        .filter((criterion) => criterion.name.length > 0);
+      const valid =
+        name.length >= 2 && criteria.length > 0 && criteria.every((criterion) => (criterion.levels?.length ?? 0) >= 2);
+      if (!valid) {
+      setNotice("La rúbrica necesita nombre, criterios y al menos dos niveles por criterio.");
+        return false;
+      }
+      await db.rubricTemplates.put({
+        ...selectedRubricTemplate,
+        name,
+        description: rubricDescription.trim() || undefined,
+        criteria,
+        criteriaCount: criteria.length,
+        levelCount: criteria[0]?.levels?.length ?? 0
+      });
+      setInstrumentDirty(false);
+    setNotice("Rúbrica guardada.");
+      await loadInstrumentData();
+      return true;
+    }
+    if (selectedChecklistTemplate) {
+      const name = checklistName.trim();
+      const items = checklistItems
+        .map((item) => ({ ...item, text: item.text.trim() }))
+        .filter((item) => item.text.length > 0);
+      if (name.length < 2 || items.length === 0) {
+        setNotice("La lista de cotejo necesita nombre e items.");
+        return false;
+      }
+      await db.checklistTemplates.put({
+        ...selectedChecklistTemplate,
+        name,
+        description: checklistDescription.trim() || undefined,
+        items
+      });
+      setInstrumentDirty(false);
+      setNotice("Lista de cotejo guardada.");
+      await loadInstrumentData();
+      return true;
+    }
+    return true;
+  };
+
+  const saveIfDirty = useCallback(async () => {
+    if (taskDirty && selectedTask) {
+      const title = detailTitle.trim();
+      if (title.length < 2) return;
+      await updateTask(selectedTask.id, title, detailDescription, detailSessionCount, detailSendToGradebook);
+      if (currentLink) await updateTaskSubjectLink(currentLink.id, detailUnitId || undefined);
+      setTaskDirty(false);
+    }
+    await persistInstrument();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    taskDirty,
+    detailTitle,
+    detailDescription,
+    detailSessionCount,
+    detailSendToGradebook,
+    detailUnitId,
+    selectedTask?.id,
+    currentLink?.id,
+    instrumentDirty,
+    selectedRubricTemplate?.id,
+    selectedChecklistTemplate?.id,
+    rubricName,
+    rubricDescription,
+    rubricCriteria,
+    checklistName,
+    checklistDescription,
+    checklistItems
+  ]);
+
+  const openAiInstrumentModal = (kind: InstrumentKind): void => {
+    const basePrompt = [
+      detailTitle.trim() ? `Tarea: ${detailTitle.trim()}` : "",
+        detailDescription.trim() ? `Descripción: ${detailDescription.trim()}` : ""
+    ]
+      .filter(Boolean)
+      .join("\n");
+    setAiInstrumentKind(kind);
+    setAiPrompt(basePrompt);
+    setAiStatus("");
+    setIsAIModalOpen(true);
+  };
+
+  const applyGeneratedRubric = async (generated: {
+    name: string;
+    description: string;
+    criteria: RubricCriterion[];
+  }): Promise<void> => {
+    if (selectedRubricTemplate) {
+      await db.rubricTemplates.put({
+        ...selectedRubricTemplate,
+        name: generated.name,
+        description: generated.description,
+        criteria: generated.criteria,
+        criteriaCount: generated.criteria.length,
+        levelCount: generated.criteria[0]?.levels?.length ?? 0
+      });
+      setRubricName(generated.name);
+      setRubricDescription(generated.description);
+      setRubricCriteria(generated.criteria);
+      setInstrumentDirty(false);
+      await loadInstrumentData();
+      return;
+    }
+    await createTaskRubric(generated);
+  };
+
+  const applyGeneratedChecklist = async (generated: {
+    name: string;
+    description: string;
+    items: ChecklistItem[];
+  }): Promise<void> => {
+    if (selectedChecklistTemplate) {
+      await db.checklistTemplates.put({
+        ...selectedChecklistTemplate,
+        name: generated.name,
+        description: generated.description,
+        items: generated.items
+      });
+      setChecklistName(generated.name);
+      setChecklistDescription(generated.description);
+      setChecklistItems(generated.items);
+      setInstrumentDirty(false);
+      await loadInstrumentData();
+      return;
+    }
+    await createTaskChecklist(generated);
+  };
+
+  const generateInstrumentWithAI = async (): Promise<void> => {
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
+      setAiStatus("Escribe que quieres generar.");
+      return;
+    }
+    setIsGeneratingAI(true);
+      setAiStatus(aiInstrumentKind === "rubric" ? "Generando rúbrica..." : "Generando lista de cotejo...");
+    try {
+      if (aiInstrumentKind === "rubric") {
+        const response = await generateAiText(
+          [
+            {
+              role: "system",
+              content: "Genera rúbricas académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
+            },
+            {
+              role: "user",
+              content: [
+                prompt,
+                "Formato JSON exacto:",
+                '{"name":"","description":"","criteria":[{"name":"","description":"","levels":[{"name":"","score":4},{"name":"","score":3},{"name":"","score":2},{"name":"","score":1}]}]}',
+                "Mínimo 3 criterios. Cada criterio debe tener al menos 4 niveles ordenados de mayor a menor puntuación."
+              ].join("\n")
+            }
+          ],
+          { temperature: 0.2, maxOutputTokens: 700, responseFormat: "json" }
+        );
+        const parsed = parseFirstJsonObject<GeneratedRubric>(response.text);
+        let normalized = parsed ? normalizeGeneratedRubric(parsed, detailTitle.trim()) : null;
+        let usedFallback = false;
+        if (!normalized) {
+          setAiStatus("Reformateando rúbrica...");
+          const repairResponse = await generateAiText(
+            [
+              {
+                role: "system",
+                content: "Convierte el contenido recibido a JSON válido. Devuelve solo JSON sin markdown."
+              },
+              {
+                role: "user",
+                content: [
+                  "Formato objetivo:",
+                  '{"name":"","description":"","criteria":[{"name":"","description":"","levels":[{"name":"","score":4},{"name":"","score":3},{"name":"","score":2},{"name":"","score":1}]}]}',
+                  "Contenido:",
+                  response.text.slice(0, 4000)
+                ].join("\n")
+              }
+            ],
+            { temperature: 0, maxOutputTokens: 500, responseFormat: "json" }
+          );
+          const repaired = parseFirstJsonObject<GeneratedRubric>(repairResponse.text);
+          normalized = repaired ? normalizeGeneratedRubric(repaired, detailTitle.trim()) : null;
+        }
+        if (!normalized) {
+          normalized = defaultRubric(detailTitle.trim() || prompt);
+          usedFallback = true;
+        }
+        await applyGeneratedRubric(normalized);
+        setAiStatus(
+          usedFallback
+              ? "La IA no devolvió JSON válido. Se creó una rúbrica base para ajustarla."
+              : "Rúbrica generada."
+        );
+      } else {
+        const response = await generateAiText(
+          [
+            {
+              role: "system",
+              content:
+                "Genera listas de cotejo académicas en JSON válido. Devuelve solo JSON sin markdown ni explicaciones."
+            },
+            {
+              role: "user",
+              content: [
+                prompt,
+                "Formato JSON exacto:",
+                '{"name":"","description":"","items":[{"text":""}]}',
+                "Mínimo 5 ítems claros, observables y evaluables."
+              ].join("\n")
+            }
+          ],
+          { temperature: 0.2, maxOutputTokens: 450, responseFormat: "json" }
+        );
+        const parsed = parseFirstJsonObject<GeneratedChecklist>(response.text);
+        let normalized = parsed ? normalizeGeneratedChecklist(parsed, detailTitle.trim()) : null;
+        let usedFallback = false;
+        if (!normalized) {
+          setAiStatus("Reformateando lista de cotejo...");
+          const repairResponse = await generateAiText(
+            [
+              {
+                role: "system",
+                content: "Convierte el contenido recibido a JSON válido. Devuelve solo JSON sin markdown."
+              },
+              {
+                role: "user",
+                content: [
+                  "Formato objetivo:",
+                  '{"name":"","description":"","items":[{"text":""}]}',
+                  "Contenido:",
+                  response.text.slice(0, 3500)
+                ].join("\n")
+              }
+            ],
+            { temperature: 0, maxOutputTokens: 350, responseFormat: "json" }
+          );
+          const repaired = parseFirstJsonObject<GeneratedChecklist>(repairResponse.text);
+          normalized = repaired ? normalizeGeneratedChecklist(repaired, detailTitle.trim()) : null;
+        }
+        if (!normalized) {
+          normalized = defaultChecklist(detailTitle.trim() || prompt);
+          usedFallback = true;
+        }
+        await applyGeneratedChecklist(normalized);
+        setAiStatus(
+          usedFallback
+            ? "La IA no devolvió JSON válido. Se creó una lista base para ajustarla."
+            : "Lista de cotejo generada."
+        );
+      }
+      setIsAIModalOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Error desconocido";
+      setAiStatus(`No se pudo generar (${message}).`);
+    } finally {
+      setIsGeneratingAI(false);
+    }
+  };
+
+  return (
+    <article className="management-card">
+      <div className="courses-layout">
+        <aside className="courses-list-panel">
+          <ContextSidebarTabs beforeChange={saveIfDirty} />
+          {selectedSubjectId ? (
+            <div className="context-sidebar-tabs">
+              <div className="context-sidebar-group">
+                <strong>Unidades</strong>
+                {unitsForSubject.length > 0 ? (
+                  <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Unidades">
+                    {unitsForSubject.map((unit) => (
+                      <button
+                        key={unit.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={selectedUnitFilterId === unit.id}
+                        className={`section-tab ${selectedUnitFilterId === unit.id ? "active" : ""}`}
+                        onClick={async () => {
+                          await saveIfDirty();
+                          setSelectedUnitFilterId(unit.id);
+                        }}
+                      >
+                        <span>{unit.name || "Unidad sin nombre"}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="hint">No hay unidades creadas para esta asignatura.</p>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <div className="courses-list-header">
+            <strong>Tareas</strong>
+            <IconButton
+              icon="add"
+              label="Crear tarea"
+              disabled={!selectedSubjectId || !selectedUnitFilterId}
+              onClick={async () => {
+                if (!selectedSubjectId || !selectedUnitFilterId) {
+                  setNotice("Selecciona una unidad para crear la tarea.");
+                  return;
+                }
+                await saveIfDirty();
+                const createdId = await createEmptyTask();
+                if (createdId) {
+                  await addTaskSubjectLink(createdId, selectedSubjectId, selectedUnitFilterId);
+                  setSelectedTaskId(createdId);
+                }
+              }}
+            />
+          </div>
+
+          <div className="courses-list section-tabs" role="tablist" aria-label="Tareas">
+            {selectedSubjectId ? tasksForUnitFilter.map((task) => {
+              const link = linkByTaskId.get(task.id);
+              const unitName = link?.unitId
+                ? (units.find((u) => u.id === link.unitId)?.name ?? "Unidad desconocida")
+                : "Sin unidad";
+              return (
+                <div key={task.id} className="courses-list-row">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={selectedTaskId === task.id}
+                    className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
+                    onClick={async () => {
+                      await saveIfDirty();
+                      setSelectedTaskId(task.id);
+                    }}
+                  >
+                    <span>{task.title || "Sin título"}</span>
+                    <small>{unitName} · {task.sessionCount ?? 1} sesiones</small>
+                  </button>
+                  <IconButton
+                    icon="delete"
+                    label={`Eliminar ${task.title || "tarea"}`}
+                    onClick={async () => {
+                      await saveIfDirty();
+                      if (link) await removeTaskSubjectLink(link.id);
+                      await deleteTask(task.id);
+                    }}
+                  />
+                </div>
+              );
+            }) : null}
+            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length === 0 && (
+              <p className="empty-state">
+                Crea una unidad antes de crear tareas.
+              </p>
+            )}
+            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length > 0 && (
+              <p className="empty-state">
+                {tasksForSubject.length === 0
+                  ? "No hay tareas. Crea una con el botón +."
+                  : "No hay tareas en esta unidad."}
+              </p>
+            )}
+          </div>
+        </aside>
+
+        <section className="course-detail-panel">
+          {selectedTask ? (
+            <>
+              <div className="course-detail-header">
+                <h4>Ficha de tarea</h4>
+              </div>
+
+              <section className="detail-section">
+                <div className="detail-grid">
+                  <div className="detail-field full">
+                    <label>Título</label>
+                    <input
+                      className="input"
+                      placeholder="Título de la tarea"
+                      value={detailTitle}
+                      onChange={(e) => { setDetailTitle(e.target.value); setTaskDirty(true); }}
+                    />
+                  </div>
+
+                  <div className="detail-field full">
+                    <label>Descripción</label>
+                    <textarea
+                      className="input"
+                      rows={3}
+                      placeholder="Descripción o instrucciones"
+                      value={detailDescription}
+                      onChange={(e) => { setDetailDescription(e.target.value); setTaskDirty(true); }}
+                    />
+                  </div>
+
+                  <div className="detail-field full">
+                    <label>Unidad</label>
+                    <div
+                      className="input readonly-display"
+                      aria-label="Unidad seleccionada"
+                    >
+                      {selectedUnitName}
+                    </div>
+                  </div>
+
+                  <div className="detail-field">
+                    <label>Sesiones</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={detailSessionCount}
+                      onChange={(e) => {
+                        setDetailSessionCount(Math.max(1, Math.round(Number(e.target.value) || 1)));
+                        setTaskDirty(true);
+                      }}
+                    />
+                  </div>
+
+                  <div className="detail-field">
+                    <label>Incluir en cuaderno</label>
+                    <label className="chip-toggle">
+                      <input
+                        type="checkbox"
+                        checked={detailSendToGradebook}
+                        onChange={(e) => { setDetailSendToGradebook(e.target.checked); setTaskDirty(true); }}
+                      />
+                      {detailSendToGradebook ? "Sí" : "No"}
+                    </label>
+                  </div>
+
+                </div>
+              </section>
+
+              <section className="detail-section">
+                <div className="course-detail-header">
+                  <div>
+                    <h5>Instrumento de evaluación</h5>
+                    <p className="hint">
+                      {activeInstrumentKind === "rubric"
+                        ? "Rúbrica asignada a esta tarea."
+                        : activeInstrumentKind === "checklist"
+                          ? "Lista de cotejo asignada a esta tarea."
+                          : "Sin rúbrica ni lista de cotejo asignada."}
+                    </p>
+                  </div>
+                  <div className="actions-cell">
+                    <IconButton
+                      icon="rubric"
+                        label="Crear rúbrica"
+                      className="instrument-rubric"
+                      disabled={!selectedClassId || !selectedSubjectId}
+                      onClick={() => void createTaskRubric()}
+                    />
+                    <IconButton
+                      icon="checklist"
+                      label="Crear lista de cotejo"
+                      className="instrument-checklist"
+                      disabled={!selectedClassId || !selectedSubjectId}
+                      onClick={() => void createTaskChecklist()}
+                    />
+                    <IconButton
+                      icon="ai"
+                        label="Generar rúbrica con IA"
+                      className="instrument-rubric"
+                      disabled={!selectedClassId || !selectedSubjectId}
+                      onClick={() => openAiInstrumentModal("rubric")}
+                    />
+                    <IconButton
+                      icon="ai"
+                      label="Generar lista de cotejo con IA"
+                      className="instrument-checklist"
+                      disabled={!selectedClassId || !selectedSubjectId}
+                      onClick={() => openAiInstrumentModal("checklist")}
+                    />
+                    {instrumentDirty ? (
+                      <IconButton
+                        icon="save"
+                        label="Guardar instrumento"
+                        className="save-attention"
+                        onClick={() => void persistInstrument()}
+                      />
+                    ) : null}
+                    {selectedRubricTemplate ? (
+                      <IconButton
+                        icon="delete"
+                        label="Eliminar rúbrica"
+                        className="instrument-rubric"
+                        onClick={() => void deleteAssignedRubric()}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+
+                {!selectedClassId || !selectedSubjectId ? (
+                  <p className="hint">Selecciona curso y asignatura para crear o asignar instrumentos.</p>
+                ) : null}
+
+                {selectedRubricTemplate ? (
+                  <div className="planner-list">
+                    <div className="detail-grid">
+                      <div className="detail-field full">
+                    <label>Nombre de la rúbrica</label>
+                        <input
+                          className="input"
+                          value={rubricName}
+                          onChange={(event) => {
+                            setRubricName(event.target.value);
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                      </div>
+                      <div className="detail-field full">
+                        <label>Descripción</label>
+                        <textarea
+                          className="input"
+                          rows={2}
+                          value={rubricDescription}
+                          onChange={(event) => {
+                            setRubricDescription(event.target.value);
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="course-detail-header">
+                      <h5>Criterios</h5>
+                      <IconButton
+                        icon="add"
+                        label="Anadir criterio"
+                        onClick={() => {
+                          setRubricCriteria((current) => [
+                            ...current,
+                            {
+                              id: crypto.randomUUID(),
+                              name: `Criterio ${current.length + 1}`,
+                              levels: [
+                                { id: crypto.randomUUID(), name: "Conseguido", score: 2 },
+                                { id: crypto.randomUUID(), name: "En proceso", score: 1 }
+                              ]
+                            }
+                          ]);
+                          setInstrumentDirty(true);
+                        }}
+                      />
+                    </div>
+
+                    {rubricCriteria.map((criterion, criterionIndex) => (
+                      <article key={criterion.id} className="planner-card">
+                        <div className="courses-list-row">
+                          <input
+                            className="input"
+                            value={criterion.name}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setRubricCriteria((current) =>
+                                current.map((item) => (item.id === criterion.id ? { ...item, name: value } : item))
+                              );
+                              setInstrumentDirty(true);
+                            }}
+                          />
+                          <IconButton
+                            icon="add"
+                            label="Anadir nivel"
+                            onClick={() => {
+                              setRubricCriteria((current) =>
+                                current.map((item) =>
+                                  item.id === criterion.id
+                                    ? {
+                                        ...item,
+                                        levels: [
+                                          ...(item.levels ?? []),
+                                          { id: crypto.randomUUID(), name: `Nivel ${(item.levels?.length ?? 0) + 1}`, score: 1 }
+                                        ]
+                                      }
+                                    : item
+                                )
+                              );
+                              setInstrumentDirty(true);
+                            }}
+                          />
+                          <IconButton
+                            icon="delete"
+                            label="Eliminar criterio"
+                            disabled={rubricCriteria.length <= 1}
+                            onClick={() => {
+                              setRubricCriteria((current) => current.filter((_, index) => index !== criterionIndex));
+                              setInstrumentDirty(true);
+                            }}
+                          />
+                        </div>
+                        <div className="planner-list">
+                          {(criterion.levels ?? []).map((level, levelIndex) => (
+                            <div key={level.id} className="courses-list-row">
+                              <input
+                                className="input"
+                                value={level.name}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  setRubricCriteria((current) =>
+                                    current.map((item) =>
+                                      item.id === criterion.id
+                                        ? {
+                                            ...item,
+                                            levels: (item.levels ?? []).map((levelItem) =>
+                                              levelItem.id === level.id ? { ...levelItem, name: value } : levelItem
+                                            )
+                                          }
+                                        : item
+                                    )
+                                  );
+                                  setInstrumentDirty(true);
+                                }}
+                              />
+                              <input
+                                className="input"
+                                type="number"
+                                step={0.1}
+                                value={level.score}
+                                onChange={(event) => {
+                                  const score = Number(event.target.value);
+                                  setRubricCriteria((current) =>
+                                    current.map((item) =>
+                                      item.id === criterion.id
+                                        ? {
+                                            ...item,
+                                            levels: (item.levels ?? []).map((levelItem) =>
+                                              levelItem.id === level.id ? { ...levelItem, score } : levelItem
+                                            )
+                                          }
+                                        : item
+                                    )
+                                  );
+                                  setInstrumentDirty(true);
+                                }}
+                              />
+                              <IconButton
+                                icon="delete"
+                                label="Eliminar nivel"
+                                disabled={(criterion.levels?.length ?? 0) <= 2}
+                                onClick={() => {
+                                  setRubricCriteria((current) =>
+                                    current.map((item) =>
+                                      item.id === criterion.id
+                                        ? { ...item, levels: (item.levels ?? []).filter((_, index) => index !== levelIndex) }
+                                        : item
+                                    )
+                                  );
+                                  setInstrumentDirty(true);
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+
+                {selectedChecklistTemplate ? (
+                  <div className="planner-list">
+                    <div className="detail-grid">
+                      <div className="detail-field full">
+                        <label>Nombre de la lista</label>
+                        <input
+                          className="input"
+                          value={checklistName}
+                          onChange={(event) => {
+                            setChecklistName(event.target.value);
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                      </div>
+                      <div className="detail-field full">
+                        <label>Descripción</label>
+                        <textarea
+                          className="input"
+                          rows={2}
+                          value={checklistDescription}
+                          onChange={(event) => {
+                            setChecklistDescription(event.target.value);
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="course-detail-header">
+                      <h5>Items</h5>
+                      <IconButton
+                        icon="add"
+                        label="Anadir item"
+                        onClick={() => {
+                          setChecklistItems((current) => [
+                            ...current,
+                            { id: crypto.randomUUID(), text: `Item ${current.length + 1}` }
+                          ]);
+                          setInstrumentDirty(true);
+                        }}
+                      />
+                    </div>
+                    {checklistItems.map((item, index) => (
+                      <div key={item.id} className="courses-list-row">
+                        <input
+                          className="input"
+                          value={item.text}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setChecklistItems((current) =>
+                              current.map((currentItem) =>
+                                currentItem.id === item.id ? { ...currentItem, text: value } : currentItem
+                              )
+                            );
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                        <IconButton
+                          icon="delete"
+                          label="Eliminar item"
+                          onClick={() => {
+                            setChecklistItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                            setInstrumentDirty(true);
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            </>
+          ) : (
+            <p className="empty-state">
+              {selectedSubjectId ? "Selecciona o crea una tarea." : "Selecciona una asignatura en el panel izquierdo."}
+            </p>
+          )}
+        </section>
+      </div>
+      <Modal
+        open={isAIModalOpen}
+      title={aiInstrumentKind === "rubric" ? "Generar rúbrica con IA" : "Generar lista de cotejo con IA"}
+        onClose={() => {
+          if (!isGeneratingAI) {
+            setIsAIModalOpen(false);
+          }
+        }}
+      >
+        <div className="detail-grid">
+          <div className="detail-field full">
+            <label>Que quieres generar</label>
+            <textarea
+              className="input"
+              rows={5}
+              placeholder={
+                aiInstrumentKind === "rubric"
+              ? "Ej: Rúbrica para resolver problemas con ecuaciones de primer grado."
+                  : "Ej: Lista de cotejo para una exposicion oral sobre ecosistemas."
+              }
+              value={aiPrompt}
+              onChange={(event) => setAiPrompt(event.target.value)}
+            />
+          </div>
+        </div>
+        {aiStatus ? <p className="hint">{aiStatus}</p> : null}
+        <div className="actions-cell">
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={isGeneratingAI}
+            onClick={() => setIsAIModalOpen(false)}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={isGeneratingAI}
+            onClick={() => void generateInstrumentWithAI()}
+          >
+            {isGeneratingAI ? "Generando..." : "Generar"}
+          </button>
+        </div>
+      </Modal>
+    </article>
+  );
+}

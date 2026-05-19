@@ -3,6 +3,8 @@ import type { ButtonHTMLAttributes } from "react";
 type IconName =
   | "add"
   | "ai"
+  | "rubric"
+  | "checklist"
   | "up"
   | "down"
   | "edit"
@@ -34,6 +36,20 @@ function Icon({ icon }: { icon: IconName }) {
           <circle cx="10" cy="12" r="1" />
           <circle cx="14" cy="12" r="1" />
           <path d="M12 4v2M9 18h6M5 12H3M21 12h-2" />
+        </svg>
+      );
+    case "rubric":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 4h10l2 2v14H6z" />
+          <path d="M15 4v3h3M9 10h6M9 14h3M9 18h5" />
+        </svg>
+      );
+    case "checklist":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 4h12v16H6z" />
+          <path d="m9 10 1.5 1.5L14 8M9 16l1.5 1.5L14 14M15.5 10H16M15.5 16H16" />
         </svg>
       );
     case "up":

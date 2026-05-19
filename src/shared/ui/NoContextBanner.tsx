@@ -1,0 +1,44 @@
+import { NavLink } from "react-router-dom";
+
+interface NoContextBannerProps {
+  noClass: boolean;
+  noSubject: boolean;
+}
+
+/**
+ * Banner que aparece cuando no hay curso o asignatura seleccionada,
+ * guiando al docente al módulo de gestión para configurarlos.
+ */
+export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
+  if (!noClass && !noSubject) return null;
+
+  return (
+    <div className="no-context-banner" role="status" aria-live="polite">
+      <span className="no-context-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 8v4M12 16h.01" strokeLinecap="round" />
+        </svg>
+      </span>
+      <div className="no-context-text">
+        {noClass ? (
+          <>
+            <strong>No hay ningún curso creado.</strong>
+            <span>Crea un curso en Gestión para poder usar el panel docente.</span>
+          </>
+        ) : (
+          <>
+            <strong>Este curso necesita una asignatura activa.</strong>
+            <span>Selecciona, añade o vincula una asignatura al curso para empezar a trabajar.</span>
+          </>
+        )}
+      </div>
+      <NavLink
+        to={noClass ? "/management/courses" : "/management/subjects"}
+        className="no-context-cta"
+      >
+        {noClass ? "Crear curso" : "Gestionar asignaturas"}
+      </NavLink>
+    </div>
+  );
+}

@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
-import { getStudentFullName } from "../../shared/utils/student";
+import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
-import { Modal } from "../../shared/ui/Modal";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementCoursesPage() {
+  const { formatName } = useStudentDisplay();
   const {
     courses,
     students,
     createEmptyCourse,
     updateCourse,
     deleteCourse,
-    moveStudent,
-    setNotice
+    addStudentToCourse,
   } = useManagement();
 
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -24,8 +22,6 @@ export function ManagementCoursesPage() {
   const [detailCourseYear, setDetailCourseYear] = useState("");
   const [detailCourseComments, setDetailCourseComments] = useState("");
   const [courseDirty, setCourseDirty] = useState(false);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
-
 
   useEffect(() => {
     if (!selectedCourseId && courses.length > 0) {
@@ -57,54 +53,43 @@ export function ManagementCoursesPage() {
     setCourseDirty(false);
   }, [selectedCourse]);
 
-  const persistCourse = useCallback(async (): Promise<boolean> => {
-    if (!selectedCourse || !courseDirty) {
-      return true;
-    }
-    if (detailCourseName.trim().length < 3 || detailCourseYear.trim().length < 4) {
-      setNotice("Completa nombre del curso (minimo 3 caracteres) y curso escolar (minimo 4).");
-      return false;
-    }
-    await updateCourse(selectedCourse.id, detailCourseName, detailCourseYear, detailCourseComments);
+  // Auto-guardado con debounce (updateCourse excluido de deps: su referencia cambia en cada render del contexto)
+  useEffect(() => {
+    if (!courseDirty || !selectedCourse) return;
+    const name = detailCourseName.trim();
+    const year = detailCourseYear.trim();
+    if (name.length < 3 || year.length < 4) return;
+    const id = selectedCourse.id;
+    const comments = detailCourseComments;
+    const timer = setTimeout(() => {
+      void updateCourse(id, name, year, comments);
+      setCourseDirty(false);
+    }, 700);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseDirty, detailCourseName, detailCourseYear, detailCourseComments, selectedCourse?.id]);
+
+  const saveIfDirty = useCallback(async () => {
+    if (!courseDirty || !selectedCourse) return;
+    const name = detailCourseName.trim();
+    const year = detailCourseYear.trim();
+    if (name.length < 3 || year.length < 4) return;
+    await updateCourse(selectedCourse.id, name, year, detailCourseComments);
     setCourseDirty(false);
-    return true;
-  }, [
-    courseDirty,
-    detailCourseComments,
-    detailCourseName,
-    detailCourseYear,
-    selectedCourse,
-    setNotice,
-    updateCourse
-  ]);
-
-  const ensureNoPendingChanges = (): boolean => {
-    if (!courseDirty) {
-      return true;
-    }
-    setShowUnsavedModal(true);
-    return false;
-  };
-
-  useUnsavedChangesGuard(courseDirty);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseDirty, selectedCourse?.id, detailCourseName, detailCourseYear, detailCourseComments]);
 
   const handleCourseDrop = async (targetCourseId: string, rawStudentId: string | null) => {
-    if (!ensureNoPendingChanges()) {
-      return;
-    }
+    await saveIfDirty();
     const studentId = rawStudentId || draggingStudentId;
-    if (!studentId) {
-      return;
-    }
-    void moveStudent(studentId, targetCourseId);
+    if (!studentId) return;
+    void addStudentToCourse(studentId, targetCourseId);
     setDraggingStudentId(null);
     setDropCourseId(null);
   };
 
   return (
-    <>
-      <article className="management-card">
-      <h3>Cursos</h3>
+    <article className="management-card">
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="courses-list-header">
@@ -113,9 +98,7 @@ export function ManagementCoursesPage() {
               icon="add"
               label="Crear curso"
               onClick={async () => {
-                if (!ensureNoPendingChanges()) {
-                  return;
-                }
+                await saveIfDirty();
                 const createdId = await createEmptyCourse();
                 if (createdId) {
                   setSelectedCourseId(createdId);
@@ -133,10 +116,8 @@ export function ManagementCoursesPage() {
                   className={`section-tab ${selectedCourseId === course.id ? "active" : ""} ${
                     dropCourseId === course.id ? "drop-target" : ""
                   }`}
-                  onClick={() => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
+                  onClick={async () => {
+                    await saveIfDirty();
                     setSelectedCourseId(course.id);
                   }}
                   onDragOver={(event) => {
@@ -156,9 +137,7 @@ export function ManagementCoursesPage() {
                   icon="delete"
                   label={`Eliminar ${course.name || "curso"}`}
                   onClick={async () => {
-                    if (!ensureNoPendingChanges()) {
-                      return;
-                    }
+                    await saveIfDirty();
                     await deleteCourse(course.id);
                   }}
                 />
@@ -173,17 +152,6 @@ export function ManagementCoursesPage() {
               <div className="course-detail-header">
                 <div>
                   <h4>Detalle del curso</h4>
-                </div>
-                <div className="actions-cell">
-                  <IconButton
-                    icon="save"
-                    label="Guardar curso"
-                    className={courseDirty ? "save-attention" : ""}
-                    disabled={!courseDirty}
-                    onClick={async () => {
-                      await persistCourse();
-                    }}
-                  />
                 </div>
               </div>
 
@@ -209,15 +177,31 @@ export function ManagementCoursesPage() {
                   </div>
                   <div className="detail-field">
                     <label>Curso escolar</label>
-                    <input
-                      className="input"
-                      placeholder="2025-2026"
-                      value={detailCourseYear}
-                      onChange={(event) => {
-                        setDetailCourseYear(event.target.value);
-                        setCourseDirty(true);
-                      }}
-                    />
+                    <div className="year-stepper">
+                      <button
+                        type="button"
+                        className="year-stepper-btn"
+                        aria-label="Año anterior"
+                        onClick={() => {
+                          const raw = parseInt(detailCourseYear.split("-")[0] ?? "0", 10);
+                          const start = Number.isFinite(raw) ? raw : new Date().getFullYear();
+                          setDetailCourseYear(`${start - 1}-${start}`);
+                          setCourseDirty(true);
+                        }}
+                      >−</button>
+                      <span className="year-stepper-value">{detailCourseYear || "—"}</span>
+                      <button
+                        type="button"
+                        className="year-stepper-btn"
+                        aria-label="Año siguiente"
+                        onClick={() => {
+                          const raw = parseInt(detailCourseYear.split("-")[0] ?? "0", 10);
+                          const start = Number.isFinite(raw) ? raw : new Date().getFullYear();
+                          setDetailCourseYear(`${start + 1}-${start + 2}`);
+                          setCourseDirty(true);
+                        }}
+                      >+</button>
+                    </div>
                   </div>
                   <div className="detail-field full">
                     <label>Comentarios</label>
@@ -236,6 +220,9 @@ export function ManagementCoursesPage() {
 
               <section className="detail-section">
                 <h5>Alumnos del curso</h5>
+                <p className="notice compact">
+                  Arrastra un alumno desde este listado hacia otro curso para moverlo.
+                </p>
                 <div className="table-scroll">
                   <table>
                     <thead>
@@ -245,57 +232,46 @@ export function ManagementCoursesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedStudents.map((student) => (
-                        <tr
-                          key={student.id}
-                          draggable
-                          onDragStart={(event) => {
-                            setDraggingStudentId(student.id);
-                            event.dataTransfer.setData("text/student-id", student.id);
-                            event.dataTransfer.effectAllowed = "move";
-                          }}
-                          onDragEnd={() => {
-                            setDraggingStudentId(null);
-                            setDropCourseId(null);
-                          }}
-                        >
-                          <td>
-                            {student.photoDataUrl ? (
-                              <img
-                                className="student-avatar"
-                                src={student.photoDataUrl}
-                                alt={getStudentFullName(student)}
-                              />
-                            ) : (
-                              "-"
-                            )}
-                          </td>
-                          <td>{getStudentFullName(student)}</td>
-                        </tr>
-                      ))}
+                      {selectedStudents.map((student) => {
+                        return (
+                          <tr
+                            key={student.id}
+                            draggable
+                            onDragStart={(event) => {
+                              setDraggingStudentId(student.id);
+                              event.dataTransfer.setData("text/student-id", student.id);
+                              event.dataTransfer.effectAllowed = "move";
+                            }}
+                            onDragEnd={() => {
+                              setDraggingStudentId(null);
+                              setDropCourseId(null);
+                            }}
+                          >
+                            <td>
+                              {student.photoDataUrl ? (
+                                <img
+                                  className="student-avatar"
+                                  src={student.photoDataUrl}
+                                  alt={formatName(student)}
+                                />
+                              ) : (
+                                "-"
+                              )}
+                            </td>
+                            <td>{formatName(student)}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               </section>
             </>
           ) : (
-            <p>Selecciona un curso para ver sus opciones y alumnado.</p>
+            <p className="empty-state">Selecciona un curso para ver sus opciones y alumnado.</p>
           )}
         </section>
       </div>
-      </article>
-      <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => setShowUnsavedModal(false)}
-      >
-        <p>Tienes cambios sin guardar. Pulsa Guardar antes de continuar.</p>
-        <div className="inline-form">
-          <button type="button" className="btn" onClick={() => setShowUnsavedModal(false)}>
-            Entendido
-          </button>
-        </div>
-      </Modal>
-    </>
+    </article>
   );
 }

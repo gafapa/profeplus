@@ -1,120 +1,132 @@
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { useEffect } from "react";
-import { GradebookPage } from "./modules/gradebook/GradebookPage";
+import { useEffect, useState } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useAppDispatch, useAppSelector } from "./app/hooks";
+import { hydrateAppPreferences, setSelectedClass } from "./app/store";
 import { AttendancePage } from "./modules/attendance/AttendancePage";
-import { TasksPage } from "./modules/planner/PlannerPage";
-import { RubricsPage } from "./modules/rubrics/RubricsPage";
-import { ReportsPage } from "./modules/reports/ReportsPage";
-import { AIAssistantPage } from "./modules/ai-assistant/AIAssistantPage";
-import { ManagementLayout } from "./modules/management/ManagementLayout";
+import { ConfigLayout } from "./modules/config/ConfigLayout";
+import { GradebookPage } from "./modules/gradebook/GradebookPage";
 import { ManagementCoursesPage } from "./modules/management/ManagementCoursesPage";
+import { ManagementDatabasePage } from "./modules/management/ManagementDatabasePage";
+import { ManagementLayout } from "./modules/management/ManagementLayout";
+import { ManagementPreferencesPage } from "./modules/management/ManagementPreferencesPage";
+import { ManagementSchedulePage } from "./modules/management/ManagementSchedulePage";
 import { ManagementStudentsPage } from "./modules/management/ManagementStudentsPage";
 import { ManagementSubjectsPage } from "./modules/management/ManagementSubjectsPage";
+import { ManagementTasksPage } from "./modules/management/ManagementTasksPage";
 import { ManagementUnitsPage } from "./modules/management/ManagementUnitsPage";
-import { ManagementSchedulePage } from "./modules/management/ManagementSchedulePage";
-import { ManagementDatabasePage } from "./modules/management/ManagementDatabasePage";
-import { TopTabs } from "./shared/ui/TopTabs";
+import { ReportsPage } from "./modules/reports/ReportsPage";
+import { enableAiExtensionOverlay } from "./shared/ai/extensionOverlay";
 import { db } from "./shared/db/database";
-import { useAppDispatch, useAppSelector } from "./app/hooks";
-import { setSelectedClass } from "./app/store";
+import { NoContextBanner } from "./shared/ui/NoContextBanner";
+import { TopTabs } from "./shared/ui/TopTabs";
+import packageJson from "../package.json";
 
 function App() {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
+  const studentSortBy = useAppSelector((state) => state.app.studentSortBy);
+  const studentNameFormat = useAppSelector((state) => state.app.studentNameFormat);
+  const weekStartsOn = useAppSelector((state) => state.app.weekStartsOn);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+
+  const isConfigRoute = location.pathname.startsWith("/config");
   const isManagementRoute = location.pathname.startsWith("/management");
 
   useEffect(() => {
+    enableAiExtensionOverlay();
+  }, []);
+
+  useEffect(() => {
     let active = true;
-
-    const load = async () => {
-      const groups = await db.classGroups.orderBy("name").toArray();
-      if (!active) {
-        return;
+    db.appPreferences.get("default").then((preferences) => {
+      if (!active) return;
+      if (preferences) {
+        dispatch(hydrateAppPreferences(preferences));
       }
-
-      if (isManagementRoute) {
-        dispatch(setSelectedClass(null));
-        return;
-      }
-
-      const selectedExists = groups.some((group) => group.id === selectedClassId);
-      if (!selectedExists && groups.length > 0) {
-        dispatch(setSelectedClass(groups[0].id));
-      }
-      if (groups.length === 0) {
-        dispatch(setSelectedClass(null));
-      }
-    };
-
-    void load();
-
+      setPreferencesLoaded(true);
+    });
     return () => {
       active = false;
     };
-  }, [dispatch, isManagementRoute, selectedClassId]);
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    void db.appPreferences.put({
+      id: "default",
+      studentSortBy,
+      studentNameFormat,
+      weekStartsOn
+    });
+  }, [preferencesLoaded, studentNameFormat, studentSortBy, weekStartsOn]);
+
+  useEffect(() => {
+    if (isConfigRoute || isManagementRoute) return;
+
+    let active = true;
+    const load = async () => {
+      const groups = await db.classGroups.orderBy("name").toArray();
+      if (!active) return;
+      const selectedExists = groups.some((group) => group.id === selectedClassId);
+      if (!selectedExists && groups.length > 0) dispatch(setSelectedClass(groups[0].id));
+      if (groups.length === 0) dispatch(setSelectedClass(null));
+    };
+
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [dispatch, isConfigRoute, isManagementRoute, selectedClassId]);
 
   return (
     <div className="app-shell">
       <div className="acet-beam-bg" aria-hidden="true" />
-      <header className="topbar">
-        <div className="brand-block">
-          <h1>ProfePlus</h1>
-          <p>Panel docente inteligente</p>
-        </div>
-        <div className="topbar-actions">
-          <NavLink
-            to="/ai"
-            className={({ isActive }) => `topbar-settings ${isActive ? "active" : ""}`}
-            aria-label="Configuración IA"
-            title="Configuración IA"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="6.5" y="7.5" width="11" height="9" rx="2.5" />
-              <circle cx="10" cy="12" r="1" />
-              <circle cx="14" cy="12" r="1" />
-              <path d="M12 4v2M9 18h6M5 12H3M21 12h-2" />
-            </svg>
-          </NavLink>
-          <NavLink
-            to="/management"
-            className={({ isActive }) => `topbar-settings ${isActive ? "active" : ""}`}
-            aria-label="Configuración"
-            title="Configuración"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="3.2" />
-              <path d="M12 2.8v2.1M12 19.1v2.1M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M2.8 12h2.1M19.1 12h2.1M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
-              <circle cx="12" cy="12" r="7.2" />
-            </svg>
-          </NavLink>
-        </div>
-      </header>
 
-      {isManagementRoute ? null : <TopTabs />}
+      <TopTabs />
+
+      {!isConfigRoute && !isManagementRoute && (
+        <NoContextBanner
+          noClass={!selectedClassId}
+          noSubject={false}
+        />
+      )}
 
       <main className="main-panel">
         <Routes>
           <Route path="/" element={<Navigate replace to="/gradebook" />} />
+
           <Route path="/management" element={<ManagementLayout />}>
             <Route index element={<Navigate replace to="/management/courses" />} />
             <Route path="courses" element={<ManagementCoursesPage />} />
             <Route path="students" element={<ManagementStudentsPage />} />
             <Route path="subjects" element={<ManagementSubjectsPage />} />
+            <Route path="tasks" element={<ManagementTasksPage />} />
             <Route path="units" element={<ManagementUnitsPage />} />
             <Route path="schedule" element={<ManagementSchedulePage />} />
+          </Route>
+
+          <Route path="/config" element={<ConfigLayout />}>
+            <Route index element={<Navigate replace to="/config/preferences" />} />
+            <Route path="preferences" element={<ManagementPreferencesPage />} />
             <Route path="database" element={<ManagementDatabasePage />} />
           </Route>
+
           <Route path="/gradebook" element={<GradebookPage />} />
-          <Route path="/journal" element={<AttendancePage />} />
-          <Route path="/attendance" element={<Navigate replace to="/journal" />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/planner" element={<Navigate replace to="/tasks" />} />
-          <Route path="/rubrics" element={<RubricsPage />} />
+          <Route path="/journal" element={<Navigate replace to="/journal/attendance" />} />
+          <Route path="/journal/attendance" element={<AttendancePage mode="attendance" />} />
+          <Route path="/journal/work" element={<AttendancePage mode="work" />} />
+          <Route path="/attendance" element={<Navigate replace to="/journal/attendance" />} />
+          <Route path="/tasks" element={<Navigate replace to="/management/tasks" />} />
+          <Route path="/planner" element={<Navigate replace to="/management/tasks" />} />
+          <Route path="/rubrics" element={<Navigate replace to="/management/tasks" />} />
           <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/ai" element={<AIAssistantPage />} />
         </Routes>
       </main>
+      <footer className="status-bar" aria-label="Estado de la aplicación">
+        <span>ProfePlus</span>
+        <span>v{packageJson.version}</span>
+      </footer>
     </div>
   );
 }
