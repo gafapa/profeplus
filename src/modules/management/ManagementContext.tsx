@@ -17,10 +17,12 @@ import type {
   UnitBlock,
   SubjectCourseLink,
   SubjectStudentLink,
+  TaskGradebookConfig,
   TaskSubjectLink,
   Task
 } from "../../shared/db/types";
 import { compareStudentsByField } from "../../shared/utils/student";
+import { completeScheduleDays, defaultScheduleDays } from "../../shared/schedule/weekDays";
 import { useAppSelector } from "../../app/hooks";
 
 export type EnrollmentRow = {
@@ -53,7 +55,10 @@ type ManagementContextValue = {
     lastName: string,
     courseId: string,
     photoDataUrl?: string,
-    comments?: string
+    comments?: string,
+    email?: string,
+    hasAcs?: boolean,
+    hasReinforcement?: boolean
   ) => Promise<void>;
   createEmptyStudent: (courseId?: string) => Promise<string | null>;
   updateStudent: (
@@ -62,7 +67,10 @@ type ManagementContextValue = {
     lastName: string,
     courseId: string,
     photoDataUrl?: string,
-    comments?: string
+    comments?: string,
+    email?: string,
+    hasAcs?: boolean,
+    hasReinforcement?: boolean
   ) => Promise<void>;
   addStudentToCourse: (studentId: string, courseId: string) => Promise<void>;
   removeStudentFromCourse: (studentId: string, courseId: string) => Promise<void>;
@@ -140,22 +148,133 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const formatDependencies = (items: Array<[string, number]>): string[] =>
+    items.filter(([, count]) => count > 0).map(([label, count]) => `${label}:${count}`);
+
+  const isMeaningfulTaskGradebookConfig = (config: TaskGradebookConfig): boolean =>
+    Number(config.gradebookWeight ?? 0) > 0 ||
+    Boolean(config.groupId) ||
+    Boolean(config.rubricTemplateId) ||
+    Boolean(config.checklistTemplateId) ||
+    Boolean(config.directGradeEnabled);
+
+  const countStudentRecordedData = async (studentId: string): Promise<Array<[string, number]>> => {
+    const [
+      gradesCount,
+      attendanceCount,
+      taskCommentsCount,
+      rubricAssessmentsCount,
+      checklistAssessmentsCount,
+      directGradesCount,
+      followUpsCount
+    ] = await Promise.all([
+      db.gradeEntries.where("studentId").equals(studentId).count(),
+      db.attendanceEntries.where("studentId").equals(studentId).count(),
+      db.taskStudentComments.where("studentId").equals(studentId).count(),
+      db.taskRubricAssessments.where("studentId").equals(studentId).count(),
+      db.taskChecklistAssessments.where("studentId").equals(studentId).count(),
+      db.taskDirectGrades.where("studentId").equals(studentId).count(),
+      db.studentFollowUps.where("studentId").equals(studentId).count()
+    ]);
+
+    return [
+      ["notas", gradesCount],
+      ["asistencia", attendanceCount],
+      ["comentarios_tareas", taskCommentsCount],
+      ["evaluaciones_rubrica", rubricAssessmentsCount],
+      ["evaluaciones_checklist", checklistAssessmentsCount],
+      ["notas_directas_tareas", directGradesCount],
+      ["seguimiento_tutorial", followUpsCount]
+    ];
+  };
+
+  const countStudentSubjectRecordedData = async (
+    studentId: string,
+    subjectId: string
+  ): Promise<Array<[string, number]>> => {
+    const [subjectAssessments, subjectTaskLinks] = await Promise.all([
+      db.assessments.where("subjectId").equals(subjectId).toArray(),
+      db.taskSubjectLinks.where("subjectId").equals(subjectId).toArray()
+    ]);
+    const assessmentIds = new Set(subjectAssessments.map((assessment) => assessment.id));
+    const taskIds = new Set(subjectTaskLinks.map((link) => link.taskId));
+
+    const [grades, taskComments, rubricAssessments, checklistAssessments, directGrades] = await Promise.all([
+      db.gradeEntries
+        .where("studentId")
+        .equals(studentId)
+        .filter((entry) => assessmentIds.has(entry.assessmentId))
+        .count(),
+      db.taskStudentComments
+        .where("studentId")
+        .equals(studentId)
+        .filter((row) => taskIds.has(row.taskId))
+        .count(),
+      db.taskRubricAssessments
+        .where("studentId")
+        .equals(studentId)
+        .filter((row) => taskIds.has(row.taskId))
+        .count(),
+      db.taskChecklistAssessments
+        .where("studentId")
+        .equals(studentId)
+        .filter((row) => taskIds.has(row.taskId))
+        .count(),
+      db.taskDirectGrades
+        .where("studentId")
+        .equals(studentId)
+        .filter((row) => taskIds.has(row.taskId))
+        .count()
+    ]);
+
+    return [
+      ["notas", grades],
+      ["comentarios_tareas", taskComments],
+      ["evaluaciones_rubrica", rubricAssessments],
+      ["evaluaciones_checklist", checklistAssessments],
+      ["notas_directas_tareas", directGrades]
+    ];
+  };
+
+  const countTaskSubjectUsage = async (
+    taskId: string,
+    subjectId: string
+  ): Promise<Array<[string, number]>> => {
+    const [sessionsCount, gradebookConfigs, directGradesCount] = await Promise.all([
+      db.taskSessions
+        .where("taskId")
+        .equals(taskId)
+        .filter((session) => session.subjectId === subjectId)
+        .count(),
+      db.taskGradebookConfigs
+        .where("taskId")
+        .equals(taskId)
+        .filter((config) => config.subjectId === subjectId)
+        .toArray(),
+      db.taskDirectGrades
+        .where("taskId")
+        .equals(taskId)
+        .filter((grade) => grade.subjectId === subjectId)
+        .count()
+    ]);
+    const gradebookConfigsCount = gradebookConfigs.filter(isMeaningfulTaskGradebookConfig).length;
+
+    return [
+      ["sesiones", sessionsCount],
+      ["config_tareas_cuaderno", gradebookConfigsCount],
+      ["notas_directas_tareas", directGradesCount]
+    ];
+  };
+
   const loadAll = useCallback(async (): Promise<void> => {
-    // Sembrar días de la semana automáticamente si la BD está vacía
-    const dayCount = await db.scheduleDays.count();
-    if (dayCount === 0) {
-      await db.scheduleDays.bulkPut([
-        { id: "mon", dayOfWeek: 1, dayName: "Lunes",     enabled: true,  blocks: [] },
-        { id: "tue", dayOfWeek: 2, dayName: "Martes",    enabled: true,  blocks: [] },
-        { id: "wed", dayOfWeek: 3, dayName: "Miércoles", enabled: true,  blocks: [] },
-        { id: "thu", dayOfWeek: 4, dayName: "Jueves",    enabled: true,  blocks: [] },
-        { id: "fri", dayOfWeek: 5, dayName: "Viernes",   enabled: true,  blocks: [] },
-        { id: "sat", dayOfWeek: 6, dayName: "Sábado",    enabled: false, blocks: [] },
-        { id: "sun", dayOfWeek: 7, dayName: "Domingo",   enabled: false, blocks: [] }
-      ]);
-      if (!(await db.scheduleSettings.get("default"))) {
-        await db.scheduleSettings.put({ id: "default", defaultBlockDurationMinutes: 50 });
-      }
+    const existingScheduleDays = await db.scheduleDays.orderBy("dayOfWeek").toArray();
+    const completedScheduleDays =
+      existingScheduleDays.length === 0 ? defaultScheduleDays() : completeScheduleDays(existingScheduleDays);
+    if (completedScheduleDays.length !== existingScheduleDays.length) {
+      await db.scheduleDays.bulkPut(completedScheduleDays);
+    }
+    if (!(await db.scheduleSettings.get("default"))) {
+      await db.scheduleSettings.put({ id: "default", defaultBlockDurationMinutes: 50 });
     }
 
     const [
@@ -176,7 +295,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       db.unitBlocks.orderBy("[subjectId+position]").toArray(),
       db.subjectCourseLinks.toArray(),
       db.subjectStudentLinks.toArray(),
-      db.scheduleDays.orderBy("dayOfWeek").toArray(),
+      Promise.resolve(completedScheduleDays),
       db.scheduleSettings.get("default"),
       db.taskSubjectLinks.toArray(),
       db.tasks.toArray()
@@ -305,7 +424,10 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       rubricsCount,
       checklistsCount,
       linksCount,
-      taskGradebookConfigsCount
+      taskGradebookConfigsCount,
+      taskSessionsCount,
+      directGradesByClassCount,
+      followUpsByClassCount
     ] = await Promise.all([
       db.assessments.where("classId").equals(courseId).count(),
       db.gradeEntries.where("classId").equals(courseId).count(),
@@ -313,7 +435,10 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       db.rubricTemplates.where("classId").equals(courseId).count(),
       db.checklistTemplates.where("classId").equals(courseId).count(),
       db.subjectCourseLinks.where("classId").equals(courseId).count(),
-      db.taskGradebookConfigs.where("classId").equals(courseId).count()
+      db.taskGradebookConfigs.where("classId").equals(courseId).count(),
+      db.taskSessions.where("classId").equals(courseId).count(),
+      db.taskDirectGrades.where("classId").equals(courseId).count(),
+      db.studentFollowUps.where("classId").equals(courseId).count()
     ]);
 
     let subjectAssignmentsCount = 0;
@@ -332,6 +457,9 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       `listas_cotejo:${checklistsCount}`,
       `vinculos_asignatura:${linksCount}`,
       `config_tareas_cuaderno:${taskGradebookConfigsCount}`,
+      `sesiones_tareas:${taskSessionsCount}`,
+      `notas_directas_tareas:${directGradesByClassCount}`,
+      `seguimiento_tutorial:${followUpsByClassCount}`,
       `asignaciones_asignatura:${subjectAssignmentsCount}`,
       `comentarios_tareas:${taskCommentsCount}`
     ].filter((item) => Number(item.split(":")[1]) > 0);
@@ -343,12 +471,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await db.transaction("rw", db.classGroups, db.lessonPlans, db.taskSessions, async () => {
-      await db.classGroups.delete(courseId);
-      // Cleanup legacy planner records that still point to this course.
-      await db.lessonPlans.where("classId").equals(courseId).delete();
-      await db.taskSessions.where("classId").equals(courseId).delete();
-    });
+    await db.classGroups.delete(courseId);
     setNotice("Curso eliminado.");
     await loadAll();
   };
@@ -358,12 +481,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     lastNameValue: string,
     courseId: string,
     photoDataUrl?: string,
-    commentsValue?: string
+    commentsValue?: string,
+    emailValue?: string,
+    hasAcs = false,
+    hasReinforcement = false
   ): Promise<void> => {
     const firstName = firstNameValue.trim();
     const lastName = lastNameValue.trim();
     const fullName = `${firstName} ${lastName}`.trim();
     const comments = commentsValue?.trim() || undefined;
+    const email = emailValue?.trim() || undefined;
     if (firstName.length < 2 || lastName.length < 2 || !courseId) {
       setNotice("Alumno inválido: completa nombre, apellidos y curso.");
       return;
@@ -376,7 +503,10 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       lastName,
       fullName,
       comments,
-      photoDataUrl
+      email,
+      photoDataUrl,
+      hasAcs,
+      hasReinforcement
     });
     setNotice("Alumno creado.");
     await loadAll();
@@ -395,7 +525,9 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       classId: fallbackCourseId,
       firstName: "",
       lastName: "",
-      fullName: ""
+      fullName: "",
+      hasAcs: false,
+      hasReinforcement: false
     });
     setNotice("Alumno en blanco creado.");
     await loadAll();
@@ -423,6 +555,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
     if (student.classId === courseId) {
       setNotice("El alumno ya pertenece a ese curso.");
+      return;
+    }
+    const dependencies = formatDependencies(await countStudentRecordedData(studentId));
+    if (dependencies.length > 0) {
+      setNotice(`No se puede mover el alumno porque tiene datos registrados (${dependencies.join(", ")}).`);
       return;
     }
     const linksToDelete = await getSubjectLinksToDeleteForStudentCourse(studentId, courseId);
@@ -453,13 +590,17 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     lastNameValue: string,
     courseIdValue: string,
     photoDataUrl?: string,
-    commentsValue?: string
+    commentsValue?: string,
+    emailValue?: string,
+    hasAcs = false,
+    hasReinforcement = false
   ): Promise<void> => {
     const firstName = firstNameValue.trim();
     const lastName = lastNameValue.trim();
     const fullName = `${firstName} ${lastName}`.trim();
     const courseId = courseIdValue.trim();
     const comments = commentsValue?.trim() || undefined;
+    const email = emailValue?.trim() || undefined;
     if (!firstName || !lastName || !courseId) {
       setNotice("Datos incompletos: nombre, apellidos y al menos un curso.");
       return;
@@ -467,6 +608,13 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     const current = students.find((student) => student.id === studentId);
     if (!current) {
       return;
+    }
+    if (current.classId !== courseId) {
+      const dependencies = formatDependencies(await countStudentRecordedData(studentId));
+      if (dependencies.length > 0) {
+        setNotice(`No se puede cambiar el curso del alumno porque tiene datos registrados (${dependencies.join(", ")}).`);
+        return;
+      }
     }
     const linksToDelete = await getSubjectLinksToDeleteForStudentCourse(studentId, courseId);
     await db.transaction("rw", db.students, db.subjectStudentLinks, async () => {
@@ -477,7 +625,10 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
         lastName,
         fullName,
         comments,
-        photoDataUrl
+        email,
+        photoDataUrl,
+        hasAcs,
+        hasReinforcement
       });
       if (linksToDelete.length > 0) {
         await db.subjectStudentLinks.bulkDelete(linksToDelete);
@@ -488,30 +639,12 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteStudent = async (studentId: string): Promise<void> => {
-    const [
-      gradesCount,
-      attendanceCount,
-      subjectAssignmentsCount,
-      taskCommentsCount,
-      rubricAssessmentsCount,
-      checklistAssessmentsCount
-    ] = await Promise.all([
-      db.gradeEntries.where("studentId").equals(studentId).count(),
-      db.attendanceEntries.where("studentId").equals(studentId).count(),
-      db.subjectStudentLinks.where("studentId").equals(studentId).count(),
-      db.taskStudentComments.where("studentId").equals(studentId).count(),
-      db.taskRubricAssessments.where("studentId").equals(studentId).count(),
-      db.taskChecklistAssessments.where("studentId").equals(studentId).count()
+    const recordedData = await countStudentRecordedData(studentId);
+    const subjectAssignmentsCount = await db.subjectStudentLinks.where("studentId").equals(studentId).count();
+    const dependencies = formatDependencies([
+      ...recordedData,
+      ["asignaciones_asignatura", subjectAssignmentsCount]
     ]);
-
-    const dependencies = [
-      `notas:${gradesCount}`,
-      `asistencia:${attendanceCount}`,
-      `asignaciones_asignatura:${subjectAssignmentsCount}`,
-      `comentarios_tareas:${taskCommentsCount}`,
-      `evaluaciones_rubrica:${rubricAssessmentsCount}`,
-      `evaluaciones_checklist:${checklistAssessmentsCount}`
-    ].filter((item) => Number(item.split(":")[1]) > 0);
 
     if (dependencies.length > 0) {
       setNotice(
@@ -631,8 +764,46 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
     const uniqueCourseIds = Array.from(new Set(courseIds.filter(Boolean)));
+    const currentSubjectLinks = await db.subjectCourseLinks.where("subjectId").equals(subjectId).toArray();
+    const nextCourseSet = new Set(uniqueCourseIds);
+    const removedCourseIds = currentSubjectLinks
+      .filter((link) => !nextCourseSet.has(link.classId))
+      .map((link) => link.classId);
+    const removalDependencies: string[] = [];
+    for (const classId of removedCourseIds) {
+      const [assessmentsCount, gradebookGroupsCount, taskConfigs, taskSessionsCount, directGradesCount] = await Promise.all([
+        db.assessments.where("[classId+subjectId]").equals([classId, subjectId]).count(),
+        db.gradebookGroups.where("[classId+subjectId]").equals([classId, subjectId]).count(),
+        db.taskGradebookConfigs.where("[classId+subjectId]").equals([classId, subjectId]).toArray(),
+        db.taskSessions.where("[subjectId+classId]").equals([subjectId, classId]).count(),
+        db.taskDirectGrades.where("subjectId").equals(subjectId).filter((grade) => grade.classId === classId).count()
+      ]);
+      const taskConfigsCount = taskConfigs.filter(isMeaningfulTaskGradebookConfig).length;
+      const courseName = courses.find((course) => course.id === classId)?.name ?? classId;
+      const dependencies = formatDependencies([
+        ["evaluaciones", assessmentsCount],
+        ["carpetas_cuaderno", gradebookGroupsCount],
+        ["config_tareas_cuaderno", taskConfigsCount],
+        ["sesiones_tareas", taskSessionsCount],
+        ["notas_directas_tareas", directGradesCount]
+      ]);
+      if (dependencies.length > 0) {
+        removalDependencies.push(`${courseName} (${dependencies.join(", ")})`);
+      }
+    }
+    if (removalDependencies.length > 0) {
+      setNotice(`No se puede quitar la asignatura de esos cursos porque tiene datos: ${removalDependencies.join("; ")}.`);
+      return;
+    }
 
-    await db.transaction("rw", db.subjects, db.subjectCourseLinks, db.subjectStudentLinks, db.students, async () => {
+    await db.transaction(
+      "rw",
+      db.subjects,
+      db.subjectCourseLinks,
+      db.subjectStudentLinks,
+      db.students,
+      db.taskGradebookConfigs,
+      async () => {
       const subject = await db.subjects.get(subjectId);
       if (!subject) {
         return;
@@ -644,13 +815,20 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
         scheduleSlotIds
       });
 
-      const currentLinks = await db.subjectCourseLinks.where("subjectId").equals(subjectId).toArray();
-      const currentByCourse = new Map(currentLinks.map((item) => [item.classId, item]));
+      const currentByCourse = new Map(currentSubjectLinks.map((item) => [item.classId, item]));
       const nextSet = new Set(uniqueCourseIds);
 
-      for (const link of currentLinks) {
+      for (const link of currentSubjectLinks) {
         if (!nextSet.has(link.classId)) {
           await db.subjectCourseLinks.delete(link.id);
+          const emptyConfigs = await db.taskGradebookConfigs
+            .where("[classId+subjectId]")
+            .equals([link.classId, subjectId])
+            .filter((config) => !isMeaningfulTaskGradebookConfig(config))
+            .toArray();
+          if (emptyConfigs.length > 0) {
+            await db.taskGradebookConfigs.bulkDelete(emptyConfigs.map((config) => config.id));
+          }
           // Clean up student subject links for students in the removed course
           const studentsInCourse = await db.students.where("classId").equals(link.classId).toArray();
           if (studentsInCourse.length > 0) {
@@ -676,35 +854,45 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
           });
         }
       }
-    });
+      }
+    );
 
     setNotice("Asignatura actualizada.");
     await loadAll();
   };
 
   const deleteSubject = async (subjectId: string): Promise<void> => {
-    // Borrado en cascada: links relacionales se eliminan siempre
-    // Solo se bloquea si hay contenido real (unidades, tareas vinculadas, carpetas del cuaderno)
-    const [unitsCount, tasksCount, gradebookGroupsCount, taskConfigsCount] = await Promise.all([
+    const [unitsCount, tasksCount, gradebookGroupsCount, taskConfigs, assessmentsCount, taskSessionsCount, directGradesCount] = await Promise.all([
       db.unitBlocks.where("subjectId").equals(subjectId).count(),
       db.taskSubjectLinks.where("subjectId").equals(subjectId).count(),
       db.gradebookGroups.where("subjectId").equals(subjectId).count(),
-      db.taskGradebookConfigs.where("subjectId").equals(subjectId).count()
+      db.taskGradebookConfigs.where("subjectId").equals(subjectId).toArray(),
+      db.assessments.where("subjectId").equals(subjectId).count(),
+      db.taskSessions.where("subjectId").equals(subjectId).count(),
+      db.taskDirectGrades.where("subjectId").equals(subjectId).count()
+    ]);
+    const taskConfigsCount = taskConfigs.filter(isMeaningfulTaskGradebookConfig).length;
+
+    const blocking = formatDependencies([
+      ["unidades", unitsCount],
+      ["tareas", tasksCount],
+      ["carpetas_cuaderno", gradebookGroupsCount],
+      ["config_tareas_cuaderno", taskConfigsCount],
+      ["evaluaciones", assessmentsCount],
+      ["sesiones_tareas", taskSessionsCount],
+      ["notas_directas_tareas", directGradesCount]
     ]);
 
-    const blocking = [
-      unitsCount > 0 ? `${unitsCount} unidades` : "",
-      tasksCount > 0 ? `${tasksCount} tareas` : "",
-      gradebookGroupsCount > 0 ? `${gradebookGroupsCount} carpetas del cuaderno` : "",
-      taskConfigsCount > 0 ? `${taskConfigsCount} configuraciones de cuaderno` : ""
-    ].filter(Boolean);
-
     if (blocking.length > 0) {
-      setNotice(`Elimina primero: ${blocking.join(", ")}.`);
+      setNotice(`No se puede eliminar la asignatura porque tiene dependencias (${blocking.join(", ")}).`);
       return;
     }
 
-    await db.transaction("rw", db.subjects, db.subjectCourseLinks, db.subjectStudentLinks, async () => {
+    const emptyConfigIds = taskConfigs.filter((config) => !isMeaningfulTaskGradebookConfig(config)).map((config) => config.id);
+    await db.transaction("rw", db.subjects, db.subjectCourseLinks, db.subjectStudentLinks, db.taskGradebookConfigs, async () => {
+      if (emptyConfigIds.length > 0) {
+        await db.taskGradebookConfigs.bulkDelete(emptyConfigIds);
+      }
       await db.subjectCourseLinks.where("subjectId").equals(subjectId).delete();
       await db.subjectStudentLinks.where("subjectId").equals(subjectId).delete();
       await db.subjects.delete(subjectId);
@@ -731,6 +919,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
         });
       }
     } else if (existing) {
+      const dependencies = formatDependencies(await countStudentSubjectRecordedData(studentId, subjectId));
+      if (dependencies.length > 0) {
+        setNotice(`No se puede quitar al alumno de la asignatura porque tiene datos (${dependencies.join(", ")}).`);
+        return;
+      }
       await db.subjectStudentLinks.delete(existing.id);
     }
 
@@ -1037,39 +1230,54 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteTask = async (taskId: string): Promise<void> => {
-    await db.transaction(
-      "rw",
-      [
-        db.tasks,
-        db.taskSubjectLinks,
-        db.taskGradebookConfigs,
-        db.taskSessions,
-        db.taskStudentComments,
-        db.taskDailyEvaluationSettings,
-        db.taskRubricAssessments,
-        db.taskChecklistAssessments,
-        db.rubricTemplates,
-        db.checklistTemplates
-      ],
-      async () => {
-        await db.tasks.delete(taskId);
-        await db.taskSubjectLinks.where("taskId").equals(taskId).delete();
-        await db.taskGradebookConfigs.where("taskId").equals(taskId).delete();
-        await db.taskSessions.where("taskId").equals(taskId).delete();
-        await db.taskStudentComments.where("taskId").equals(taskId).delete();
-        await db.taskDailyEvaluationSettings.where("taskId").equals(taskId).delete();
-        await db.taskRubricAssessments.where("taskId").equals(taskId).delete();
-        await db.taskChecklistAssessments.where("taskId").equals(taskId).delete();
-        const taskRubrics = await db.rubricTemplates.where("taskId").equals(taskId).toArray();
-        if (taskRubrics.length > 0) {
-          await db.rubricTemplates.bulkDelete(taskRubrics.map((t) => t.id));
-        }
-        const taskChecklists = await db.checklistTemplates.where("taskId").equals(taskId).toArray();
-        if (taskChecklists.length > 0) {
-          await db.checklistTemplates.bulkDelete(taskChecklists.map((t) => t.id));
-        }
+    const [
+      subjectLinksCount,
+      gradebookConfigs,
+      sessionsCount,
+      commentsCount,
+      dailySettingsCount,
+      rubricAssessmentsCount,
+      checklistAssessmentsCount,
+      directGradesCount,
+      rubricsCount,
+      checklistsCount
+    ] = await Promise.all([
+      db.taskSubjectLinks.where("taskId").equals(taskId).count(),
+      db.taskGradebookConfigs.where("taskId").equals(taskId).toArray(),
+      db.taskSessions.where("taskId").equals(taskId).count(),
+      db.taskStudentComments.where("taskId").equals(taskId).count(),
+      db.taskDailyEvaluationSettings.where("taskId").equals(taskId).count(),
+      db.taskRubricAssessments.where("taskId").equals(taskId).count(),
+      db.taskChecklistAssessments.where("taskId").equals(taskId).count(),
+      db.taskDirectGrades.where("taskId").equals(taskId).count(),
+      db.rubricTemplates.where("taskId").equals(taskId).count(),
+      db.checklistTemplates.where("taskId").equals(taskId).count()
+    ]);
+    const gradebookConfigsCount = gradebookConfigs.filter(isMeaningfulTaskGradebookConfig).length;
+    const dependencies = formatDependencies([
+      ["vinculos_asignatura", subjectLinksCount],
+      ["config_tareas_cuaderno", gradebookConfigsCount],
+      ["sesiones", sessionsCount],
+      ["comentarios", commentsCount],
+      ["ajustes_evaluacion", dailySettingsCount],
+      ["evaluaciones_rubrica", rubricAssessmentsCount],
+      ["evaluaciones_checklist", checklistAssessmentsCount],
+      ["notas_directas_tareas", directGradesCount],
+      ["rubricas", rubricsCount],
+      ["listas_cotejo", checklistsCount]
+    ]);
+    if (dependencies.length > 0) {
+      setNotice(`No se puede eliminar la tarea porque tiene dependencias (${dependencies.join(", ")}).`);
+      return;
+    }
+
+    const emptyConfigIds = gradebookConfigs.filter((config) => !isMeaningfulTaskGradebookConfig(config)).map((config) => config.id);
+    await db.transaction("rw", db.tasks, db.taskGradebookConfigs, async () => {
+      if (emptyConfigIds.length > 0) {
+        await db.taskGradebookConfigs.bulkDelete(emptyConfigIds);
       }
-    );
+      await db.tasks.delete(taskId);
+    });
     setNotice("Tarea eliminada.");
     await loadAll();
   };
@@ -1102,21 +1310,37 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   ): Promise<void> => {
     const existing = await db.taskSubjectLinks.get(linkId);
     if (!existing) return;
+    if ((existing.unitId ?? "") !== (unitId ?? "")) {
+      const dependencies = formatDependencies(await countTaskSubjectUsage(existing.taskId, existing.subjectId));
+      if (dependencies.length > 0) {
+        setNotice(`No se puede cambiar la unidad del vínculo porque ya tiene datos (${dependencies.join(", ")}).`);
+        return;
+      }
+    }
     await db.taskSubjectLinks.put({ ...existing, unitId: unitId || undefined });
     await loadAll();
   };
 
   const removeTaskSubjectLink = async (linkId: string): Promise<void> => {
     const link = await db.taskSubjectLinks.get(linkId);
+    if (!link) {
+      return;
+    }
+    const dependencies = formatDependencies(await countTaskSubjectUsage(link.taskId, link.subjectId));
+    if (dependencies.length > 0) {
+      setNotice(`No se puede eliminar el vínculo porque ya tiene datos (${dependencies.join(", ")}).`);
+      return;
+    }
+    const emptyConfigs = await db.taskGradebookConfigs
+      .where("taskId")
+      .equals(link.taskId)
+      .filter((config) => config.subjectId === link.subjectId && !isMeaningfulTaskGradebookConfig(config))
+      .toArray();
     await db.transaction("rw", db.taskSubjectLinks, db.taskGradebookConfigs, async () => {
-      await db.taskSubjectLinks.delete(linkId);
-      if (link) {
-        await db.taskGradebookConfigs
-          .where("taskId")
-          .equals(link.taskId)
-          .filter((config) => config.subjectId === link.subjectId)
-          .delete();
+      if (emptyConfigs.length > 0) {
+        await db.taskGradebookConfigs.bulkDelete(emptyConfigs.map((config) => config.id));
       }
+      await db.taskSubjectLinks.delete(linkId);
     });
     setNotice("Vínculo eliminado.");
     await loadAll();

@@ -33,15 +33,15 @@ export default defineConfig(({ mode }) => {
       VitePWA({
         injectRegister: "auto",
         strategies: "generateSW",
-        registerType: "autoUpdate",
+        registerType: "prompt",
         includeAssets: ["pwa-icon.svg"],
         workbox: {
           globPatterns: ["**/*.{js,css,html,ico,png,svg,webp,json}"],
           navigateFallback: "index.html",
           maximumFileSizeToCacheInBytes: 7 * 1024 * 1024,
           cleanupOutdatedCaches: true,
-          clientsClaim: true,
-          skipWaiting: true
+          clientsClaim: false,
+          skipWaiting: false
         },
         manifest: {
           id: base,

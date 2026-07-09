@@ -14,6 +14,7 @@ import { ManagementStudentsPage } from "./modules/management/ManagementStudentsP
 import { ManagementSubjectsPage } from "./modules/management/ManagementSubjectsPage";
 import { ManagementTasksPage } from "./modules/management/ManagementTasksPage";
 import { ManagementUnitsPage } from "./modules/management/ManagementUnitsPage";
+import { PlannerPage } from "./modules/planner/PlannerPage";
 import { ReportsPage } from "./modules/reports/ReportsPage";
 import { enableAiExtensionOverlay } from "./shared/ai/extensionOverlay";
 import { db } from "./shared/db/database";
@@ -118,7 +119,7 @@ function App() {
           <Route path="/journal/work" element={<AttendancePage mode="work" />} />
           <Route path="/attendance" element={<Navigate replace to="/journal/attendance" />} />
           <Route path="/tasks" element={<Navigate replace to="/management/tasks" />} />
-          <Route path="/planner" element={<Navigate replace to="/management/tasks" />} />
+          <Route path="/planner" element={<PlannerPage />} />
           <Route path="/rubrics" element={<Navigate replace to="/management/tasks" />} />
           <Route path="/reports" element={<ReportsPage />} />
         </Routes>

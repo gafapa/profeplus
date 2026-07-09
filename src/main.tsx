@@ -10,7 +10,15 @@ import { store } from "./app/store";
 import { UnsavedChangesDialogProvider } from "./shared/ui/UnsavedChangesDialog";
 import "./styles.css";
 
-registerSW({ immediate: true });
+const updateServiceWorker = registerSW({
+  immediate: false,
+  onNeedRefresh() {
+    const shouldReload = window.confirm("Hay una nueva version de ProfePlus. ¿Quieres recargar ahora?");
+    if (shouldReload) {
+      void updateServiceWorker(true);
+    }
+  }
+});
 const rawHistory = createBrowserHistory();
 type RouterHistory = HistoryRouterProps["history"];
 type BlockableRouterHistory = RouterHistory & {

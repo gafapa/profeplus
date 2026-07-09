@@ -59,6 +59,8 @@ export type Student = {
   comments?: string;
   photoDataUrl?: string;
   email?: string;
+  hasAcs?: boolean;
+  hasReinforcement?: boolean;
 };
 
 export type Assessment = {
@@ -94,18 +96,6 @@ export type AttendanceEntry = {
   note?: string;
 };
 
-export type LessonPlan = {
-  id: string;
-  classId: string;
-  date: string;
-  unit: string;
-  objective: string;
-  activity: string;
-  resources?: string;
-  homework?: string;
-  status?: "planned" | "taught";
-};
-
 /** Reusable task definition. Subject, unit, and gradebook settings live in related tables. */
 export type Task = {
   id: string;
@@ -132,6 +122,7 @@ export type TaskGradebookConfig = {
   groupId?: string;
   rubricTemplateId?: string;
   checklistTemplateId?: string;
+  directGradeEnabled?: boolean;
 };
 
 export type GradebookGroup = {
@@ -148,15 +139,23 @@ export type TaskSession = {
   id: string;
   taskId: string;
   subjectId: string;
-  /** Curso para el que se planifica esta sesión (la misma tarea puede tener sesiones distintas por curso). */
+  /** Class group for this planned session; the same task may have different sessions per class. */
   classId: string;
   date: string;
   scheduleSlotId: string;
+  status?: "planned" | "done" | "moved" | "cancelled";
+  objectives?: string;
+  competencies?: string;
+  materials?: string;
+  homework?: string;
+  teacherNotes?: string;
 };
 
 export type TaskStudentComment = {
   id: string;
   taskId: string;
+  subjectId?: string;
+  classId?: string;
   date?: string;
   scheduleSlotId?: string;
   studentId: string;
@@ -166,6 +165,8 @@ export type TaskStudentComment = {
 export type TaskDailyEvaluationSetting = {
   id: string;
   taskId: string;
+  subjectId?: string;
+  classId?: string;
   date: string;
   scheduleSlotId?: string;
   generalComment?: string;
@@ -176,6 +177,8 @@ export type TaskDailyEvaluationSetting = {
 export type TaskRubricAssessment = {
   id: string;
   taskId: string;
+  subjectId?: string;
+  classId?: string;
   date: string;
   scheduleSlotId?: string;
   studentId: string;
@@ -188,12 +191,23 @@ export type TaskRubricAssessment = {
 export type TaskChecklistAssessment = {
   id: string;
   taskId: string;
+  subjectId?: string;
+  classId?: string;
   date: string;
   scheduleSlotId?: string;
   studentId: string;
   checklistTemplateId: string;
   itemId: string;
   checked: boolean;
+};
+
+export type TaskDirectGrade = {
+  id: string;
+  taskId: string;
+  subjectId: string;
+  classId: string;
+  studentId: string;
+  score: number;
 };
 
 export type RubricTemplate = {
@@ -245,4 +259,18 @@ export type SubjectStudentLink = {
   id: string;
   subjectId: string;
   studentId: string;
+};
+
+export type StudentFollowUpKind = "incident" | "family" | "tutorial" | "agreement" | "adaptation" | "wellbeing";
+
+export type StudentFollowUp = {
+  id: string;
+  studentId: string;
+  classId: string;
+  date: string;
+  kind: StudentFollowUpKind;
+  title: string;
+  notes: string;
+  nextStep?: string;
+  resolved: boolean;
 };

@@ -52,6 +52,10 @@ const PROMPT_EVENT = "ai-runtime-extension:prompt";
 const PROMPT_RESULT_EVENT = "ai-runtime-extension:prompt-result";
 const DEFAULT_TIMEOUT_MS = 180000;
 
+function configuredExtensionId(): string {
+  return import.meta.env.VITE_AI_RUNTIME_EXTENSION_ID?.trim() ?? "";
+}
+
 type ExtensionReadyDetail = {
   target?: string;
   extensionId?: string;
@@ -60,6 +64,7 @@ type ExtensionReadyDetail = {
 
 type PromptResultDetail = {
   target?: string;
+  extensionId?: string;
   ok?: boolean;
   requestId?: string;
   response?: unknown;
@@ -131,6 +136,7 @@ export function activateAiExtensionModule(): void {
 
 export function detectAiExtension(timeoutMs = 1200): Promise<ExtensionReadyDetail | null> {
   return new Promise((resolve) => {
+    const expectedExtensionId = configuredExtensionId();
     let settled = false;
     const finish = (detail: ExtensionReadyDetail | null) => {
       if (settled) {
@@ -143,13 +149,17 @@ export function detectAiExtension(timeoutMs = 1200): Promise<ExtensionReadyDetai
     };
     const handleReady = (event: CustomEvent<ExtensionReadyDetail>) => {
       const detail = event.detail;
-      if (detail?.target === EXTENSION_EVENT_TARGET && detail.extensionId) {
+      if (
+        detail?.target === EXTENSION_EVENT_TARGET &&
+        detail.extensionId &&
+        (!expectedExtensionId || detail.extensionId === expectedExtensionId)
+      ) {
         finish(detail);
       }
     };
     const timeoutId = window.setTimeout(() => finish(null), timeoutMs);
     window.addEventListener(READY_EVENT, handleReady as EventListener);
-    dispatchExtensionEvent(PING_EVENT);
+    dispatchExtensionEvent(PING_EVENT, expectedExtensionId ? { extensionId: expectedExtensionId } : {});
   });
 }
 
@@ -182,6 +192,7 @@ export async function generateAiText(messages: AiMessage[], options: AiChatOptio
 
   activateAiExtensionModule();
   const requestId = createRequestId();
+  const expectedExtensionId = configuredExtensionId();
 
   return await new Promise<AiChatResult>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
@@ -197,6 +208,14 @@ export async function generateAiText(messages: AiMessage[], options: AiChatOptio
     const handlePromptResult = (event: CustomEvent<PromptResultDetail>) => {
       const detail = event.detail;
       if (detail?.target !== EXTENSION_EVENT_TARGET || detail.requestId !== requestId) {
+        return;
+      }
+      if (
+        (expectedExtensionId && detail.extensionId !== expectedExtensionId) ||
+        (!expectedExtensionId && detail.extensionId && detail.extensionId !== detected.extensionId)
+      ) {
+        cleanup();
+        reject(new Error("AI runtime extension identity could not be verified."));
         return;
       }
       cleanup();
@@ -223,6 +242,7 @@ export async function generateAiText(messages: AiMessage[], options: AiChatOptio
 
     window.addEventListener(PROMPT_RESULT_EVENT, handlePromptResult as EventListener);
     dispatchPromptEvent(requestId, {
+      extensionId: expectedExtensionId || detected.extensionId,
       prompt,
       messages: normalizedMessages,
       ...(options.provider ? { provider: options.provider } : {}),

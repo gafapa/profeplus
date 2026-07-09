@@ -348,14 +348,24 @@ export function ManagementSchedulePage() {
                             />
                           </td>
                           <td>
-                            <label className="chip-toggle schedule-break-toggle">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(block.isBreak)}
-                                onChange={(event) => toggleBlockBreak(block.id, event.target.checked)}
-                              />
-                              {block.isBreak ? "Descanso" : "Clase"}
-                            </label>
+                            <div className="schedule-block-type-control" aria-label={`Tipo de bloque ${block.startTime} - ${block.endTime}`}>
+                              <button
+                                type="button"
+                                className={`schedule-block-type-option ${!block.isBreak ? "active" : ""}`}
+                                aria-pressed={!block.isBreak}
+                                onClick={() => toggleBlockBreak(block.id, false)}
+                              >
+                                Clase
+                              </button>
+                              <button
+                                type="button"
+                                className={`schedule-block-type-option break ${block.isBreak ? "active" : ""}`}
+                                aria-pressed={Boolean(block.isBreak)}
+                                onClick={() => toggleBlockBreak(block.id, true)}
+                              >
+                                Descanso
+                              </button>
+                            </div>
                           </td>
                           <td className="actions-cell">
                             <IconButton

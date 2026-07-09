@@ -8,6 +8,7 @@ import type { ClassGroup, Subject } from "../db/types";
 const allItems = [
   { to: "/journal/attendance",      label: "Asistencia",   icon: "journal",    tone: "attendance" },
   { to: "/journal/work",            label: "Trabajo",      icon: "tasks",      tone: "work" },
+  { to: "/planner",                 label: "Planner",      icon: "planner",    tone: "planner" },
   { to: "/gradebook",               label: "Cuaderno",     icon: "gradebook",  tone: "gradebook" },
   { to: "/management/courses",      label: "Cursos",       icon: "courses" },
   { to: "/management/students",     label: "Alumnos",      icon: "students" },
@@ -15,7 +16,7 @@ const allItems = [
   { to: "/management/units",        label: "Unidades",     icon: "units" },
   { to: "/management/tasks",        label: "Tareas",       icon: "tasks" },
   { to: "/management/schedule",     label: "Horario",      icon: "schedule" },
-  { to: "/reports",                 label: "Informes",     icon: "reports" },
+  { to: "/reports",                 label: "Informes",     icon: "reports",    tone: "reports" },
 ];
 
 const rightItems = [
@@ -40,6 +41,8 @@ function TopTabIcon({ icon }: { icon: string }) {
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h12v14H6zM9 10l1 1 3-3M9 16l1 1 3-3M15 10h1M15 16h1" /></svg>;
     case "schedule":
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v3M18 4v3M4 8h16v12H4zM8 12h3M13 12h3M8 16h3" /></svg>;
+    case "planner":
+      return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v3M18 4v3M4 8h16v12H4zM8 12h3M13 12h3M8 16h8" /><path d="m15 5 2 2 4-4" /></svg>;
     case "reports":
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V5h14v14zM9 16V9M12 16v-4M15 16v-7" /></svg>;
     case "config":
@@ -65,7 +68,7 @@ export function TopTabs() {
     isConfigRoute ||
     isJournalRoute ||
     location.pathname.startsWith("/gradebook") ||
-    location.pathname.startsWith("/rubrics") ||
+    location.pathname.startsWith("/planner") ||
     location.pathname.startsWith("/reports") ||
     location.pathname.startsWith("/management/units") ||
     location.pathname.startsWith("/management/tasks");

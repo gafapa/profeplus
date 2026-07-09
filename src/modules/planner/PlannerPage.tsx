@@ -1,733 +1,796 @@
 import { useEffect, useMemo, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { useAppSelector } from "../../app/hooks";
-import type { WeekStartsOn } from "../../app/store";
 import { db } from "../../shared/db/database";
 import type {
+  ClassGroup,
+  ScheduleBlock,
   ScheduleDay,
   Subject,
+  SubjectCourseLink,
   Task,
   TaskSession,
   TaskSubjectLink,
   UnitBlock
 } from "../../shared/db/types";
-import { IconButton } from "../../shared/ui/IconButton";
+import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { Modal } from "../../shared/ui/Modal";
-import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import {
+  SESSION_STATUSES,
+  normalizeSessionPlanDraft,
+  sessionPlanDraftFromSession,
+  sessionStatusLabel,
+  type SessionPlanDraft
+} from "../../shared/planner/sessionPlan";
+import { addDays, buildVisiblePlannerWeekDates, formatWeekRange, startOfWeek, toIsoDate } from "../../shared/planner/week";
+import { buildPrintablePlannerReport, type PrintablePlannerSession } from "../../shared/planner/printablePlanner";
+import { buildPrintableReportHtml } from "../../shared/reports/printableReports";
 
-type TaskSessionDraft = {
+type PlannerCell = {
+  key: string;
   date: string;
-  scheduleSlotId: string;
+  dayName: string;
+  block: ScheduleBlock;
+  subject: Subject;
+  classGroup: ClassGroup;
+  session?: TaskSession;
 };
 
-type SlotOption = {
-  slotId: string;
-  label: string;
-  occupied: boolean;
-  assignedToCurrentTask: boolean;
+type SessionDataCounts = {
+  comments: number;
+  dailySettings: number;
+  rubricAssessments: number;
+  checklistAssessments: number;
 };
 
-const MONDAY_FIRST_WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
-const SUNDAY_FIRST_WEEKDAY_LABELS = ["D", "L", "M", "X", "J", "V", "S"];
-const MONTH_LABELS = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre"
-];
-
-function toIsoDate(value: Date): string {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function cellKey(classId: string, subjectId: string, date: string, slotId: string): string {
+  return `${classId}:${subjectId}:${date}:${slotId}`;
 }
 
-function isoDayOfWeek(isoDate: string): number {
-  const [year, month, day] = isoDate.split("-").map((item) => Number(item));
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-    return 0;
+function classSlotKey(classId: string, date: string, slotId: string): string {
+  return `${classId}:${date}:${slotId}`;
+}
+
+function taskSubjectKey(taskId: string, subjectId: string): string {
+  return `${taskId}:${subjectId}`;
+}
+
+function formatBlockTime(block: ScheduleBlock): string {
+  return `${block.startTime} - ${block.endTime}`;
+}
+
+function downloadHtml(filename: string, html: string): void {
+  const blob = new Blob(["\uFEFF" + html], { type: "text/html;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } finally {
+    URL.revokeObjectURL(url);
   }
-  const date = new Date(year, month - 1, day);
-  const jsDay = date.getDay();
-  return jsDay === 0 ? 7 : jsDay;
 }
 
-function monthStart(value: Date): Date {
-  return new Date(value.getFullYear(), value.getMonth(), 1);
+function sessionDataTotal(counts: SessionDataCounts): number {
+  return counts.comments + counts.dailySettings + counts.rubricAssessments + counts.checklistAssessments;
 }
 
-function addMonths(value: Date, delta: number): Date {
-  return new Date(value.getFullYear(), value.getMonth() + delta, 1);
-}
-
-function weekStartIndex(value: Date, weekStartsOn: WeekStartsOn): number {
-  if (weekStartsOn === "sunday") {
-    return value.getDay();
-  }
-  return (value.getDay() + 6) % 7;
-}
-
-function weekdayLabels(weekStartsOn: WeekStartsOn): string[] {
-  return weekStartsOn === "sunday" ? SUNDAY_FIRST_WEEKDAY_LABELS : MONDAY_FIRST_WEEKDAY_LABELS;
-}
-
-function monthGrid(value: Date, weekStartsOn: WeekStartsOn): { date: Date; inMonth: boolean }[] {
-  const start = monthStart(value);
-  const startOffset = weekStartIndex(start, weekStartsOn);
-  const gridStart = new Date(start);
-  gridStart.setDate(start.getDate() - startOffset);
-
-  const items: { date: Date; inMonth: boolean }[] = [];
-  for (let index = 0; index < 42; index += 1) {
-    const current = new Date(gridStart);
-    current.setDate(gridStart.getDate() + index);
-    items.push({
-      date: current,
-      inMonth: current.getMonth() === value.getMonth()
-    });
-  }
-  return items;
-}
-
-function uniqueSessionKey(item: TaskSessionDraft): string {
-  return `${item.date}::${item.scheduleSlotId}`;
-}
-
-function compareSessionDraft(a: TaskSessionDraft, b: TaskSessionDraft): number {
-  const byDate = a.date.localeCompare(b.date);
-  if (byDate !== 0) {
-    return byDate;
-  }
-  return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
-}
-
-function normalizeTaskSessions(rows: TaskSession[]): TaskSessionDraft[] {
-  return rows
-    .map((item) => ({
-      date: item.date,
-      scheduleSlotId: item.scheduleSlotId
-    }))
-    .sort(compareSessionDraft);
-}
-
-const today = toIsoDate(new Date());
-
-export function TasksPage() {
+export function PlannerPage() {
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
   const weekStartsOn = useAppSelector((state) => state.app.weekStartsOn);
-
+  const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [units, setUnits] = useState<UnitBlock[]>([]);
+  const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
   const [scheduleDays, setScheduleDays] = useState<ScheduleDay[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskSubjectLinks, setTaskSubjectLinks] = useState<TaskSubjectLink[]>([]);
   const [taskSessions, setTaskSessions] = useState<TaskSession[]>([]);
-
+  const [units, setUnits] = useState<UnitBlock[]>([]);
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), weekStartsOn));
+  const [selectedCell, setSelectedCell] = useState<PlannerCell | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
-  const [taskSearch, setTaskSearch] = useState("");
+  const [sessionPlanDraft, setSessionPlanDraft] = useState<SessionPlanDraft>(() => sessionPlanDraftFromSession());
+  const [draggedSessionId, setDraggedSessionId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [isBusy, setIsBusy] = useState(false);
 
-  const [detailSessions, setDetailSessions] = useState<TaskSessionDraft[]>([]);
-  const [taskNotice, setTaskNotice] = useState("");
-  const [taskDirty, setTaskDirty] = useState(false);
-  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
-
-  const [sessionDate, setSessionDate] = useState(today);
-  const [sessionCalendarMonth, setSessionCalendarMonth] = useState(() => monthStart(new Date()));
-
-  const loadAll = async (): Promise<void> => {
+  const loadPlannerData = async (): Promise<void> => {
     const [
+      classGroupsData,
       subjectsData,
       subjectCourseLinksData,
-      unitsData,
       scheduleDaysData,
-      linksData,
-      taskSessionsData
+      tasksData,
+      taskSubjectLinksData,
+      taskSessionsData,
+      unitsData
     ] = await Promise.all([
+      db.classGroups.orderBy("name").toArray(),
       db.subjects.orderBy("name").toArray(),
-      selectedClassId
-        ? db.subjectCourseLinks.where("classId").equals(selectedClassId).toArray()
-        : Promise.resolve([]),
-      db.unitBlocks.orderBy("[subjectId+position]").toArray(),
+      db.subjectCourseLinks.toArray(),
       db.scheduleDays.orderBy("dayOfWeek").toArray(),
-      selectedSubjectId
-        ? db.taskSubjectLinks.where("subjectId").equals(selectedSubjectId).toArray()
-        : Promise.resolve([]),
-      selectedClassId && selectedSubjectId
-        ? db.taskSessions
-            .where("[subjectId+classId]")
-            .equals([selectedSubjectId, selectedClassId])
-            .toArray()
-        : Promise.resolve([])
+      db.tasks.toArray(),
+      db.taskSubjectLinks.toArray(),
+      selectedClassId ? db.taskSessions.where("classId").equals(selectedClassId).toArray() : Promise.resolve([]),
+      db.unitBlocks.orderBy("[subjectId+position]").toArray()
     ]);
 
-    const linkedSubjectIds = new Set(subjectCourseLinksData.map((item) => item.subjectId));
-    const filteredSubjects = subjectsData.filter((item) => linkedSubjectIds.has(item.id));
-    setSubjects(filteredSubjects);
-    setUnits(unitsData);
+    setClassGroups(classGroupsData);
+    setSubjects(subjectsData);
+    setSubjectCourseLinks(subjectCourseLinksData);
     setScheduleDays(scheduleDaysData);
-    setTaskSubjectLinks(linksData);
-
-    // Cargar tareas por IDs únicos extraídos de los vínculos
-    const uniqueTaskIds = [...new Set(linksData.map((l) => l.taskId))];
-    const taskRows = uniqueTaskIds.length > 0 ? await db.tasks.bulkGet(uniqueTaskIds) : [];
-    const tasksData = taskRows.filter((t): t is Task => t !== undefined);
-    setTasks(tasksData);
+    setTasks(tasksData.sort((a, b) => a.title.localeCompare(b.title)));
+    setTaskSubjectLinks(taskSubjectLinksData);
     setTaskSessions(taskSessionsData);
+    setUnits(unitsData);
   };
 
   useEffect(() => {
-    void loadAll();
-  }, [selectedClassId, selectedSubjectId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Nombre de unidad vinculada por taskId (usando la primera coincidencia)
-  const unitNameByTaskId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const link of taskSubjectLinks) {
-      if (link.unitId && !map.has(link.taskId)) {
-        const unit = units.find((u) => u.id === link.unitId);
-        if (unit) map.set(link.taskId, unit.name);
+    let active = true;
+    const run = async (): Promise<void> => {
+      setIsBusy(true);
+      try {
+        await loadPlannerData();
+      } finally {
+        if (active) setIsBusy(false);
       }
-    }
-    return map;
-  }, [taskSubjectLinks, units]);
-
-  const latestSessionDateByTask = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const session of taskSessions) {
-      const current = map.get(session.taskId) ?? "";
-      if (session.date > current) {
-        map.set(session.taskId, session.date);
-      }
-    }
-    return map;
-  }, [taskSessions]);
-
-  const sortedTasks = useMemo(
-    () =>
-      [...tasks].sort((a, b) => {
-        const dateA = latestSessionDateByTask.get(a.id) ?? "";
-        const dateB = latestSessionDateByTask.get(b.id) ?? "";
-        const byDate = dateB.localeCompare(dateA);
-        if (byDate !== 0) {
-          return byDate;
-        }
-        return a.title.localeCompare(b.title);
-      }),
-    [latestSessionDateByTask, tasks]
-  );
-
-  const filteredTasks = useMemo(() => {
-    const term = taskSearch.trim().toLowerCase();
-    if (!term) return sortedTasks;
-    return sortedTasks.filter(
-      (item) =>
-        item.title.toLowerCase().includes(term) ||
-        item.description.toLowerCase().includes(term)
-    );
-  }, [sortedTasks, taskSearch]);
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [selectedClassId]);
 
   useEffect(() => {
-    if (sortedTasks.length === 0) {
-      setSelectedTaskId("");
-      return;
-    }
-    if (!sortedTasks.some((item) => item.id === selectedTaskId)) {
-      setSelectedTaskId(sortedTasks[0].id);
-    }
-  }, [selectedTaskId, sortedTasks]);
+    setWeekStart((current) => startOfWeek(current, weekStartsOn));
+  }, [weekStartsOn]);
 
-  const selectedTask = useMemo(
-    () => sortedTasks.find((item) => item.id === selectedTaskId) ?? null,
-    [selectedTaskId, sortedTasks]
+  const weekDates = useMemo(() => buildVisiblePlannerWeekDates(weekStart, scheduleDays), [scheduleDays, weekStart]);
+
+  const selectedClass = useMemo(
+    () => classGroups.find((classGroup) => classGroup.id === selectedClassId) ?? null,
+    [classGroups, selectedClassId]
   );
 
-  const plannedSessionCount = Math.max(1, Math.round(selectedTask?.sessionCount ?? 1));
+  const subjectsForClass = useMemo(() => {
+    if (!selectedClassId) return [];
+    const linkedSubjectIds = new Set(
+      subjectCourseLinks.filter((link) => link.classId === selectedClassId).map((link) => link.subjectId)
+    );
+    return subjects.filter((subject) => linkedSubjectIds.has(subject.id));
+  }, [selectedClassId, subjectCourseLinks, subjects]);
 
-  const selectedSubject = useMemo(
-    () => subjects.find((item) => item.id === selectedSubjectId) ?? null,
-    [selectedSubjectId, subjects]
-  );
+  const visibleSubjects = useMemo(() => {
+    if (!selectedSubjectId) return subjectsForClass;
+    return subjectsForClass.filter((subject) => subject.id === selectedSubjectId);
+  }, [selectedSubjectId, subjectsForClass]);
 
-  const taskCountById = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of taskSessions) {
-      map.set(item.taskId, (map.get(item.taskId) ?? 0) + 1);
-    }
-    return map;
-  }, [taskSessions]);
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  const subjectById = useMemo(() => new Map(subjects.map((subject) => [subject.id, subject])), [subjects]);
 
-  const slotLabelById = useMemo(() => {
-    const map = new Map<string, string>();
+  const scheduleBlockById = useMemo(() => {
+    const map = new Map<string, ScheduleBlock>();
     for (const day of scheduleDays) {
       for (const block of day.blocks) {
-        if (block.isBreak) continue;
-        map.set(block.id, `${day.dayName} ${block.startTime} - ${block.endTime}`);
+        map.set(block.id, block);
       }
     }
     return map;
   }, [scheduleDays]);
 
-  const selectedSubjectSlotIds = useMemo(
-    () => new Set(selectedSubject?.scheduleSlotIds ?? []),
-    [selectedSubject]
-  );
-
-  const scheduleByDayForSelectedSubject = useMemo(() => {
-    const map = new Map<number, ScheduleDay>();
-    for (const day of scheduleDays) {
-      if (!day.enabled) continue;
-      const blocks = day.blocks.filter((block) => !block.isBreak && selectedSubjectSlotIds.has(block.id));
-      if (blocks.length === 0) continue;
-      map.set(day.dayOfWeek, { ...day, blocks });
+  const unitNameByTaskSubject = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const link of taskSubjectLinks) {
+      const unit = link.unitId ? unitById.get(link.unitId) : null;
+      if (unit) {
+        map.set(taskSubjectKey(link.taskId, link.subjectId), unit.name);
+      }
     }
     return map;
-  }, [scheduleDays, selectedSubjectSlotIds]);
+  }, [taskSubjectLinks, unitById]);
 
-  const classDayOfWeekSet = useMemo(
-    () => new Set(scheduleByDayForSelectedSubject.keys()),
-    [scheduleByDayForSelectedSubject]
-  );
-
-  // Sesiones ocupadas por otras tareas (sessions ya filtradas por subject+class)
-  const occupiedSessionKeySet = useMemo(() => {
-    const set = new Set<string>();
-    for (const session of taskSessions) {
-      if (selectedTask && session.taskId === selectedTask.id) continue;
-      set.add(`${session.date}::${session.scheduleSlotId}`);
+  const taskLinksBySubject = useMemo(() => {
+    const map = new Map<string, TaskSubjectLink[]>();
+    for (const link of taskSubjectLinks) {
+      const rows = map.get(link.subjectId) ?? [];
+      rows.push(link);
+      map.set(link.subjectId, rows);
     }
-    return set;
-  }, [selectedTask, taskSessions]);
+    return map;
+  }, [taskSubjectLinks]);
 
-  const detailSessionKeySet = useMemo(
-    () => new Set(detailSessions.map(uniqueSessionKey)),
-    [detailSessions]
-  );
-
-  const detailSessionDateSet = useMemo(
-    () => new Set(detailSessions.map((item) => item.date)),
-    [detailSessions]
-  );
-
-  const occupiedCountByDate = useMemo(() => {
+  const taskSessionCountByTaskSubject = useMemo(() => {
     const map = new Map<string, number>();
-    for (const key of occupiedSessionKeySet) {
-      const parts = key.split("::");
-      const date = parts[0] ?? "";
-      if (!date) continue;
-      map.set(date, (map.get(date) ?? 0) + 1);
+    for (const session of taskSessions) {
+      const key = taskSubjectKey(session.taskId, session.subjectId);
+      map.set(key, (map.get(key) ?? 0) + 1);
     }
     return map;
-  }, [occupiedSessionKeySet]);
+  }, [taskSessions]);
 
-  const availableSlotsForSessionDate = useMemo((): SlotOption[] => {
-    if (!selectedSubject) return [];
-    const dayOfWeek = isoDayOfWeek(sessionDate);
-    if (dayOfWeek === 0) return [];
-    const scheduleDay = scheduleByDayForSelectedSubject.get(dayOfWeek);
-    if (!scheduleDay) return [];
-    return scheduleDay.blocks.map((block) => ({
-      slotId: block.id,
-      label: `${scheduleDay.dayName} ${block.startTime} - ${block.endTime}`,
-      occupied: occupiedSessionKeySet.has(`${sessionDate}::${block.id}`),
-      assignedToCurrentTask: detailSessionKeySet.has(`${sessionDate}::${block.id}`)
-    }));
-  }, [detailSessionKeySet, occupiedSessionKeySet, scheduleByDayForSelectedSubject, selectedSubject, sessionDate]);
+  const sessionsByCellKey = useMemo(() => {
+    const map = new Map<string, TaskSession>();
+    for (const session of taskSessions) {
+      map.set(cellKey(session.classId, session.subjectId, session.date, session.scheduleSlotId), session);
+    }
+    return map;
+  }, [taskSessions]);
+
+  const sessionsByClassSlotKey = useMemo(() => {
+    const map = new Map<string, TaskSession>();
+    for (const session of taskSessions) {
+      map.set(classSlotKey(session.classId, session.date, session.scheduleSlotId), session);
+    }
+    return map;
+  }, [taskSessions]);
+
+  const draggedSession = useMemo(
+    () => taskSessions.find((session) => session.id === draggedSessionId) ?? null,
+    [draggedSessionId, taskSessions]
+  );
+
+  const plannerCellsByDate = useMemo(() => {
+    const map = new Map<string, PlannerCell[]>();
+    if (!selectedClass) return map;
+
+    for (const day of weekDates) {
+      const scheduleDay = scheduleDays.find((item) => item.enabled && item.dayOfWeek === day.dayOfWeek);
+      if (!scheduleDay) {
+        map.set(day.iso, []);
+        continue;
+      }
+
+      const cells: PlannerCell[] = [];
+      for (const block of scheduleDay.blocks) {
+        if (block.isBreak) continue;
+        for (const subject of visibleSubjects) {
+          if (!(subject.scheduleSlotIds ?? []).includes(block.id)) continue;
+          const key = cellKey(selectedClass.id, subject.id, day.iso, block.id);
+          cells.push({
+            key,
+            date: day.iso,
+            dayName: scheduleDay.dayName,
+            block,
+            subject,
+            classGroup: selectedClass,
+            session: sessionsByCellKey.get(key)
+          });
+        }
+      }
+
+      cells.sort(
+        (a, b) =>
+          a.block.startTime.localeCompare(b.block.startTime) ||
+          a.subject.name.localeCompare(b.subject.name)
+      );
+      map.set(day.iso, cells);
+    }
+
+    return map;
+  }, [scheduleDays, selectedClass, sessionsByCellKey, visibleSubjects, weekDates]);
+
+  const weekSessions = useMemo(
+    () =>
+      taskSessions.filter((session) => {
+        if (!selectedClassId || session.classId !== selectedClassId) return false;
+        if (selectedSubjectId && session.subjectId !== selectedSubjectId) return false;
+        return weekDates.some((day) => day.iso === session.date);
+      }),
+    [selectedClassId, selectedSubjectId, taskSessions, weekDates]
+  );
+
+  const printablePlannerSessions = useMemo<PrintablePlannerSession[]>(
+    () =>
+      weekSessions.flatMap((session) => {
+        const task = taskById.get(session.taskId);
+        const subject = subjectById.get(session.subjectId);
+        const block = scheduleBlockById.get(session.scheduleSlotId);
+        const day = weekDates.find((item) => item.iso === session.date);
+        if (!task || !subject || !block || !day || !selectedClass) {
+          return [];
+        }
+        return [
+          {
+            date: session.date,
+            dayName: day.label,
+            time: formatBlockTime(block),
+            className: selectedClass.name,
+            subjectName: subject.name,
+            taskTitle: task.title || "Tarea sin título",
+            unitName: unitNameByTaskSubject.get(taskSubjectKey(session.taskId, session.subjectId)),
+            statusLabel: sessionStatusLabel(session.status ?? "planned"),
+            objectives: session.objectives,
+            competencies: session.competencies,
+            materials: session.materials,
+            homework: session.homework,
+            teacherNotes: session.teacherNotes
+          }
+        ];
+      }),
+    [scheduleBlockById, selectedClass, subjectById, taskById, unitNameByTaskSubject, weekDates, weekSessions]
+  );
+
+  const unplannedTasks = useMemo(() => {
+    const rows: Array<{ task: Task; subject: Subject; unitName: string; planned: number; expected: number }> = [];
+    for (const subject of visibleSubjects) {
+      for (const link of taskLinksBySubject.get(subject.id) ?? []) {
+        const task = taskById.get(link.taskId);
+        if (!task) continue;
+        const planned = taskSessionCountByTaskSubject.get(taskSubjectKey(task.id, subject.id)) ?? 0;
+        const expected = Math.max(1, Math.round(task.sessionCount ?? 1));
+        if (planned >= expected) continue;
+        rows.push({
+          task,
+          subject,
+          unitName: link.unitId ? unitById.get(link.unitId)?.name ?? "Unidad sin nombre" : "Sin unidad",
+          planned,
+          expected
+        });
+      }
+    }
+    return rows.sort((a, b) => a.subject.name.localeCompare(b.subject.name) || a.task.title.localeCompare(b.task.title));
+  }, [taskById, taskLinksBySubject, taskSessionCountByTaskSubject, unitById, visibleSubjects]);
+
+  const selectableTasksForCell = useMemo(() => {
+    if (!selectedCell) return [];
+    return (taskLinksBySubject.get(selectedCell.subject.id) ?? [])
+      .map((link) => {
+        const task = taskById.get(link.taskId);
+        if (!task) return null;
+        const planned = taskSessionCountByTaskSubject.get(taskSubjectKey(task.id, selectedCell.subject.id)) ?? 0;
+        const expected = Math.max(1, Math.round(task.sessionCount ?? 1));
+        return {
+          task,
+          unitName: link.unitId ? unitById.get(link.unitId)?.name ?? "Unidad sin nombre" : "Sin unidad",
+          planned,
+          expected
+        };
+      })
+      .filter((row): row is { task: Task; unitName: string; planned: number; expected: number } => Boolean(row))
+      .sort((a, b) => a.unitName.localeCompare(b.unitName) || a.task.title.localeCompare(b.task.title));
+  }, [selectedCell, taskById, taskLinksBySubject, taskSessionCountByTaskSubject, unitById]);
 
   useEffect(() => {
-    const [year, month] = sessionDate.split("-").map((item) => Number(item));
-    if (!Number.isInteger(year) || !Number.isInteger(month)) return;
-    setSessionCalendarMonth(new Date(year, month - 1, 1));
-  }, [sessionDate]);
+    if (!selectedCell) {
+      setSelectedTaskId("");
+      return;
+    }
+    if (selectedCell.session) {
+      setSelectedTaskId(selectedCell.session.taskId);
+      setSessionPlanDraft(sessionPlanDraftFromSession(selectedCell.session));
+      return;
+    }
+    setSelectedTaskId(selectableTasksForCell[0]?.task.id ?? "");
+    setSessionPlanDraft(sessionPlanDraftFromSession());
+  }, [selectedCell, selectableTasksForCell]);
 
-  useEffect(() => {
-    if (classDayOfWeekSet.size === 0) return;
-    if (classDayOfWeekSet.has(isoDayOfWeek(sessionDate))) return;
-    const [year, month, day] = sessionDate.split("-").map((item) => Number(item));
-    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return;
-    const base = new Date(year, month - 1, day);
-    for (let offset = 1; offset <= 21; offset += 1) {
-      const candidate = new Date(base);
-      candidate.setDate(base.getDate() + offset);
-      const candidateIso = toIsoDate(candidate);
-      if (classDayOfWeekSet.has(isoDayOfWeek(candidateIso))) {
-        setSessionDate(candidateIso);
+  const countSessionData = async (session: TaskSession): Promise<SessionDataCounts> => {
+    const [comments, dailySettings, rubricAssessments, checklistAssessments] = await Promise.all([
+      db.taskStudentComments
+        .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+        .equals([session.taskId, session.classId, session.subjectId, session.date, session.scheduleSlotId])
+        .count(),
+      db.taskDailyEvaluationSettings
+        .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+        .equals([session.taskId, session.classId, session.subjectId, session.date, session.scheduleSlotId])
+        .count(),
+      db.taskRubricAssessments
+        .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+        .equals([session.taskId, session.classId, session.subjectId, session.date, session.scheduleSlotId])
+        .count(),
+      db.taskChecklistAssessments
+        .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+        .equals([session.taskId, session.classId, session.subjectId, session.date, session.scheduleSlotId])
+        .count()
+    ]);
+    return { comments, dailySettings, rubricAssessments, checklistAssessments };
+  };
+
+  const refreshAfterAction = async (message: string): Promise<void> => {
+    await loadPlannerData();
+    setNotice(message);
+  };
+
+  const assignTaskToCell = async (): Promise<void> => {
+    if (!selectedCell || !selectedTaskId) return;
+    const task = taskById.get(selectedTaskId);
+    if (!task) return;
+
+    setIsBusy(true);
+    try {
+      const planFields = normalizeSessionPlanDraft(sessionPlanDraft);
+      const occupiedClassSlot = sessionsByClassSlotKey.get(
+        classSlotKey(selectedCell.classGroup.id, selectedCell.date, selectedCell.block.id)
+      );
+      if (occupiedClassSlot && occupiedClassSlot.id !== selectedCell.session?.id) {
+        setNotice("Ese bloque ya tiene una tarea programada para el curso.");
         return;
       }
-    }
-  }, [classDayOfWeekSet, sessionDate]);
 
-  const availableSessionSlots = useMemo(
-    () => availableSlotsForSessionDate.filter((item) => !item.occupied && !item.assignedToCurrentTask),
-    [availableSlotsForSessionDate]
-  );
-
-  const selectedDateOccupationSummary = useMemo(() => {
-    const day = scheduleByDayForSelectedSubject.get(isoDayOfWeek(sessionDate));
-    if (!day) return { total: 0, occupied: 0 };
-    let occupied = 0;
-    for (const block of day.blocks) {
-      if (occupiedSessionKeySet.has(`${sessionDate}::${block.id}`)) {
-        occupied += 1;
+      if (selectedCell.session && selectedCell.session.taskId !== selectedTaskId) {
+        const counts = await countSessionData(selectedCell.session);
+        if (sessionDataTotal(counts) > 0) {
+          setNotice("No se puede cambiar una sesión que ya tiene comentarios o evaluación.");
+          return;
+        }
+        await db.taskSessions.delete(selectedCell.session.id);
       }
-    }
-    return { total: day.blocks.length, occupied };
-  }, [occupiedSessionKeySet, scheduleByDayForSelectedSubject, sessionDate]);
 
-  const sessionCalendarCells = useMemo(
-    () => monthGrid(sessionCalendarMonth, weekStartsOn),
-    [sessionCalendarMonth, weekStartsOn]
-  );
-  const calendarWeekdayLabels = useMemo(() => weekdayLabels(weekStartsOn), [weekStartsOn]);
-
-  useEffect(() => {
-    if (!selectedTask) {
-      setDetailSessions([]);
-      setTaskNotice("");
-      setTaskDirty(false);
-      return;
-    }
-    setDetailSessions(
-      normalizeTaskSessions(taskSessions.filter((item) => item.taskId === selectedTask.id))
-    );
-    setTaskNotice("");
-    setTaskDirty(false);
-  }, [selectedTask, taskSessions]);
-
-  const ensureNoPendingChanges = (): boolean => {
-    if (!taskDirty) return true;
-    setShowUnsavedModal(true);
-    return false;
-  };
-
-  useUnsavedChangesGuard(taskDirty);
-
-  const persistTask = async (): Promise<boolean> => {
-    if (!selectedTask || !taskDirty || !selectedSubjectId || !selectedClassId) return true;
-
-    const selectedSlotIds = new Set(selectedSubject?.scheduleSlotIds ?? []);
-    const normalizedSessions: TaskSessionDraft[] = [];
-    const seenSessionKeys = new Set<string>();
-    for (const item of detailSessions) {
-      const dayOfWeek = isoDayOfWeek(item.date);
-      const day = scheduleDays.find((row) => row.enabled && row.dayOfWeek === dayOfWeek);
-      const slotValidForDay = day?.blocks.some((block) => block.id === item.scheduleSlotId) ?? false;
-      if (!selectedSlotIds.has(item.scheduleSlotId) || !slotValidForDay) continue;
-      const key = uniqueSessionKey(item);
-      if (seenSessionKeys.has(key)) continue;
-      seenSessionKeys.add(key);
-      normalizedSessions.push(item);
-    }
-    normalizedSessions.sort(compareSessionDraft);
-
-    if (normalizedSessions.length === 0) {
-      setTaskNotice("Asigna al menos una sesión de horario a la tarea.");
-      return false;
-    }
-
-    await db.transaction("rw", db.taskSessions, async () => {
-      await db.taskSessions
-        .where("[taskId+classId]")
-        .equals([selectedTask.id, selectedClassId])
-        .delete();
-      await db.taskSessions.bulkAdd(
-        normalizedSessions.map((item) => ({
+      if (!selectedCell.session || selectedCell.session.taskId !== selectedTaskId) {
+        await db.taskSessions.add({
           id: crypto.randomUUID(),
-          taskId: selectedTask.id,
-          subjectId: selectedSubjectId,
-          classId: selectedClassId,
-          date: item.date,
-          scheduleSlotId: item.scheduleSlotId
-        }))
-      );
-    });
+          taskId: selectedTaskId,
+          subjectId: selectedCell.subject.id,
+          classId: selectedCell.classGroup.id,
+          date: selectedCell.date,
+          scheduleSlotId: selectedCell.block.id,
+          ...planFields
+        });
+      } else {
+        await db.taskSessions.put({
+          ...selectedCell.session,
+          ...planFields
+        });
+      }
 
-    setTaskNotice("Sesiones guardadas.");
-    setTaskDirty(false);
-    await loadAll();
-    return true;
+      setSelectedCell(null);
+      await refreshAfterAction("Sesión guardada.");
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const addSessionToTask = (slotId: string): void => {
-    if (!sessionDate || !slotId) return;
-    if (detailSessions.length >= plannedSessionCount) {
-      setTaskNotice(`La tarea ya tiene ${plannedSessionCount} sesiones asignadas.`);
+  const removeSession = async (session: TaskSession): Promise<void> => {
+    setIsBusy(true);
+    try {
+      const counts = await countSessionData(session);
+      if (sessionDataTotal(counts) > 0) {
+        setNotice("No se puede quitar una sesión que ya tiene comentarios o evaluación.");
+        return;
+      }
+      await db.taskSessions.delete(session.id);
+      setSelectedCell(null);
+      await refreshAfterAction("Sesión eliminada.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const moveSessionToCell = async (sessionId: string, target: PlannerCell): Promise<void> => {
+    const session = taskSessions.find((item) => item.id === sessionId);
+    if (!session) return;
+    if (session.subjectId !== target.subject.id) {
+      setNotice("Solo se puede mover a otro bloque de la misma asignatura.");
       return;
     }
-    const nextItem: TaskSessionDraft = { date: sessionDate, scheduleSlotId: slotId };
-    const key = uniqueSessionKey(nextItem);
-    if (occupiedSessionKeySet.has(key)) {
-      setTaskNotice("Ese bloque ya está ocupado por otra tarea.");
+    const occupiedClassSlot = sessionsByClassSlotKey.get(
+      classSlotKey(target.classGroup.id, target.date, target.block.id)
+    );
+    if (occupiedClassSlot && occupiedClassSlot.id !== session.id) {
+      setNotice("El bloque destino ya tiene una tarea programada.");
       return;
     }
-    if (detailSessionKeySet.has(key)) return;
-    setDetailSessions((current) => [...current, nextItem].sort(compareSessionDraft));
-    setTaskNotice("");
-    setTaskDirty(true);
+
+    setIsBusy(true);
+    try {
+      const counts = await countSessionData(session);
+      if (sessionDataTotal(counts) > 0) {
+        setNotice("No se puede mover una sesión que ya tiene comentarios o evaluación.");
+        return;
+      }
+      await db.taskSessions.put({
+        ...session,
+        date: target.date,
+        scheduleSlotId: target.block.id
+      });
+      await refreshAfterAction("Sesión movida.");
+    } finally {
+      setDraggedSessionId("");
+      setIsBusy(false);
+    }
+  };
+
+  const openCellModal = (cell: PlannerCell): void => {
+    setSelectedCell(cell);
+    setNotice("");
+  };
+
+  const exportPrintableWeek = (): void => {
+    if (!selectedClass) {
+      setNotice("Selecciona un curso para exportar el planner.");
+      return;
+    }
+    const selectedSubject = selectedSubjectId ? subjectById.get(selectedSubjectId) : null;
+    const visibleSlotsCount = weekDates.reduce((sum, day) => sum + (plannerCellsByDate.get(day.iso)?.length ?? 0), 0);
+    const html = buildPrintableReportHtml(
+      buildPrintablePlannerReport({
+        className: selectedClass.name,
+        subjectName: selectedSubject?.name,
+        weekRange: formatWeekRange(weekStart),
+        generatedAt: new Date().toLocaleString("es-ES"),
+        visibleSlotsCount,
+        unplannedCount: unplannedTasks.length,
+        sessions: printablePlannerSessions
+      })
+    );
+    downloadHtml(`planner-semanal-${toIsoDate(weekStart)}.html`, html);
+    setNotice("Planner semanal exportado.");
   };
 
   return (
-    <>
-      <section className="module-card">
-        <div className="courses-layout">
-          <aside className="courses-list-panel">
-            <div className="courses-list-header">
-              <strong>Tareas</strong>
+    <section className="module-card">
+      {isBusy ? (
+        <div className="management-progress" role="status" aria-label="Procesando planificador">
+          <div className="management-progress-bar" />
+        </div>
+      ) : null}
+
+      <div className="planner-shell">
+        <aside className="courses-list-panel planner-sidebar">
+          <ContextSidebarTabs />
+          <div className="context-sidebar-separator" aria-hidden="true" />
+          <div className="planner-week-controls">
+            <strong>Semana</strong>
+            <span className="pill">{formatWeekRange(weekStart)}</span>
+            <div className="inline-form">
+              <button type="button" className="btn secondary" onClick={() => setWeekStart((current) => addDays(current, -7))}>
+                Anterior
+              </button>
+              <button type="button" className="btn secondary" onClick={() => setWeekStart(startOfWeek(new Date(), weekStartsOn))}>
+                Hoy
+              </button>
+              <button type="button" className="btn secondary" onClick={() => setWeekStart((current) => addDays(current, 7))}>
+                Siguiente
+              </button>
+              <button type="button" className="btn secondary" disabled={!selectedClassId} onClick={exportPrintableWeek}>
+                Imprimir
+              </button>
             </div>
-            <input
-              type="search"
-              className="input list-search"
-              placeholder="Buscar tarea..."
-              value={taskSearch}
-              onChange={(event) => setTaskSearch(event.target.value)}
-            />
-            <div className="courses-list section-tabs" role="tablist" aria-label="Listado de tareas">
-              {filteredTasks.map((task) => (
-                <div key={task.id} className="courses-list-row">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={selectedTaskId === task.id}
-                    className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
-                    onClick={() => {
-                      if (!ensureNoPendingChanges()) return;
-                      setSelectedTaskId(task.id);
-                    }}
-                  >
-                    <span>{task.title || "Tarea sin título"}</span>
-                    <small>{unitNameByTaskId.get(task.id) ?? "Sin unidad"}</small>
-                    <small>{taskCountById.get(task.id) ?? 0} sesiones</small>
-                  </button>
-                </div>
+          </div>
+
+          <div className="planner-backlog">
+            <strong>Tareas por planificar</strong>
+            <div className="planner-backlog-list">
+              {unplannedTasks.slice(0, 12).map((item) => (
+                <article key={`${item.task.id}:${item.subject.id}`} className="planner-mini-card">
+                  <span>{item.task.title || "Tarea sin título"}</span>
+                  <small>{item.subject.name} · {item.unitName}</small>
+                  <small>{item.planned}/{item.expected} sesiones</small>
+                </article>
               ))}
-              {filteredTasks.length === 0 ? (
-                <p className="hint">
-                  {taskSearch.trim()
-                    ? "Sin resultados para la búsqueda."
-                    : "No hay tareas vinculadas a esta asignatura. Ve a Configuración → Tareas para crearlas."}
-                </p>
+              {unplannedTasks.length === 0 ? (
+                <p className="hint">No hay tareas pendientes de planificación para el contexto actual.</p>
               ) : null}
             </div>
-          </aside>
+          </div>
+        </aside>
 
-          <section className="course-detail-panel">
-            {selectedTask ? (
-              <>
-                <div className="course-detail-header">
-                  <div>
-                    <h4>{selectedTask.title || "Tarea sin título"}</h4>
-                    {unitNameByTaskId.get(selectedTask.id) ? (
-                      <p className="hint flush">
-                        Unidad: {unitNameByTaskId.get(selectedTask.id)}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="actions-cell">
-                    <IconButton
-                      icon="save"
-                      label="Guardar sesiones"
-                      className={taskDirty ? "save-attention" : ""}
-                      disabled={!taskDirty}
-                      onClick={async () => {
-                        await persistTask();
-                      }}
-                    />
-                  </div>
-                </div>
+        <section className="course-detail-panel planner-panel">
+          <section className="detail-section flush">
+            <div className="metric-grid compact">
+              <article className="metric-item">
+                <strong>Clases visibles</strong>
+                <div>{weekDates.reduce((sum, day) => sum + (plannerCellsByDate.get(day.iso)?.length ?? 0), 0)}</div>
+              </article>
+              <article className="metric-item">
+                <strong>Sesiones programadas</strong>
+                <div>{weekSessions.length}</div>
+              </article>
+              <article className="metric-item">
+                <strong>Pendientes</strong>
+                <div>{unplannedTasks.length}</div>
+              </article>
+            </div>
+            {notice ? <p className="hint" role="status" aria-live="polite">{notice}</p> : null}
+          </section>
 
-                {selectedTask.description ? (
-                  <section className="detail-section">
-                    <p className="hint">{selectedTask.description}</p>
-                  </section>
-                ) : null}
-
-                <section className="detail-section">
-                  <h5>Sesiones de horario</h5>
-                  <p className="hint">
-                    Sesiones asignadas: {detailSessions.length} de {plannedSessionCount}.
-                  </p>
-                  <section className="attendance-calendar task-session-calendar">
-                    <div className="attendance-calendar-header">
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label="Mes anterior"
-                        onClick={() => setSessionCalendarMonth((current) => addMonths(current, -1))}
-                      >
-                        {"<"}
-                      </button>
-                      <strong>
-                        {MONTH_LABELS[sessionCalendarMonth.getMonth()]}{" "}
-                        {sessionCalendarMonth.getFullYear()}
-                      </strong>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label="Mes siguiente"
-                        onClick={() => setSessionCalendarMonth((current) => addMonths(current, 1))}
-                      >
-                        {">"}
-                      </button>
-                    </div>
-                    <div
-                      className="attendance-calendar-grid"
-                      role="grid"
-                      aria-label="Calendario de sesiones"
-                    >
-                      {calendarWeekdayLabels.map((item) => (
-                        <span key={item} className="attendance-calendar-weekday">
-                          {item}
-                        </span>
-                      ))}
-                      {sessionCalendarCells.map((cell) => {
-                        const iso = toIsoDate(cell.date);
-                        const dayOfWeek = isoDayOfWeek(iso);
-                        const daySchedule = scheduleByDayForSelectedSubject.get(dayOfWeek);
-                        const totalSlots = daySchedule?.blocks.length ?? 0;
-                        const occupiedSlots = occupiedCountByDate.get(iso) ?? 0;
-                        const isClassDay = totalSlots > 0;
-                        const isFullyOccupied = isClassDay && occupiedSlots >= totalSlots;
-                        const isAssignedToCurrentTask =
-                          isClassDay && detailSessionDateSet.has(iso);
-                        const isSelected = isClassDay && sessionDate === iso;
-                        const isToday = isClassDay && iso === today;
-                        const isDisabled = !cell.inMonth || !isClassDay;
+          {!selectedClassId ? (
+            <p className="empty-state">Selecciona un curso para abrir el planificador semanal.</p>
+          ) : subjectsForClass.length === 0 ? (
+            <p className="empty-state">El curso seleccionado no tiene asignaturas asociadas.</p>
+          ) : weekDates.length === 0 ? (
+            <p className="empty-state">No hay días activos en el horario para mostrar en el planner.</p>
+          ) : (
+            <div className="planner-week-grid" aria-label="Planificador semanal">
+              {weekDates.map((day) => {
+                const cells = plannerCellsByDate.get(day.iso) ?? [];
+                return (
+                  <section key={day.iso} className="planner-day-column">
+                    <header className="planner-day-header">
+                      <strong>{day.label}</strong>
+                      <span>{day.iso}</span>
+                    </header>
+                    <div className="planner-day-slots">
+                      {cells.map((cell) => {
+                        const session = cell.session;
+                        const task = session ? taskById.get(session.taskId) : null;
+                        const unitName = session
+                          ? unitNameByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id))
+                          : "";
+                        const planned = session
+                          ? taskSessionCountByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id)) ?? 0
+                          : 0;
+                        const expected = Math.max(1, Math.round(task?.sessionCount ?? 1));
+                        const statusLabel = session ? sessionStatusLabel(session.status ?? "planned") : "";
                         return (
-                          <button
-                            key={iso}
-                            type="button"
-                            disabled={isDisabled}
-                            className={`attendance-calendar-day ${cell.inMonth ? "" : "outside"} ${
-                              isFullyOccupied
-                                ? "missing"
-                                : isAssignedToCurrentTask
-                                  ? "done"
-                                  : ""
-                            } ${isSelected ? "selected" : ""} ${isToday ? "today" : ""} ${
-                              isClassDay ? "" : "task-calendar-no-class"
+                          <article
+                            key={cell.key}
+                            className={`planner-slot-card ${session ? "filled" : ""} ${
+                              draggedSession && !session && cell.subject.id === draggedSession.subjectId
+                                ? "drop-ready"
+                                : ""
                             }`}
-                            onClick={() => {
-                              if (isDisabled) return;
-                              setSessionDate(iso);
+                            onDragOver={(event) => {
+                              if (!draggedSessionId || session) return;
+                              event.preventDefault();
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              if (!draggedSessionId || session) return;
+                              void moveSessionToCell(draggedSessionId, cell);
                             }}
                           >
-                            {isDisabled ? "" : cell.date.getDate()}
-                          </button>
+                            <div className="planner-slot-meta">
+                              <span>{formatBlockTime(cell.block)}</span>
+                              <strong>{cell.subject.name}</strong>
+                            </div>
+                            {session && task ? (
+                              <button
+                                type="button"
+                                className="planner-session-card"
+                                draggable
+                                onDragStart={() => setDraggedSessionId(session.id)}
+                                onDragEnd={() => setDraggedSessionId("")}
+                                onClick={() => openCellModal(cell)}
+                              >
+                                <span>{task.title || "Tarea sin título"}</span>
+                                <small>{unitName || "Sin unidad"}</small>
+                                <small>{planned}/{expected} sesiones · {statusLabel}</small>
+                              </button>
+                            ) : (
+                              <button type="button" className="planner-empty-slot" onClick={() => openCellModal(cell)}>
+                                Programar tarea
+                              </button>
+                            )}
+                          </article>
                         );
                       })}
-                    </div>
-                    <div className="attendance-calendar-legend">
-                      <span className="attendance-dot today">Hoy</span>
-                      <span className="attendance-dot done">Día asignado a esta tarea</span>
-                      <span className="attendance-dot missing">Día con horas ocupadas</span>
+                      {cells.length === 0 ? (
+                        <p className="planner-no-class">Sin clases</p>
+                      ) : null}
                     </div>
                   </section>
-
-                  <div className="inline-form">
-                    <span className="pill">{sessionDate}</span>
-                  </div>
-                  <div
-                    className="task-session-slots section-tabs"
-                    aria-label="Sesiones disponibles"
-                  >
-                    {availableSessionSlots.map((slot) => (
-                      <button
-                        key={slot.slotId}
-                        type="button"
-                        className="section-tab"
-                        disabled={detailSessions.length >= plannedSessionCount}
-                        onClick={() => addSessionToTask(slot.slotId)}
-                      >
-                        <span>{slot.label}</span>
-                      </button>
-                    ))}
-                    {availableSessionSlots.length === 0 ? (
-                      <p className="hint">No hay sesiones disponibles para este día.</p>
-                    ) : null}
-                  </div>
-                  {selectedDateOccupationSummary.total > 0 ? (
-                    <p className="hint">
-                      Ocupadas por otras tareas: {selectedDateOccupationSummary.occupied} de{" "}
-                      {selectedDateOccupationSummary.total} horas del día.
-                    </p>
-                  ) : (
-                    <p className="hint">
-                      Ese día no tiene horario para la asignatura seleccionada.
-                    </p>
-                  )}
-
-                  {taskNotice ? <p className="hint">{taskNotice}</p> : null}
-
-                  <div className="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Fecha</th>
-                          <th>Bloque</th>
-                          <th>Acción</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detailSessions.map((item, index) => (
-                          <tr key={`${item.date}:${item.scheduleSlotId}:${index}`}>
-                            <td>{item.date}</td>
-                            <td>{slotLabelById.get(item.scheduleSlotId) ?? item.scheduleSlotId}</td>
-                            <td className="actions-cell">
-                              <IconButton
-                                icon="remove"
-                                label="Quitar sesión"
-                                onClick={() => {
-                                  setDetailSessions((current) =>
-                                    current.filter((_, currentIndex) => currentIndex !== index)
-                                  );
-                                  setTaskNotice("");
-                                  setTaskDirty(true);
-                                }}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                        {detailSessions.length === 0 ? (
-                          <tr>
-                            <td colSpan={3}>No hay sesiones asignadas.</td>
-                          </tr>
-                        ) : null}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              </>
-            ) : (
-              <p>Selecciona una tarea para programar sus sesiones.</p>
-            )}
-          </section>
-        </div>
-      </section>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
 
       <Modal
-        open={showUnsavedModal}
-        title="Cambios sin guardar"
-        onClose={() => setShowUnsavedModal(false)}
+        open={Boolean(selectedCell)}
+        title={selectedCell?.session ? "Editar sesión" : "Programar sesión"}
+        onClose={() => setSelectedCell(null)}
       >
-        <p>Tienes cambios sin guardar. Pulsa Guardar sesiones antes de continuar.</p>
-        <div className="inline-form">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setShowUnsavedModal(false)}
-          >
-            Entendido
-          </button>
-        </div>
+        {selectedCell ? (
+          <div className="planner-session-modal">
+            <p className="hint">
+              {selectedCell.dayName} {selectedCell.date} · {formatBlockTime(selectedCell.block)} · {selectedCell.subject.name}
+            </p>
+            <label className="detail-field full">
+              <span>Tarea</span>
+              <select className="input" value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value)}>
+                {selectableTasksForCell.map((item) => (
+                  <option key={item.task.id} value={item.task.id}>
+                    {item.task.title || "Tarea sin título"} · {item.unitName} · {item.planned}/{item.expected}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectableTasksForCell.length === 0 ? (
+              <p className="empty-state">No hay tareas vinculadas a esta asignatura.</p>
+            ) : null}
+            <div className="detail-grid">
+              <label className="detail-field">
+                <span>Estado</span>
+                <select
+                  className="input"
+                  value={sessionPlanDraft.status}
+                  onChange={(event) =>
+                    setSessionPlanDraft((current) => ({
+                      ...current,
+                      status: event.target.value as SessionPlanDraft["status"]
+                    }))
+                  }
+                >
+                  {SESSION_STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {sessionStatusLabel(status)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="detail-field full">
+                <span>Objetivos</span>
+                <textarea
+                  className="input"
+                  value={sessionPlanDraft.objectives}
+                  placeholder="Qué se espera conseguir en esta sesión"
+                  onChange={(event) => setSessionPlanDraft((current) => ({ ...current, objectives: event.target.value }))}
+                />
+              </label>
+              <label className="detail-field full">
+                <span>Competencias / saberes</span>
+                <textarea
+                  className="input"
+                  value={sessionPlanDraft.competencies}
+                  placeholder="Competencias, saberes o criterios trabajados"
+                  onChange={(event) => setSessionPlanDraft((current) => ({ ...current, competencies: event.target.value }))}
+                />
+              </label>
+              <label className="detail-field full">
+                <span>Materiales</span>
+                <input
+                  className="input"
+                  value={sessionPlanDraft.materials}
+                  placeholder="Libro, ficha, enlace, laboratorio..."
+                  onChange={(event) => setSessionPlanDraft((current) => ({ ...current, materials: event.target.value }))}
+                />
+              </label>
+              <label className="detail-field full">
+                <span>Deberes</span>
+                <input
+                  className="input"
+                  value={sessionPlanDraft.homework}
+                  placeholder="Trabajo para casa o continuidad"
+                  onChange={(event) => setSessionPlanDraft((current) => ({ ...current, homework: event.target.value }))}
+                />
+              </label>
+              <label className="detail-field full">
+                <span>Notas docentes</span>
+                <textarea
+                  className="input"
+                  value={sessionPlanDraft.teacherNotes}
+                  placeholder="Ajustes, observaciones o cambios para próximas sesiones"
+                  onChange={(event) => setSessionPlanDraft((current) => ({ ...current, teacherNotes: event.target.value }))}
+                />
+              </label>
+            </div>
+            <div className="inline-form">
+              <button type="button" className="btn secondary" onClick={() => setSelectedCell(null)}>
+                Cancelar
+              </button>
+              {selectedCell.session ? (
+                <button
+                  type="button"
+                  className="btn secondary management-danger-btn"
+                  onClick={() => {
+                    if (selectedCell.session) {
+                      void removeSession(selectedCell.session);
+                    }
+                  }}
+                >
+                  Quitar
+                </button>
+              ) : null}
+              <button type="button" className="btn secondary" disabled={!selectedTaskId} onClick={() => void assignTaskToCell()}>
+                Guardar
+              </button>
+              <NavLink className="btn secondary" to="/journal/attendance">
+                Asistencia
+              </NavLink>
+              <NavLink className="btn secondary" to="/journal/work">
+                Trabajo
+              </NavLink>
+            </div>
+          </div>
+        ) : null}
       </Modal>
-    </>
+    </section>
   );
 }

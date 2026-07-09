@@ -15,6 +15,7 @@ import type {
   Task,
   TaskChecklistAssessment,
   TaskDailyEvaluationSetting,
+  TaskDirectGrade,
   TaskGradebookConfig,
   TaskRubricAssessment,
   TaskSession,
@@ -22,6 +23,8 @@ import type {
   TaskSubjectLink,
   UnitBlock
 } from "../../shared/db/types";
+import { normalizeAttendanceNote, resolveAttendanceNoteForSave } from "../../shared/attendance/attendance";
+import { matchesTaskScope } from "../../shared/gradebook/calculations";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -56,12 +59,6 @@ type SubjectSlot = {
   startTime: string;
   endTime: string;
 };
-
-function statusLabel(value: AttendanceEntry["status"]): string {
-  if (value === "present") return "Presente";
-  if (value === "late") return "Retraso";
-  return "Ausente";
-}
 
 function toMinutes(value: string): number {
   const [hourRaw, minuteRaw] = value.split(":");
@@ -181,6 +178,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const [taskDailyEvaluationSettings, setTaskDailyEvaluationSettings] = useState<TaskDailyEvaluationSetting[]>([]);
   const [taskRubricAssessments, setTaskRubricAssessments] = useState<TaskRubricAssessment[]>([]);
   const [taskChecklistAssessments, setTaskChecklistAssessments] = useState<TaskChecklistAssessment[]>([]);
+  const [taskDirectGrades, setTaskDirectGrades] = useState<TaskDirectGrade[]>([]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedSlotKey, setSelectedSlotKey] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
@@ -194,6 +192,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const [selectedChecklistTemplateId, setSelectedChecklistTemplateId] = useState("");
   const [taskRubricDraft, setTaskRubricDraft] = useState<Map<string, string>>(new Map());
   const [taskChecklistDraft, setTaskChecklistDraft] = useState<Map<string, boolean>>(new Map());
+  const [taskDirectGradeDraft, setTaskDirectGradeDraft] = useState<Map<string, string>>(new Map());
   const [taskDirty, setTaskDirty] = useState(false);
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [taskNotice, setTaskNotice] = useState("");
@@ -209,6 +208,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const attendanceAutoSaveTimerRef = useRef<number | null>(null);
   const taskAutoSaveTimerRef = useRef<number | null>(null);
   const taskEditVersionRef = useRef(0);
+  const taskPickerContextRef = useRef("");
 
   const loadMetadata = async (): Promise<void> => {
     const [
@@ -228,6 +228,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       taskDailyEvaluationSettingsData,
       taskRubricAssessmentsData,
       taskChecklistAssessmentsData,
+      taskDirectGradesData,
       taskGradebookConfigsData
     ] = await Promise.all([
       db.classGroups.orderBy("name").toArray(),
@@ -246,6 +247,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       db.taskDailyEvaluationSettings.toArray(),
       db.taskRubricAssessments.toArray(),
       db.taskChecklistAssessments.toArray(),
+      db.taskDirectGrades.toArray(),
       db.taskGradebookConfigs.toArray()
     ]);
 
@@ -266,6 +268,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     setTaskDailyEvaluationSettings(taskDailyEvaluationSettingsData);
     setTaskRubricAssessments(taskRubricAssessmentsData);
     setTaskChecklistAssessments(taskChecklistAssessmentsData);
+    setTaskDirectGrades(taskDirectGradesData);
   };
 
   const dayOfWeek = useMemo(() => {
@@ -658,7 +661,13 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const taskTitleByClassSlot = useMemo(() => {
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
-    const subjectLinkByTaskId = new Map(taskSubjectLinks.map((link) => [link.taskId, link]));
+    const subjectLinksByTaskId = new Map<string, TaskSubjectLink[]>();
+    for (const link of taskSubjectLinks) {
+      if (!subjectLinksByTaskId.has(link.taskId)) {
+        subjectLinksByTaskId.set(link.taskId, []);
+      }
+      subjectLinksByTaskId.get(link.taskId)?.push(link);
+    }
     const map = new Map<string, string>();
     for (const session of taskSessions) {
       if (session.date !== selectedDate) {
@@ -668,7 +677,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       if (!task) {
         continue;
       }
-      const link = subjectLinkByTaskId.get(session.taskId);
+      const links = subjectLinksByTaskId.get(session.taskId) ?? [];
+      const link = links.find((item) => item.subjectId === session.subjectId) ?? links[0];
       const unit = link?.unitId ? unitById.get(link.unitId) : null;
       const unitName = unit?.name || "Sin unidad";
       const taskTitle = task.title || "Tarea sin título";
@@ -683,6 +693,9 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
     const map = new Map<string, string>();
     for (const link of taskSubjectLinks) {
+      if (selectedSubjectId && link.subjectId !== selectedSubjectId) {
+        continue;
+      }
       if (!link.unitId || map.has(link.taskId)) {
         continue;
       }
@@ -692,7 +705,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       }
     }
     return map;
-  }, [taskSubjectLinks, unitBlocks]);
+  }, [selectedSubjectId, taskSubjectLinks, unitBlocks]);
 
   const workTaskOptions = useMemo(() => {
     if (!selectedClassId || !selectedSubjectId || !selectedWorkUnitId) {
@@ -705,7 +718,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     );
     const sessionCountByTask = new Map<string, number>();
     for (const session of taskSessions) {
-      if (session.classId !== selectedClassId || session.subjectId !== selectedSubjectId) {
+      if (session.classId !== selectedClassId || !taskIdsForSubject.has(session.taskId)) {
         continue;
       }
       sessionCountByTask.set(session.taskId, (sessionCountByTask.get(session.taskId) ?? 0) + 1);
@@ -733,12 +746,18 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     if (mode !== "work" || !selectedTaskForDay || !selectedClassId || !selectedSubjectId) {
       return [];
     }
+    const selectedTaskBelongsToContext = taskSubjectLinks.some(
+      (link) =>
+        link.taskId === selectedTaskForDay.id &&
+        link.subjectId === selectedSubjectId &&
+        (!selectedWorkUnitId || (link.unitId ?? "") === selectedWorkUnitId)
+    );
     return taskSessions
       .filter(
         (session) =>
           session.taskId === selectedTaskForDay.id &&
           session.classId === selectedClassId &&
-          session.subjectId === selectedSubjectId
+          (session.subjectId === selectedSubjectId || selectedTaskBelongsToContext)
       )
       .sort((a, b) => {
         const byDate = a.date.localeCompare(b.date);
@@ -752,11 +771,20 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         }
         return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
       });
-  }, [mode, selectedClassId, selectedSubjectId, selectedTaskForDay, slotOrderById, taskSessions]);
+  }, [
+    mode,
+    selectedClassId,
+    selectedSubjectId,
+    selectedTaskForDay,
+    selectedWorkUnitId,
+    slotOrderById,
+    taskSessions,
+    taskSubjectLinks
+  ]);
 
   const selectedTaskSessionsForDay = useMemo(() => {
     if (mode === "work") {
-      return [];
+      return workTaskSessions;
     }
     return tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.sessions ?? [];
   }, [
@@ -768,7 +796,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     selectedTaskId,
     slotOrderById,
     taskSessions,
-    tasksForSelectedDate
+    tasksForSelectedDate,
+    workTaskSessions
   ]);
   const selectedTaskSessionForDay = useMemo(
     () =>
@@ -818,24 +847,33 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   );
   const taskHasFixedRubric = Boolean(selectedTaskGradebookConfig?.rubricTemplateId);
   const taskHasFixedChecklist = !taskHasFixedRubric && Boolean(selectedTaskGradebookConfig?.checklistTemplateId);
+  const taskHasDirectGrade = Boolean(selectedTaskGradebookConfig?.directGradeEnabled);
   const diaryRubricTemplates = selectedRubricTemplate ? [selectedRubricTemplate] : [];
   const diaryChecklistTemplates = selectedChecklistTemplate ? [selectedChecklistTemplate] : [];
   const taskHasAssignedInstrument = Boolean(
-    selectedTaskGradebookConfig?.rubricTemplateId || selectedTaskGradebookConfig?.checklistTemplateId
+    selectedTaskGradebookConfig?.rubricTemplateId ||
+      selectedTaskGradebookConfig?.checklistTemplateId ||
+      selectedTaskGradebookConfig?.directGradeEnabled
   );
 
   useEffect(() => {
     if (mode !== "attendance") {
       return;
     }
-    if (tasksForSelectedDate.length === 0) {
+    if (taskForSelectedSlot?.id) {
+      if (selectedTaskId !== taskForSelectedSlot.id) {
+        setSelectedTaskId(taskForSelectedSlot.id);
+      }
+      return;
+    }
+    if (tasksForSelectedDate.length === 0 || !taskForSelectedSlot) {
       setSelectedTaskId("");
       return;
     }
     if (!tasksForSelectedDate.some((item) => item.task.id === selectedTaskId)) {
       setSelectedTaskId(tasksForSelectedDate[0].task.id);
     }
-  }, [mode, selectedTaskId, tasksForSelectedDate]);
+  }, [mode, selectedTaskId, taskForSelectedSlot, tasksForSelectedDate]);
 
   useEffect(() => {
     if (mode !== "work") {
@@ -851,8 +889,45 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   }, [mode, selectedTaskId, workTaskOptions]);
 
   useEffect(() => {
+    if (mode !== "attendance") {
+      return;
+    }
+    const contextKey = `${selectedDate}:${selectedSubjectSlot?.key ?? ""}:${taskForSelectedSlot?.id ?? ""}`;
+    if (taskPickerContextRef.current === contextKey) {
+      return;
+    }
+    taskPickerContextRef.current = contextKey;
+
+    const currentTaskUnitId =
+      taskSubjectLinks.find(
+        (link) =>
+          link.subjectId === selectedSubjectSlot?.subjectId &&
+          link.taskId === taskForSelectedSlot?.id
+      )?.unitId ?? "";
+    const hasCurrentTaskUnit = unitsForSelectedSubject.some((unit) => unit.id === currentTaskUnitId);
+
+    setSelectedUnitToAssignId(hasCurrentTaskUnit ? currentTaskUnitId : "");
+    setSelectedTaskToAssignId(taskForSelectedSlot?.id ?? "");
+  }, [
+    mode,
+    selectedDate,
+    selectedSubjectSlot?.key,
+    selectedSubjectSlot?.subjectId,
+    taskForSelectedSlot?.id,
+    taskSubjectLinks,
+    unitsForSelectedSubject
+  ]);
+
+  useEffect(() => {
     if (unitsForSelectedSubject.length === 0) {
       setSelectedUnitToAssignId("");
+      return;
+    }
+    if (mode === "attendance" && !taskForSelectedSlot) {
+      const selectedUnitExists = unitsForSelectedSubject.some((unit) => unit.id === selectedUnitToAssignId);
+      if (selectedUnitToAssignId && !selectedUnitExists) {
+        setSelectedUnitToAssignId("");
+      }
       return;
     }
     const currentTaskUnitId = taskSubjectLinks.find(
@@ -871,6 +946,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       setSelectedUnitToAssignId(preferredUnitId);
     }
   }, [
+    mode,
     selectedSubjectSlot?.subjectId,
     selectedUnitToAssignId,
     taskForSelectedSlot?.id,
@@ -889,6 +965,12 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     const currentTaskId = taskForSelectedSlot?.id;
     if (mode === "attendance" && currentTaskId && taskPickerOptions.some((task) => task.id === currentTaskId)) {
       setSelectedTaskToAssignId(currentTaskId);
+      return;
+    }
+    if (mode === "attendance" && !currentTaskId) {
+      if (selectedTaskToAssignId && !taskPickerOptions.some((task) => task.id === selectedTaskToAssignId)) {
+        setSelectedTaskToAssignId("");
+      }
       return;
     }
     if (!taskPickerOptions.some((task) => task.id === selectedTaskToAssignId)) {
@@ -916,29 +998,35 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   }, [mode, selectedDate, selectedTaskSessionSlotId, selectedTaskSessionsForDay]);
 
   useEffect(() => {
-    if (!selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay)) {
+    if (!selectedTaskForDay || !selectedTaskSessionForDay || !activeClassId || !activeSubjectId) {
       setTaskGeneralCommentDraft("");
       setTaskStudentCommentDraft(new Map());
       setSelectedRubricTemplateId("");
       setSelectedChecklistTemplateId("");
       setTaskRubricDraft(new Map());
       setTaskChecklistDraft(new Map());
+      setTaskDirectGradeDraft(new Map());
       setTaskNotice("");
       setTaskDirty(false);
       return;
     }
-    const diaryDate = mode === "work" ? workDiaryDateKey : selectedDate;
-    const slotId = mode === "work" ? workDiarySlotId : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
+    const diaryDate = mode === "work" ? (selectedTaskSessionForDay?.date ?? workDiaryDateKey) : selectedDate;
+    const slotId = mode === "work" ? (selectedTaskSessionForDay?.scheduleSlotId ?? workDiarySlotId) : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
     const setting =
       taskDailyEvaluationSettings.find(
         (item) =>
           item.taskId === selectedTaskForDay.id &&
           item.date === diaryDate &&
-          (item.scheduleSlotId ?? "") === slotId
+          (item.scheduleSlotId ?? "") === slotId &&
+          matchesTaskScope(item, activeClassId, activeSubjectId)
       ) ?? null;
     const legacySetting =
       taskDailyEvaluationSettings.find(
-        (item) => item.taskId === selectedTaskForDay.id && item.date === diaryDate && !item.scheduleSlotId
+        (item) =>
+          item.taskId === selectedTaskForDay.id &&
+          item.date === diaryDate &&
+          !item.scheduleSlotId &&
+          matchesTaskScope(item, activeClassId, activeSubjectId)
       ) ?? null;
 
     setTaskGeneralCommentDraft(setting?.generalComment ?? legacySetting?.generalComment ?? "");
@@ -948,7 +1036,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       if (
         row.taskId === selectedTaskForDay.id &&
         row.date === diaryDate &&
-        (row.scheduleSlotId ?? "") === slotId
+        (row.scheduleSlotId ?? "") === slotId &&
+        matchesTaskScope(row, activeClassId, activeSubjectId)
       ) {
         hasScopedComments = true;
         commentsMap.set(row.studentId, row.comment);
@@ -956,7 +1045,12 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     }
     if (!hasScopedComments) {
       for (const row of taskStudentComments) {
-        if (row.taskId === selectedTaskForDay.id && !row.date && !row.scheduleSlotId) {
+        if (
+          row.taskId === selectedTaskForDay.id &&
+          !row.date &&
+          !row.scheduleSlotId &&
+          matchesTaskScope(row, activeClassId, activeSubjectId)
+        ) {
           commentsMap.set(row.studentId, row.comment);
         }
       }
@@ -981,7 +1075,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       if (
         row.taskId !== selectedTaskForDay.id ||
         row.date !== diaryDate ||
-        (row.scheduleSlotId ?? "") !== slotId
+        (row.scheduleSlotId ?? "") !== slotId ||
+        !matchesTaskScope(row, activeClassId, activeSubjectId)
       ) {
         continue;
       }
@@ -994,22 +1089,39 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       if (
         row.taskId !== selectedTaskForDay.id ||
         row.date !== diaryDate ||
-        (row.scheduleSlotId ?? "") !== slotId
+        (row.scheduleSlotId ?? "") !== slotId ||
+        !matchesTaskScope(row, activeClassId, activeSubjectId)
       ) {
         continue;
       }
       checklistMap.set(checklistDraftKey(row.studentId, row.itemId), row.checked);
     }
     setTaskChecklistDraft(checklistMap);
+
+    const directGradeMap = new Map<string, string>();
+    for (const row of taskDirectGrades) {
+      if (
+        row.taskId !== selectedTaskForDay.id ||
+        row.classId !== activeClassId ||
+        row.subjectId !== activeSubjectId
+      ) {
+        continue;
+      }
+      directGradeMap.set(row.studentId, String(row.score));
+    }
+    setTaskDirectGradeDraft(directGradeMap);
     setTaskNotice("");
     setTaskDirty(false);
   }, [
+    activeClassId,
+    activeSubjectId,
     selectedDate,
     selectedTaskGradebookConfig,
     selectedTaskForDay,
     selectedTaskSessionForDay,
     taskChecklistAssessments,
     taskDailyEvaluationSettings,
+    taskDirectGrades,
     taskRubricAssessments,
     taskStudentComments,
     mode,
@@ -1025,10 +1137,11 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   };
 
   const setDraftNote = (studentId: string, note: string): void => {
-    const existingNote = attendanceByStudent.get(studentId)?.note ?? "";
+    const existingNote = normalizeAttendanceNote(attendanceByStudent.get(studentId)?.note) ?? "";
+    const normalizedNote = normalizeAttendanceNote(note) ?? "";
     setDraftNoteByStudent((prev) => {
       const next = new Map(prev);
-      if (note === existingNote) {
+      if (normalizedNote === existingNote) {
         next.delete(studentId);
       } else {
         next.set(studentId, note);
@@ -1084,7 +1197,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
           date: selectedDate,
           scheduleSlotId: selectedSubjectSlot.slotId,
           status,
-          note: noteDraftSnapshot.get(studentId) ?? existing?.note
+          note: resolveAttendanceNoteForSave(studentId, noteDraftSnapshot, existing?.note)
         });
       }
       setDraftStatusByStudent((current) => {
@@ -1114,7 +1227,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   };
 
   const saveTaskDiary = async (): Promise<boolean> => {
-    if (!selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay)) {
+    if (!selectedTaskForDay || !activeClassId || !activeSubjectId || !selectedTaskSessionForDay) {
       return false;
     }
     if (taskAutoSaveTimerRef.current !== null) {
@@ -1124,17 +1237,42 @@ export function AttendancePage({ mode }: AttendancePageProps) {
 
     const saveVersion = taskEditVersionRef.current;
     const taskId = selectedTaskForDay.id;
-    const diaryDate = mode === "work" ? workDiaryDateKey : selectedDate;
-    const scheduleSlotId = mode === "work" ? workDiarySlotId : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
+    const diaryDate = mode === "work" ? (selectedTaskSessionForDay?.date ?? workDiaryDateKey) : selectedDate;
+    const scheduleSlotId = mode === "work" ? (selectedTaskSessionForDay?.scheduleSlotId ?? workDiarySlotId) : (selectedTaskSessionForDay?.scheduleSlotId ?? "");
     const normalizedGeneralComment = taskGeneralCommentDraft.trim();
     const effectiveRubricTemplateId = selectedTaskGradebookConfig?.rubricTemplateId ?? "";
     const effectiveChecklistTemplateId = effectiveRubricTemplateId
       ? ""
       : (selectedTaskGradebookConfig?.checklistTemplateId ?? "");
+    const usesDirectGrade = Boolean(selectedTaskGradebookConfig?.directGradeEnabled);
+    const normalizedDirectGrades: TaskDirectGrade[] = [];
+    if (usesDirectGrade) {
+      for (const student of taskStudents) {
+        const rawValue = taskDirectGradeDraft.get(student.id)?.trim() ?? "";
+        if (!rawValue) {
+          continue;
+        }
+        const score = Number(rawValue.replace(",", "."));
+        if (!Number.isFinite(score) || score < 0 || score > 10) {
+          setTaskNotice("La nota directa debe estar entre 0 y 10.");
+          return false;
+        }
+        normalizedDirectGrades.push({
+          id: `task-direct-${taskId}-${activeSubjectId}-${activeClassId}-${student.id}`,
+          taskId,
+          subjectId: activeSubjectId,
+          classId: activeClassId,
+          studentId: student.id,
+          score: Number(score.toFixed(2))
+        });
+      }
+    }
     const normalizedComments = taskStudents
       .map((student) => ({
         id: crypto.randomUUID(),
         taskId,
+        subjectId: activeSubjectId,
+        classId: activeClassId,
         date: diaryDate,
         scheduleSlotId,
         studentId: student.id,
@@ -1146,29 +1284,32 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     try {
       await db.transaction(
         "rw",
-        [
-          db.taskStudentComments,
-          db.taskDailyEvaluationSettings,
-          db.taskRubricAssessments,
-          db.taskChecklistAssessments
-        ],
+        db.taskStudentComments,
+        db.taskDailyEvaluationSettings,
+        db.taskRubricAssessments,
+        db.taskChecklistAssessments,
+        db.taskDirectGrades,
         async () => {
-          await db.taskStudentComments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, diaryDate, scheduleSlotId])
-            .delete();
+          const commentIds = (await db.taskStudentComments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .primaryKeys()) as string[];
+          await db.taskStudentComments.bulkDelete(commentIds);
           if (normalizedComments.length > 0) {
             await db.taskStudentComments.bulkAdd(normalizedComments);
           }
 
-          await db.taskDailyEvaluationSettings
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, diaryDate, scheduleSlotId])
-            .delete();
+          const settingIds = (await db.taskDailyEvaluationSettings
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .primaryKeys()) as string[];
+          await db.taskDailyEvaluationSettings.bulkDelete(settingIds);
           if (normalizedGeneralComment || effectiveRubricTemplateId || effectiveChecklistTemplateId) {
             await db.taskDailyEvaluationSettings.add({
-              id: `task-eval-${taskId}-${diaryDate}-${scheduleSlotId}`,
+              id: `task-eval-${taskId}-${activeSubjectId}-${activeClassId}-${diaryDate}-${scheduleSlotId}`,
               taskId,
+              subjectId: activeSubjectId,
+              classId: activeClassId,
               date: diaryDate,
               scheduleSlotId,
               generalComment: normalizedGeneralComment || undefined,
@@ -1177,10 +1318,11 @@ export function AttendancePage({ mode }: AttendancePageProps) {
             });
           }
 
-          await db.taskRubricAssessments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, diaryDate, scheduleSlotId])
-            .delete();
+          const rubricIds = (await db.taskRubricAssessments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .primaryKeys()) as string[];
+          await db.taskRubricAssessments.bulkDelete(rubricIds);
           if (effectiveRubricTemplateId && selectedRubricTemplate) {
             const rubricRows: TaskRubricAssessment[] = [];
             for (const student of taskStudents) {
@@ -1194,6 +1336,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                 rubricRows.push({
                   id: crypto.randomUUID(),
                   taskId,
+                  subjectId: activeSubjectId,
+                  classId: activeClassId,
                   date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
@@ -1209,10 +1353,11 @@ export function AttendancePage({ mode }: AttendancePageProps) {
             }
           }
 
-          await db.taskChecklistAssessments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([taskId, diaryDate, scheduleSlotId])
-            .delete();
+          const checklistIds = (await db.taskChecklistAssessments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .primaryKeys()) as string[];
+          await db.taskChecklistAssessments.bulkDelete(checklistIds);
           if (effectiveChecklistTemplateId && selectedChecklistTemplate) {
             const checklistRows: TaskChecklistAssessment[] = [];
             for (const student of taskStudents) {
@@ -1223,6 +1368,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                 checklistRows.push({
                   id: crypto.randomUUID(),
                   taskId,
+                  subjectId: activeSubjectId,
+                  classId: activeClassId,
                   date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
@@ -1234,6 +1381,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
             }
             if (checklistRows.length > 0) {
               await db.taskChecklistAssessments.bulkAdd(checklistRows);
+            }
+          }
+
+          if (usesDirectGrade) {
+            await db.taskDirectGrades
+              .where("[taskId+subjectId+classId]")
+              .equals([taskId, activeSubjectId, activeClassId])
+              .delete();
+            if (normalizedDirectGrades.length > 0) {
+              await db.taskDirectGrades.bulkAdd(normalizedDirectGrades);
             }
           }
         }
@@ -1261,22 +1418,26 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         db.tables,
         async () => {
           await db.taskSessions.where("id").equals(occupied.id).delete();
-          await db.taskDailyEvaluationSettings
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
-            .delete();
-          await db.taskStudentComments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
-            .delete();
-          await db.taskRubricAssessments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
-            .delete();
-          await db.taskChecklistAssessments
-            .where("[taskId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedDate, selectedSubjectSlot.slotId])
-            .delete();
+          const settingIds = (await db.taskDailyEvaluationSettings
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
+            .primaryKeys()) as string[];
+          await db.taskDailyEvaluationSettings.bulkDelete(settingIds);
+          const commentIds = (await db.taskStudentComments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
+            .primaryKeys()) as string[];
+          await db.taskStudentComments.bulkDelete(commentIds);
+          const rubricIds = (await db.taskRubricAssessments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
+            .primaryKeys()) as string[];
+          await db.taskRubricAssessments.bulkDelete(rubricIds);
+          const checklistIds = (await db.taskChecklistAssessments
+            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
+            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
+            .primaryKeys()) as string[];
+          await db.taskChecklistAssessments.bulkDelete(checklistIds);
           await db.taskSessions.add({
             id: crypto.randomUUID(),
             taskId,
@@ -1367,7 +1528,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   ]);
 
   useEffect(() => {
-    if (!taskDirty || !selectedTaskForDay || (mode === "attendance" && !selectedTaskSessionForDay) || isSavingTask) {
+    if (!taskDirty || !selectedTaskForDay || !selectedTaskSessionForDay || isSavingTask) {
       return;
     }
     if (taskAutoSaveTimerRef.current !== null) {
@@ -1388,7 +1549,9 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     mode,
     selectedDate,
     selectedTaskForDay?.id,
+    selectedTaskSessionForDay?.date,
     selectedTaskSessionForDay?.scheduleSlotId,
+    taskDirectGradeDraft,
     taskChecklistDraft,
     taskDirty,
     taskGeneralCommentDraft,
@@ -1401,12 +1564,38 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const calendarWeekdayLabels = useMemo(() => weekdayLabels(weekStartsOn), [weekStartsOn]);
   const renderStudentCommentInput = (student: Student) => (
     <textarea
-      className="input"
+      className="input observation-textarea student-comment-textarea"
+      rows={2}
       value={taskStudentCommentDraft.get(student.id) ?? ""}
       placeholder="Comentario individual"
       onChange={(event) => {
         const value = event.target.value;
         setTaskStudentCommentDraft((current) => {
+          const next = new Map(current);
+          if (value.trim().length === 0) {
+            next.delete(student.id);
+          } else {
+            next.set(student.id, value);
+          }
+          return next;
+        });
+        setTaskNotice("");
+        markTaskDirty();
+      }}
+    />
+  );
+  const renderDirectGradeInput = (student: Student) => (
+    <input
+      className="input"
+      type="number"
+      min={0}
+      max={10}
+      step={0.1}
+      value={taskDirectGradeDraft.get(student.id) ?? ""}
+      placeholder="0-10"
+      onChange={(event) => {
+        const value = event.target.value;
+        setTaskDirectGradeDraft((current) => {
           const next = new Map(current);
           if (value.trim().length === 0) {
             next.delete(student.id);
@@ -1426,6 +1615,19 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     }
     if (taskDirty) {
       await saveTaskDiary();
+    }
+  };
+
+  const selectWorkTaskSession = async (session: TaskSession): Promise<void> => {
+    if (taskDirty) {
+      const saved = await saveTaskDiary();
+      if (!saved) {
+        return;
+      }
+    }
+    setSelectedTaskSessionSlotId(session.scheduleSlotId);
+    if (selectedDate !== session.date) {
+      setSelectedDate(session.date);
     }
   };
 
@@ -1677,8 +1879,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                 </div>
               </div>
 
-              {isSavingAttendance ? <p className="hint">Guardando asistencia...</p> : null}
-              {attendanceNotice ? <p className="hint">{attendanceNotice}</p> : null}
+              {isSavingAttendance ? (
+                <p className="hint" role="status" aria-live="polite">
+                  Guardando asistencia...
+                </p>
+              ) : null}
+              {attendanceNotice ? (
+                <p className="hint" role="status" aria-live="polite">
+                  {attendanceNotice}
+                </p>
+              ) : null}
               <section className="detail-section diary-work-section">
                 <h5>Trabajo realizado en esta hora</h5>
                 <div className="diary-task-picker">
@@ -1690,6 +1900,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                       disabled={unitsForSelectedSubject.length === 0}
                       onChange={(event) => setSelectedUnitToAssignId(event.target.value)}
                     >
+                      <option value="" />
                       {unitsForSelectedSubject.map((unit) => (
                         <option key={unit.id} value={unit.id}>
                             {unit.name || "Unidad sin título"}
@@ -1706,11 +1917,15 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                       onChange={(event) => {
                         const taskId = event.target.value;
                         setSelectedTaskToAssignId(taskId);
+                        if (!taskId) {
+                          return;
+                        }
                         runWithContextGuard(() => {
                           void assignTaskToSelectedClass(taskId);
                         });
                       }}
                     >
+                      <option value="" />
                       {availableTasksToAssign.map((task) => (
                         <option key={task.id} value={task.id}>
                           {task.title || "Tarea sin título"}
@@ -1728,6 +1943,24 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                       : "No hay tareas disponibles para esta asignatura y hora."}
                   </p>
                 ) : null}
+                {taskForSelectedSlot ? (
+                  <div className="detail-field full">
+                    <label htmlFor="attendance-task-general-comment">Comentario general de la tarea en esta hora</label>
+                    <textarea
+                      id="attendance-task-general-comment"
+                      className="input observation-textarea"
+                      rows={4}
+                      value={taskGeneralCommentDraft}
+                      placeholder="Comentario general para esta tarea y esta hora"
+                      disabled={!selectedTaskSessionForDay}
+                      onChange={(event) => {
+                        setTaskGeneralCommentDraft(event.target.value);
+                        setTaskNotice("");
+                        markTaskDirty();
+                      }}
+                    />
+                  </div>
+                ) : null}
               </section>
               <div className="table-scroll">
                 <table>
@@ -1735,7 +1968,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                     <tr>
                       <th>Alumno</th>
                       <th>Estado</th>
-                      <th>Nota</th>
+                      <th>Observaciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1760,15 +1993,15 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                             </select>
                           </td>
                           <td>
-                            <input
-                              type="text"
-                              className="attendance-note-input"
+                            <textarea
+                              className="attendance-note-input observation-textarea"
+                              rows={2}
                               value={
                                 draftNoteByStudent.has(student.id)
                                   ? (draftNoteByStudent.get(student.id) ?? "")
                                   : (entry?.note ?? "")
                               }
-                              placeholder={statusLabel(status)}
+                              placeholder="Observaciones"
                               onChange={(event) => setDraftNote(student.id, event.target.value)}
                             />
                           </td>
@@ -1795,8 +2028,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
 
               {selectedClassId && selectedSubjectId && selectedTaskForDay ? (
                 <>
-                  {isSavingTask ? <p className="hint">Guardando registro de tarea...</p> : null}
-                  {taskNotice ? <p className="hint">{taskNotice}</p> : null}
+                  {isSavingTask ? (
+                    <p className="hint" role="status" aria-live="polite">
+                      Guardando registro de tarea...
+                    </p>
+                  ) : null}
+                  {taskNotice ? (
+                    <p className="hint" role="status" aria-live="polite">
+                      {taskNotice}
+                    </p>
+                  ) : null}
 
                   <section className="detail-section">
                     <h5>Horas de la tarea</h5>
@@ -1807,6 +2048,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                             <tr>
                               <th>Fecha</th>
                               <th>Hora</th>
+                              <th>Acción</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1814,6 +2056,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                               <tr key={session.id}>
                                 <td>{session.date}</td>
                                 <td>{slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className={`btn secondary ${selectedTaskSessionForDay?.id === session.id ? "active" : ""}`}
+                                    onClick={() => void selectWorkTaskSession(session)}
+                                    aria-pressed={selectedTaskSessionForDay?.id === session.id}
+                                  >
+                                    {selectedTaskSessionForDay?.id === session.id ? "Seleccionada" : "Seleccionar"}
+                                  </button>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -1824,21 +2076,36 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                     )}
                   </section>
 
-                  <section className="detail-section">
-                    <h5>Comentario general</h5>
-                    <textarea
-                      className="input"
-                      value={taskGeneralCommentDraft}
-                      placeholder="Comentario general"
-                      onChange={(event) => {
-                        setTaskGeneralCommentDraft(event.target.value);
-                        setTaskNotice("");
-                        markTaskDirty();
-                      }}
-                    />
-                  </section>
-
-                  {!selectedRubricTemplate && !selectedChecklistTemplate ? (
+                  {taskHasDirectGrade ? (
+                    <section className="detail-section">
+                      <h5>Nota directa</h5>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Alumno</th>
+                              <th>Comentario</th>
+                              <th>Nota</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {taskStudents.map((student) => (
+                              <tr key={student.id}>
+                                <td>{formatName(student)}</td>
+                                <td>{renderStudentCommentInput(student)}</td>
+                                <td>{renderDirectGradeInput(student)}</td>
+                              </tr>
+                            ))}
+                            {taskStudents.length === 0 ? (
+                              <tr>
+                                <td colSpan={3}>No hay alumnos asociados a esta tarea.</td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  ) : !selectedRubricTemplate && !selectedChecklistTemplate ? (
                     <section className="detail-section">
                       <h5>Comentarios por alumno</h5>
                       <div className="table-scroll">
