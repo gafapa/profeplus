@@ -3,7 +3,9 @@ import type { Assessment, GradeEntry } from "../db/types";
 import {
   buildManualGradeEntry,
   normalizeManualAssessmentDraft,
-  parseManualGradeValue
+  parseManualGradeValue,
+  resolveGradeEntryScore,
+  resolveGradeEntryStatus
 } from "./manualAssessments";
 
 describe("manual assessment helpers", () => {
@@ -90,7 +92,10 @@ describe("manual assessment helpers", () => {
     ).toEqual({
       ...existingEntry,
       numericValue: 8.5,
-      comment: "Updated"
+      status: "graded",
+      comment: "Updated",
+      iconTag: undefined,
+      textValue: undefined
     });
   });
 
@@ -117,10 +122,28 @@ describe("manual assessment helpers", () => {
       assessmentId: "assessment-1",
       studentId: "student-1",
       numericValue: undefined,
+      status: "pending",
       comment: "Needs family follow-up",
       colorTag: undefined,
       iconTag: undefined,
       textValue: undefined
     });
+  });
+
+  it("resolves explicit grade statuses and the not-submitted policy", () => {
+    const baseEntry: GradeEntry = {
+      id: "entry-1",
+      classId: "class-1",
+      assessmentId: "assessment-1",
+      studentId: "student-1",
+      numericValue: 8
+    };
+
+    expect(resolveGradeEntryStatus(baseEntry)).toBe("graded");
+    expect(resolveGradeEntryScore(baseEntry, "exclude")).toBe(8);
+    expect(resolveGradeEntryScore({ ...baseEntry, status: "pending" }, "zero")).toBeNull();
+    expect(resolveGradeEntryScore({ ...baseEntry, status: "exempt" }, "zero")).toBeNull();
+    expect(resolveGradeEntryScore({ ...baseEntry, status: "notSubmitted" }, "exclude")).toBeNull();
+    expect(resolveGradeEntryScore({ ...baseEntry, status: "notSubmitted" }, "zero")).toBe(0);
   });
 });

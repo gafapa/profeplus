@@ -27,14 +27,15 @@ const COMMENT_HEADERS = ["comments", "comentarios", "observaciones", "observacio
 const ACS_HEADERS = ["acs", "adaptacioncurricular", "adaptacioncurricularsignificativa"];
 const REINFORCEMENT_HEADERS = ["reinforcement", "refuerzo", "apoyo", "apoyorefuerzo"];
 
-function parseCsvLine(line: string, delimiter: string): string[] {
-  const values: string[] = [];
+function parseCsvRows(text: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let values: string[] = [];
   let current = "";
   let quoted = false;
 
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const nextChar = line[index + 1];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const nextChar = text[index + 1];
 
     if (char === "\"") {
       if (quoted && nextChar === "\"") {
@@ -52,11 +53,27 @@ function parseCsvLine(line: string, delimiter: string): string[] {
       continue;
     }
 
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && nextChar === "\n") {
+        index += 1;
+      }
+      values.push(current.trim());
+      if (values.some((value) => value.length > 0)) {
+        rows.push(values);
+      }
+      values = [];
+      current = "";
+      continue;
+    }
+
     current += char;
   }
 
   values.push(current.trim());
-  return values;
+  if (values.some((value) => value.length > 0)) {
+    rows.push(values);
+  }
+  return rows;
 }
 
 function detectDelimiter(text: string): string {
@@ -117,11 +134,7 @@ function valueAt(row: string[], headerIndexes: Map<string, number>, names: strin
 
 export function parseStudentsCsv(text: string): ParsedStudentCsvRow[] {
   const delimiter = detectDelimiter(text);
-  const rows = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => parseCsvLine(line, delimiter));
+  const rows = parseCsvRows(text, delimiter);
 
   if (rows.length === 0) {
     return [];

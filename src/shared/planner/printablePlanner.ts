@@ -40,7 +40,7 @@ export function buildPrintablePlannerReport(input: PrintablePlannerInput): Print
   );
 
   return {
-    title: `Planner semanal - ${input.className}`,
+    title: `Planificador semanal - ${input.className}`,
     generatedAt: input.generatedAt,
     summary: [
       { label: "Semana", value: input.weekRange },
@@ -82,7 +82,7 @@ export function buildPrintablePlannerReport(input: PrintablePlannerInput): Print
         summary: [
           { label: "Clases visibles", value: String(input.visibleSlotsCount) },
           { label: "Sesiones programadas", value: String(orderedSessions.length) },
-          { label: "Tareas por planificar", value: String(input.unplannedCount) }
+          { label: "Sesiones por planificar", value: String(input.unplannedCount) }
         ]
       }
     ]

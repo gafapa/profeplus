@@ -46,6 +46,20 @@ describe("students CSV parser", () => {
     ]);
   });
 
+  it("keeps line breaks inside quoted comments", () => {
+    const rows = parseStudentsCsv(
+      'Nombre,Apellidos,Correo,Comentarios\nAna,García,ana@example.test,"Primera línea\nSegunda línea"'
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        firstName: "Ana",
+        lastName: "García",
+        comments: "Primera línea\nSegunda línea"
+      })
+    ]);
+  });
+
   it("can split full names", () => {
     const rows = parseStudentsCsv("Nombre completo\nAna María García");
 

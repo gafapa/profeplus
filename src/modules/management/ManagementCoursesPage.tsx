@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
+import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementCoursesPage() {
   const { formatName } = useStudentDisplay();
   const {
     courses,
     students,
-    createEmptyCourse,
+    createCourse,
     updateCourse,
     deleteCourse,
     addStudentToCourse,
@@ -17,11 +19,19 @@ export function ManagementCoursesPage() {
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [draggingStudentId, setDraggingStudentId] = useState<string | null>(null);
   const [dropCourseId, setDropCourseId] = useState<string | null>(null);
+  const [moveTargetByStudentId, setMoveTargetByStudentId] = useState<Record<string, string>>({});
 
   const [detailCourseName, setDetailCourseName] = useState("");
   const [detailCourseYear, setDetailCourseYear] = useState("");
   const [detailCourseComments, setDetailCourseComments] = useState("");
   const [courseDirty, setCourseDirty] = useState(false);
+  const [showCreateCourseModal, setShowCreateCourseModal] = useState(false);
+  const [newCourseName, setNewCourseName] = useState("");
+  const [newCourseLevel, setNewCourseLevel] = useState("");
+  const [newCourseYear, setNewCourseYear] = useState(
+    () => `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`
+  );
+  useUnsavedChangesGuard(courseDirty, "Hay cambios del curso sin guardar.");
 
   useEffect(() => {
     if (!selectedCourseId && courses.length > 0) {
@@ -53,7 +63,7 @@ export function ManagementCoursesPage() {
     setCourseDirty(false);
   }, [selectedCourse]);
 
-  // Auto-guardado con debounce (updateCourse excluido de deps: su referencia cambia en cada render del contexto)
+  // Debounced autosave. The context action is intentionally omitted because its reference is unstable.
   useEffect(() => {
     if (!courseDirty || !selectedCourse) return;
     const name = detailCourseName.trim();
@@ -62,25 +72,26 @@ export function ManagementCoursesPage() {
     const id = selectedCourse.id;
     const comments = detailCourseComments;
     const timer = setTimeout(() => {
-      void updateCourse(id, name, year, comments);
-      setCourseDirty(false);
+      void updateCourse(id, name, year, comments).then((saved) => {
+        if (saved) setCourseDirty(false);
+      });
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseDirty, detailCourseName, detailCourseYear, detailCourseComments, selectedCourse?.id]);
 
-  const saveIfDirty = useCallback(async () => {
-    if (!courseDirty || !selectedCourse) return;
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
+    if (!courseDirty || !selectedCourse) return true;
     const name = detailCourseName.trim();
     const year = detailCourseYear.trim();
-    if (name.length < 3 || year.length < 4) return;
-    await updateCourse(selectedCourse.id, name, year, detailCourseComments);
-    setCourseDirty(false);
+    const saved = await updateCourse(selectedCourse.id, name, year, detailCourseComments);
+    if (saved) setCourseDirty(false);
+    return saved;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseDirty, selectedCourse?.id, detailCourseName, detailCourseYear, detailCourseComments]);
 
   const handleCourseDrop = async (targetCourseId: string, rawStudentId: string | null) => {
-    await saveIfDirty();
+    if (!(await saveIfDirty())) return;
     const studentId = rawStudentId || draggingStudentId;
     if (!studentId) return;
     void addStudentToCourse(studentId, targetCourseId);
@@ -88,8 +99,20 @@ export function ManagementCoursesPage() {
     setDropCourseId(null);
   };
 
+  const moveStudentToSelectedCourse = async (studentId: string): Promise<void> => {
+    const targetCourseId = moveTargetByStudentId[studentId] ?? "";
+    if (!targetCourseId || !(await saveIfDirty())) return;
+    await addStudentToCourse(studentId, targetCourseId);
+    setMoveTargetByStudentId((current) => {
+      const next = { ...current };
+      delete next[studentId];
+      return next;
+    });
+  };
+
   return (
     <article className="management-card">
+      <h1 className="sr-only">Cursos</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="courses-list-header">
@@ -97,27 +120,27 @@ export function ManagementCoursesPage() {
             <IconButton
               icon="add"
               label="Crear curso"
-              onClick={async () => {
-                await saveIfDirty();
-                const createdId = await createEmptyCourse();
-                if (createdId) {
-                  setSelectedCourseId(createdId);
-                }
+              onClick={() => {
+                void saveIfDirty().then((saved) => {
+                  if (!saved) return;
+                  setNewCourseName("");
+                  setNewCourseLevel("");
+                  setShowCreateCourseModal(true);
+                });
               }}
             />
           </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Secciones de cursos">
+          <div className="courses-list section-tabs" role="group" aria-label="Secciones de cursos">
             {courses.map((course) => (
               <div key={course.id} className="courses-list-row">
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={selectedCourseId === course.id}
+                  aria-pressed={selectedCourseId === course.id}
                   className={`section-tab ${selectedCourseId === course.id ? "active" : ""} ${
                     dropCourseId === course.id ? "drop-target" : ""
                   }`}
                   onClick={async () => {
-                    await saveIfDirty();
+                    if (!(await saveIfDirty())) return;
                     setSelectedCourseId(course.id);
                   }}
                   onDragOver={(event) => {
@@ -137,7 +160,7 @@ export function ManagementCoursesPage() {
                   icon="delete"
                   label={`Eliminar ${course.name || "curso"}`}
                   onClick={async () => {
-                    await saveIfDirty();
+                    if (!(await saveIfDirty())) return;
                     await deleteCourse(course.id);
                   }}
                 />
@@ -151,7 +174,7 @@ export function ManagementCoursesPage() {
             <>
               <div className="course-detail-header">
                 <div>
-                  <h4>Detalle del curso</h4>
+                  <h2>Detalle del curso</h2>
                 </div>
               </div>
 
@@ -161,7 +184,7 @@ export function ManagementCoursesPage() {
               </div>
 
               <section className="detail-section">
-                <h5>Datos del curso</h5>
+                <h3>Datos del curso</h3>
                 <div className="detail-grid">
                   <div className="detail-field">
                     <label>Nombre</label>
@@ -219,9 +242,9 @@ export function ManagementCoursesPage() {
               </section>
 
               <section className="detail-section">
-                <h5>Alumnos del curso</h5>
+                <h3>Alumnos del curso</h3>
                 <p className="notice compact">
-                  Arrastra un alumno desde este listado hacia otro curso para moverlo.
+                  Usa “Mover a” o arrastra un alumno hacia otro curso. Los movimientos con datos registrados se bloquean.
                 </p>
                 <div className="table-scroll">
                   <table>
@@ -229,6 +252,7 @@ export function ManagementCoursesPage() {
                       <tr>
                         <th>Foto</th>
                         <th>Alumno</th>
+                        <th>Mover a</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -259,6 +283,38 @@ export function ManagementCoursesPage() {
                               )}
                             </td>
                             <td>{formatName(student)}</td>
+                            <td>
+                              <div className="inline-form flush">
+                                <select
+                                  className="input"
+                                  value={moveTargetByStudentId[student.id] ?? ""}
+                                  aria-label={`Curso de destino para ${formatName(student)}`}
+                                  onChange={(event) =>
+                                    setMoveTargetByStudentId((current) => ({
+                                      ...current,
+                                      [student.id]: event.target.value
+                                    }))
+                                  }
+                                >
+                                  <option value="">Selecciona destino</option>
+                                  {courses
+                                    .filter((course) => course.id !== selectedCourseId)
+                                    .map((course) => (
+                                      <option key={course.id} value={course.id}>
+                                        {course.name} · {course.schoolYear}
+                                      </option>
+                                    ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  className="btn secondary"
+                                  disabled={!moveTargetByStudentId[student.id]}
+                                  onClick={() => void moveStudentToSelectedCourse(student.id)}
+                                >
+                                  Mover
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         );
                       })}
@@ -272,6 +328,69 @@ export function ManagementCoursesPage() {
           )}
         </section>
       </div>
+      <Modal
+        open={showCreateCourseModal}
+        title="Crear grupo"
+        subtitle="Los datos no se guardarán hasta que confirmes."
+        onClose={() => setShowCreateCourseModal(false)}
+      >
+        <div className="detail-grid">
+          <label className="detail-field">
+            <span>Nombre del grupo</span>
+            <input
+              className="input"
+              value={newCourseName}
+              placeholder="Ej. 4º Primaria A"
+              autoFocus
+              onChange={(event) => setNewCourseName(event.target.value)}
+            />
+          </label>
+          <label className="detail-field">
+            <span>Nivel</span>
+            <input
+              className="input"
+              value={newCourseLevel}
+              placeholder="Ej. 4º Primaria"
+              onChange={(event) => setNewCourseLevel(event.target.value)}
+            />
+          </label>
+          <label className="detail-field">
+            <span>Curso escolar</span>
+            <input
+              className="input"
+              value={newCourseYear}
+              placeholder="2026-2027"
+              onChange={(event) => setNewCourseYear(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn secondary" onClick={() => setShowCreateCourseModal(false)}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={
+              newCourseName.trim().length < 3 ||
+              newCourseLevel.trim().length < 2 ||
+              newCourseYear.trim().length < 4
+            }
+            onClick={() => {
+              void createCourse(
+                newCourseName.trim(),
+                newCourseYear.trim(),
+                undefined,
+                newCourseLevel.trim()
+              ).then(() => {
+                setShowCreateCourseModal(false);
+              });
+            }}
+          >
+            Confirmar y crear
+          </button>
+        </div>
+      </Modal>
     </article>
   );
 }

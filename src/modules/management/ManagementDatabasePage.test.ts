@@ -37,8 +37,8 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
       scheduleDays: [
         {
           id: "day-1",
-          dayOfWeek: 1,
-          dayName: "Lunes",
+          dayOfWeek: 5,
+          dayName: "Viernes",
           enabled: true,
           blocks: [{ id: slotId, startTime: "09:00", endTime: "10:00" }]
         }
@@ -52,7 +52,8 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
           subjectId,
           classId,
           date: "2026-05-22",
-          scheduleSlotId: slotId
+          scheduleSlotId: slotId,
+          status: "planned"
         }
       ],
       rubricTemplates: [
@@ -88,6 +89,356 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
 }
 
 describe("database payload validation", () => {
+  it("defines only the current clean database tables", () => {
+    expect(db.name).toBe("profeplus-db");
+    expect(db.verno).toBe(3);
+    expect(db.tables.map((table) => table.name).sort()).toEqual([
+      "academicPeriods",
+      "appPreferences",
+      "assessments",
+      "attendanceEntries",
+      "checklistTemplates",
+      "classGroups",
+      "dailyClassRecords",
+      "familyContacts",
+      "gradeEntries",
+      "gradebookGroups",
+      "gradebookPeriodSnapshots",
+      "rubricTemplates",
+      "scheduleDays",
+      "scheduleSettings",
+      "studentFollowUps",
+      "students",
+      "subjectCourseLinks",
+      "subjectStudentLinks",
+      "subjects",
+      "supportGroupMembers",
+      "supportGroups",
+      "taskChecklistAssessments",
+      "taskDailyEvaluationSettings",
+      "taskDirectGrades",
+      "taskGradebookConfigs",
+      "taskRubricAssessments",
+      "taskSessions",
+      "taskStudentComments",
+      "taskSubjectLinks",
+      "tasks",
+      "unitBlocks"
+    ]);
+  });
+
+  it("accepts period assignments, assessment dates, and immutable snapshots", () => {
+    const payload = validPayload({
+      academicPeriods: [
+        {
+          id: "period-1",
+          classId: "class-1",
+          name: "First term",
+          startDate: "2025-09-01",
+          endDate: "2025-12-20",
+          position: 0,
+          status: "closed",
+          createdAt: "2025-08-01T00:00:00.000Z",
+          updatedAt: "2025-12-21T00:00:00.000Z",
+          closedAt: "2025-12-21T00:00:00.000Z",
+          currentSnapshotId: "snapshot-1",
+          closureVersion: 1
+        }
+      ],
+      assessments: [
+        {
+          id: "assessment-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          academicPeriodId: "period-1",
+          assessmentDate: "2025-11-15",
+          title: "Exam",
+          weight: 1,
+          period: "First term"
+        }
+      ],
+      gradebookPeriodSnapshots: [
+        {
+          id: "snapshot-1",
+          academicPeriodId: "period-1",
+          classId: "class-1",
+          version: 1,
+          createdAt: "2025-12-21T00:00:00.000Z",
+          data: {
+            classGroup: {
+              id: "class-1",
+              name: "1 ESO A",
+              level: "ESO",
+              schoolYear: "2025-2026"
+            },
+            students: [],
+            subjects: [],
+            subjectCourseLinks: [],
+            subjectStudentLinks: [],
+            assessments: [],
+            gradeEntries: [],
+            gradebookGroups: [],
+            taskGradebookConfigs: [],
+            tasks: [],
+            taskSubjectLinks: [],
+            taskSessions: [],
+            taskDailyEvaluationSettings: [],
+            taskRubricAssessments: [],
+            taskChecklistAssessments: [],
+            taskDirectGrades: [],
+            rubricTemplates: [],
+            checklistTemplates: []
+          }
+        }
+      ]
+    });
+
+    expect(validateDatabasePayload(payload).gradebookPeriodSnapshots).toHaveLength(1);
+  });
+
+  it("rejects assessment dates outside their assigned academic period", () => {
+    const payload = validPayload({
+      academicPeriods: [
+        {
+          id: "period-1",
+          classId: "class-1",
+          name: "First term",
+          startDate: "2025-09-01",
+          endDate: "2025-12-20",
+          position: 0,
+          status: "open",
+          createdAt: "2025-08-01T00:00:00.000Z",
+          updatedAt: "2025-08-01T00:00:00.000Z",
+          closureVersion: 0
+        }
+      ],
+      assessments: [
+        {
+          id: "assessment-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          academicPeriodId: "period-1",
+          assessmentDate: "2026-01-10",
+          title: "Exam",
+          weight: 1,
+          period: "First term"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/fuera de su periodo/);
+  });
+
+  it("accepts structured tutor, family contact, and cross-class support data", () => {
+    const timestamp = "2026-05-22T09:00:00.000Z";
+    const payload = validPayload({
+      studentFollowUps: [
+        {
+          id: "follow-up-1",
+          studentId: "student-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          kind: "tutorial",
+          title: "Review reading plan",
+          notes: "Coordinate the next intervention.",
+          dueDate: "2026-05-29",
+          responsiblePerson: "PT",
+          priority: "high",
+          status: "open",
+          resolved: false,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ],
+      familyContacts: [
+        {
+          id: "contact-1",
+          studentId: "student-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          channel: "phone",
+          contactName: "Family contact",
+          relationship: "Mother",
+          summary: "Agreed on the next review.",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ],
+      supportGroups: [
+        {
+          id: "support-1",
+          name: "Reading support",
+          responsiblePerson: "PT",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ],
+      supportGroupMembers: [
+        {
+          id: "support-member-1",
+          supportGroupId: "support-1",
+          studentId: "student-1",
+          createdAt: timestamp
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).not.toThrow();
+  });
+
+  it("rejects duplicated support-group memberships", () => {
+    const timestamp = "2026-05-22T09:00:00.000Z";
+    const payload = validPayload({
+      supportGroups: [
+        {
+          id: "support-1",
+          name: "Reading support",
+          responsiblePerson: "PT",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ],
+      supportGroupMembers: [
+        {
+          id: "member-1",
+          supportGroupId: "support-1",
+          studentId: "student-1",
+          createdAt: timestamp
+        },
+        {
+          id: "member-2",
+          supportGroupId: "support-1",
+          studentId: "student-1",
+          createdAt: timestamp
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/supportGroupId\+studentId/);
+  });
+
+  it("accepts a completely empty current database", () => {
+    expect(() => validateDatabasePayload({
+      app: "ProfePlus",
+      schemaVersion: DATABASE_SCHEMA_VERSION,
+      exportedAt: "2026-07-13T00:00:00.000Z",
+      tables: emptyTables()
+    })).not.toThrow();
+  });
+
+  it("accepts a scoped free class record", () => {
+    const payload = validPayload({
+      dailyClassRecords: [
+        {
+          id: "daily-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          generalComment: "Repaso y ejercicios.",
+          studentComments: { "student-1": "Participa bien." },
+          createdAt: "2026-05-22T09:00:00.000Z",
+          updatedAt: "2026-05-22T10:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(validateDatabasePayload(payload).dailyClassRecords).toHaveLength(1);
+  });
+
+  it("accepts an exceptional session and its scoped attendance and task data", () => {
+    const exceptionalId = "daily-exception";
+    const scheduleSlotId = `exception-${exceptionalId}`;
+    const payload = validPayload({
+      dailyClassRecords: [
+        {
+          id: exceptionalId,
+          classId: "class-1",
+          subjectId: "subject-1",
+          date: "2026-05-23",
+          scheduleSlotId,
+          sessionKind: "rescheduled",
+          sessionTitle: "Recovered lesson",
+          startTime: "10:15",
+          endTime: "11:10",
+          originalDate: "2026-05-22",
+          originalScheduleSlotId: "slot-1",
+          generalComment: "",
+          studentComments: {},
+          createdAt: "2026-05-22T09:00:00.000Z",
+          updatedAt: "2026-05-22T09:00:00.000Z"
+        }
+      ],
+      attendanceEntries: [
+        {
+          id: "attendance-exception",
+          classId: "class-1",
+          subjectId: "subject-1",
+          studentId: "student-1",
+          date: "2026-05-23",
+          scheduleSlotId,
+          status: "late",
+          lateMinutes: 5,
+          createdAt: "2026-05-23T10:15:00.000Z",
+          updatedAt: "2026-05-23T10:15:00.000Z"
+        }
+      ],
+      taskSessions: [
+        {
+          id: "session-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-23",
+          scheduleSlotId,
+          status: "moved"
+        }
+      ]
+    });
+
+    expect(validateDatabasePayload(payload).dailyClassRecords).toHaveLength(1);
+  });
+
+  it("rejects a synthetic attendance slot without its exceptional daily record", () => {
+    const payload = validPayload({
+      attendanceEntries: [
+        {
+          id: "attendance-exception",
+          classId: "class-1",
+          subjectId: "subject-1",
+          studentId: "student-1",
+          date: "2026-05-23",
+          scheduleSlotId: "exception-missing",
+          status: "present",
+          createdAt: "2026-05-23T10:15:00.000Z",
+          updatedAt: "2026-05-23T10:15:00.000Z"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/scheduleSlotId/);
+  });
+
+  it("rejects free class records with students outside the database", () => {
+    const payload = validPayload({
+      dailyClassRecords: [
+        {
+          id: "daily-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          generalComment: "",
+          studentComments: { missing: "Comentario" },
+          createdAt: "2026-05-22T09:00:00.000Z",
+          updatedAt: "2026-05-22T10:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/studentComments/);
+  });
+
   it("rejects backup metadata without a valid export timestamp", () => {
     const payload = validPayload();
     payload.exportedAt = "not-a-date";
@@ -133,6 +484,8 @@ describe("database payload validation", () => {
         {
           id: "rubric-row-1",
           taskId: "task-1",
+          classId: "class-1",
+          subjectId: "subject-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
           studentId: "student-1",
@@ -169,31 +522,106 @@ describe("database payload validation", () => {
     expect(() => validateDatabasePayload(payload)).toThrow(/score.*0/i);
   });
 
-  it("accepts legacy lessonPlans in old backups without importing them", () => {
+  it("rejects backups from any other schema version", () => {
     const payload = validPayload();
-    payload.schemaVersion = 5;
-    (payload.tables as Record<string, unknown[]>).lessonPlans = [
-      {
-        id: "lesson-1",
-        classId: "class-1",
-        date: "2026-05-22",
-        unit: "Legacy",
-        objective: "",
-        activity: ""
-      }
-    ];
+    payload.schemaVersion = DATABASE_SCHEMA_VERSION + 1;
 
-    const validated = validateDatabasePayload(payload);
-    expect(validated.lessonPlans).toBeUndefined();
+    expect(() => validateDatabasePayload(payload)).toThrow(/esquema actual/i);
   });
 
-  it("accepts schema 6 backups without student follow-up rows", () => {
+  it("rejects backups missing any current table", () => {
     const payload = validPayload();
-    payload.schemaVersion = 6;
     delete (payload.tables as Record<string, unknown[]>).studentFollowUps;
 
-    const validated = validateDatabasePayload(payload);
-    expect(validated.studentFollowUps).toEqual([]);
+    expect(() => validateDatabasePayload(payload)).toThrow(/studentFollowUps/);
+  });
+
+  it("rejects task sessions without an explicit status", () => {
+    const payload = validPayload();
+    delete ((payload.tables as Record<string, unknown[]>).taskSessions[0] as Record<string, unknown>).status;
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/status/);
+  });
+
+  it("rejects records assigned to a schedule slot from another weekday", () => {
+    const payload = validPayload({
+      taskSessions: [
+        {
+          id: "session-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-21",
+          scheduleSlotId: "slot-1",
+          status: "planned"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/no corresponde al día/i);
+  });
+
+  it("rejects attendance timestamps that move backwards", () => {
+    const payload = validPayload({
+      attendanceEntries: [
+        {
+          id: "attendance-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          studentId: "student-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          status: "present",
+          createdAt: "2026-05-22T10:00:00.000Z",
+          updatedAt: "2026-05-22T09:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/anterior a su creación/i);
+  });
+
+  it("rejects subjects assigned to break blocks", () => {
+    const payload = validPayload({
+      scheduleDays: [
+        {
+          id: "day-1",
+          dayOfWeek: 5,
+          dayName: "Viernes",
+          enabled: true,
+          blocks: [{ id: "slot-1", startTime: "09:00", endTime: "10:00", isBreak: true }]
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/scheduleSlotIds/);
+  });
+
+  it("rejects subjects without exactly one course association", () => {
+    const payload = validPayload({ subjectCourseLinks: [] });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/asignatura sin curso asociado/i);
+  });
+
+  it("rejects attendance for a student not enrolled in the subject", () => {
+    const payload = validPayload({
+      subjectStudentLinks: [],
+      attendanceEntries: [
+        {
+          id: "attendance-1",
+          classId: "class-1",
+          subjectId: "subject-1",
+          studentId: "student-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          status: "present",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/no matriculado/i);
   });
 
   it("rejects student follow-up rows for another class", () => {
@@ -294,10 +722,13 @@ describe("database payload validation", () => {
         {
           id: "attendance-1",
           classId: "class-1",
+          subjectId: "subject-1",
           studentId: "student-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
-          status: "unknown"
+          status: "unknown",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
         }
       ]
     });
@@ -311,10 +742,13 @@ describe("database payload validation", () => {
         {
           id: "attendance-1",
           classId: "class-1",
+          subjectId: "subject-1",
           studentId: "student-1",
           date: "22/05/2026",
           scheduleSlotId: "slot-1",
-          status: "present"
+          status: "present",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
         }
       ]
     });
@@ -328,10 +762,13 @@ describe("database payload validation", () => {
         {
           id: "attendance-1",
           classId: "class-1",
+          subjectId: "subject-1",
           studentId: "student-1",
           date: "2026-05-22",
           scheduleSlotId: "missing-slot",
-          status: "present"
+          status: "present",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
         }
       ]
     });
@@ -442,6 +879,8 @@ describe("database payload validation", () => {
         {
           id: "setting-1",
           taskId: "task-1",
+          classId: "class-1",
+          subjectId: "subject-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
           rubricTemplateId: "rubric-1",
@@ -518,7 +957,8 @@ describe("database payload validation", () => {
           subjectId: "subject-1",
           classId: "class-1",
           date: "2026-05-22",
-          scheduleSlotId: "slot-1"
+          scheduleSlotId: "slot-1",
+          status: "planned"
         }
       ]
     });
@@ -653,13 +1093,15 @@ describe("database payload validation", () => {
         }
       ],
       subjectCourseLinks: [
-        { id: "subject-course-1", subjectId: "subject-1", classId: "class-1" },
-        { id: "subject-course-2", subjectId: "subject-1", classId: "class-2" }
+        { id: "subject-course-1", subjectId: "subject-1", classId: "class-1" }
       ],
+      subjectStudentLinks: [],
       taskStudentComments: [
         {
           id: "comment-1",
           taskId: "task-1",
+          classId: "class-1",
+          subjectId: "subject-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
           studentId: "student-1",
@@ -669,6 +1111,21 @@ describe("database payload validation", () => {
     });
 
     expect(() => validateDatabasePayload(payload)).toThrow(/fuera del curso/i);
+  });
+
+  it("rejects a subject associated with more than one course", () => {
+    const payload = validPayload({
+      classGroups: [
+        { id: "class-1", name: "1 ESO A", level: "ESO", schoolYear: "2025-2026" },
+        { id: "class-2", name: "1 ESO B", level: "ESO", schoolYear: "2025-2026" }
+      ],
+      subjectCourseLinks: [
+        { id: "subject-course-1", subjectId: "subject-1", classId: "class-1" },
+        { id: "subject-course-2", subjectId: "subject-1", classId: "class-2" }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).toThrow(/subjectId/i);
   });
 
   it("rejects task student comments that are not text", () => {
@@ -753,7 +1210,8 @@ describe("database payload validation", () => {
           subjectId: "subject-1",
           classId: "class-1",
           date: "2026-05-22",
-          scheduleSlotId: "slot-1"
+          scheduleSlotId: "slot-1",
+          status: "planned"
         },
         {
           id: "session-2",
@@ -761,7 +1219,8 @@ describe("database payload validation", () => {
           subjectId: "subject-2",
           classId: "class-2",
           date: "2026-05-22",
-          scheduleSlotId: "slot-1"
+          scheduleSlotId: "slot-1",
+          status: "planned"
         }
       ],
       taskDailyEvaluationSettings: [
@@ -901,23 +1360,29 @@ describe("database payload validation", () => {
         {
           id: "attendance-1",
           classId: "class-1",
+          subjectId: "subject-1",
           studentId: "student-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
-          status: "present"
+          status: "present",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
         },
         {
           id: "attendance-2",
           classId: "class-1",
+          subjectId: "subject-1",
           studentId: "student-1",
           date: "2026-05-22",
           scheduleSlotId: "slot-1",
-          status: "absent"
+          status: "absent",
+          createdAt: "2026-05-22T08:00:00.000Z",
+          updatedAt: "2026-05-22T08:00:00.000Z"
         }
       ]
     });
 
-    expect(() => validateDatabasePayload(payload)).toThrow(/filas duplicadas.*classId\+studentId\+date\+scheduleSlotId/i);
+    expect(() => validateDatabasePayload(payload)).toThrow(/filas duplicadas.*classId\+subjectId\+studentId\+date\+scheduleSlotId/i);
   });
 
   it("rejects duplicate direct task grades for the same task subject class and student", () => {
@@ -962,7 +1427,8 @@ describe("database payload validation", () => {
           subjectId: "subject-1",
           classId: "class-1",
           date: "2026-05-22",
-          scheduleSlotId: "slot-1"
+          scheduleSlotId: "slot-1",
+          status: "planned"
         },
         {
           id: "session-2",
@@ -970,7 +1436,8 @@ describe("database payload validation", () => {
           subjectId: "subject-1",
           classId: "class-1",
           date: "2026-05-22",
-          scheduleSlotId: "slot-1"
+          scheduleSlotId: "slot-1",
+          status: "planned"
         }
       ]
     });

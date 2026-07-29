@@ -6,7 +6,7 @@ import type { ClassGroup, Subject } from "../db/types";
 
 type ContextSidebarTabsProps = {
   includeSubjects?: boolean;
-  beforeChange?: () => void | Promise<void>;
+  beforeChange?: () => boolean | void | Promise<boolean | void>;
 };
 
 export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: ContextSidebarTabsProps) {
@@ -71,7 +71,8 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
   }, [dispatch, includeSubjects, selectedClassId, selectedSubjectId, subjects]);
 
   const runChange = async (action: () => void): Promise<void> => {
-    await beforeChange?.();
+    const canChange = await beforeChange?.();
+    if (canChange === false) return;
     action();
   };
 
@@ -80,13 +81,12 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
       <div className="context-sidebar-group">
         <strong>Curso</strong>
         {classGroups.length > 0 ? (
-          <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Curso">
+          <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Curso">
             {classGroups.map((classGroup) => (
               <button
                 key={classGroup.id}
                 type="button"
-                role="tab"
-                aria-selected={selectedClassId === classGroup.id}
+                aria-pressed={selectedClassId === classGroup.id}
                 className={`section-tab ${selectedClassId === classGroup.id ? "active" : ""}`}
                 onClick={() => {
                   void runChange(() => dispatch(setSelectedClass(classGroup.id)));
@@ -108,13 +108,12 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
           <div className="context-sidebar-group">
             <strong>Asignatura</strong>
             {subjects.length > 0 ? (
-              <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Asignatura">
+              <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Asignatura">
                 {subjects.map((subject) => (
                   <button
                     key={subject.id}
                     type="button"
-                    role="tab"
-                    aria-selected={selectedSubjectId === subject.id}
+                    aria-pressed={selectedSubjectId === subject.id}
                     className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
                     onClick={() => {
                       void runChange(() => dispatch(setSelectedSubject(subject.id)));

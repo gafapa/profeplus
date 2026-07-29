@@ -7,6 +7,7 @@ import { generateAiText } from "../../shared/ai/extensionRuntime";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 import {
   defaultChecklist,
   defaultRubric,
@@ -18,6 +19,7 @@ import {
 } from "./instrumentAi";
 
 type InstrumentKind = "rubric" | "checklist" | "direct";
+const UNASSIGNED_UNIT_FILTER = "__unassigned__";
 
 export function ManagementTasksPage() {
   const selectedClassId = useAppSelector((s) => s.app.selectedClassId);
@@ -54,12 +56,15 @@ export function ManagementTasksPage() {
   const [checklistDescription, setChecklistDescription] = useState("");
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [instrumentDirty, setInstrumentDirty] = useState(false);
+  useUnsavedChangesGuard(taskDirty || instrumentDirty, "Hay cambios de la tarea o su instrumento sin guardar.");
   const [evaluationDataCount, setEvaluationDataCount] = useState(0);
   const [aiInstrumentKind, setAiInstrumentKind] = useState<InstrumentKind>("rubric");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiStatus, setAiStatus] = useState("");
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [reusableTaskId, setReusableTaskId] = useState("");
+  const [reusableInstrumentId, setReusableInstrumentId] = useState("");
 
   const unitsForSubject = useMemo(
     () => units.filter((u) => u.subjectId === selectedSubjectId).sort((a, b) => a.position - b.position),
@@ -86,9 +91,17 @@ export function ManagementTasksPage() {
     [allTasks, taskIdsForSubject]
   );
 
+  const reusableTasks = useMemo(
+    () => allTasks.filter((task) => !taskIdsForSubject.has(task.id)).sort((a, b) => a.title.localeCompare(b.title)),
+    [allTasks, taskIdsForSubject]
+  );
+
   const tasksForUnitFilter = useMemo(() => {
     if (!selectedUnitFilterId) return [];
-    return tasksForSubject.filter((task) => linkByTaskId.get(task.id)?.unitId === selectedUnitFilterId);
+    return tasksForSubject.filter((task) => {
+      const unitId = linkByTaskId.get(task.id)?.unitId;
+      return selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? !unitId : unitId === selectedUnitFilterId;
+    });
   }, [linkByTaskId, selectedUnitFilterId, tasksForSubject]);
 
   useEffect(() => {
@@ -96,12 +109,9 @@ export function ManagementTasksPage() {
       setSelectedUnitFilterId("");
       return;
     }
-    if (unitsForSubject.length === 0) {
-      setSelectedUnitFilterId("");
-      return;
-    }
-    if (!unitsForSubject.some((unit) => unit.id === selectedUnitFilterId)) {
-      setSelectedUnitFilterId(unitsForSubject[0].id);
+    const isValidUnit = unitsForSubject.some((unit) => unit.id === selectedUnitFilterId);
+    if (!isValidUnit && selectedUnitFilterId !== UNASSIGNED_UNIT_FILTER) {
+      setSelectedUnitFilterId(unitsForSubject[0]?.id ?? UNASSIGNED_UNIT_FILTER);
     }
   }, [selectedSubjectId, selectedUnitFilterId, unitsForSubject]);
 
@@ -122,7 +132,9 @@ export function ManagementTasksPage() {
   );
 
   const selectedUnitName = useMemo(
-    () => unitsForSubject.find((unit) => unit.id === selectedUnitFilterId)?.name || "Unidad seleccionada",
+    () => selectedUnitFilterId === UNASSIGNED_UNIT_FILTER
+      ? "Sin unidad"
+      : unitsForSubject.find((unit) => unit.id === selectedUnitFilterId)?.name || "Unidad seleccionada",
     [selectedUnitFilterId, unitsForSubject]
   );
 
@@ -134,8 +146,8 @@ export function ManagementTasksPage() {
       return;
     }
     const [rubrics, checklists, configs] = await Promise.all([
-      db.rubricTemplates.where("classId").equals(selectedClassId).toArray(),
-      db.checklistTemplates.where("classId").equals(selectedClassId).toArray(),
+      db.rubricTemplates.toArray(),
+      db.checklistTemplates.toArray(),
       db.taskGradebookConfigs.where("[classId+subjectId]").equals([selectedClassId, selectedSubjectId]).toArray()
     ]);
     setRubricTemplates(rubrics);
@@ -233,12 +245,7 @@ export function ManagementTasksPage() {
       active = false;
     };
   }, [
-    currentTaskConfig?.checklistTemplateId,
-    currentTaskConfig?.classId,
-    currentTaskConfig?.directGradeEnabled,
-    currentTaskConfig?.rubricTemplateId,
-    currentTaskConfig?.subjectId,
-    currentTaskConfig?.taskId,
+    currentTaskConfig,
     getEvaluationDataCount
   ]);
 
@@ -300,7 +307,7 @@ export function ManagementTasksPage() {
     setInstrumentDirty(false);
   }, [selectedChecklistTemplate, selectedRubricTemplate]);
 
-  // Auto-guardado con debounce (funciones de contexto excluidas de deps: su referencia cambia en cada render)
+  // Debounced autosave. Context actions are intentionally omitted because their references are unstable.
   useEffect(() => {
     if (!taskDirty || !selectedTask) return;
     const title = detailTitle.trim();
@@ -312,9 +319,10 @@ export function ManagementTasksPage() {
     const unitId = detailUnitId;
     const linkId = currentLink?.id;
     const timer = setTimeout(async () => {
-      await updateTask(taskId, title, desc, sessionCount, toGradebook);
-      if (linkId) await updateTaskSubjectLink(linkId, unitId || undefined);
-      setTaskDirty(false);
+      const linkSaved = linkId ? await updateTaskSubjectLink(linkId, unitId || undefined) : true;
+      if (!linkSaved) return;
+      const taskSaved = await updateTask(taskId, title, desc, sessionCount, toGradebook);
+      if (taskSaved) setTaskDirty(false);
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -403,7 +411,7 @@ export function ManagementTasksPage() {
     if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) {
       return;
     }
-    await saveIfDirty();
+    if (!(await saveIfDirty())) return;
     const id = crypto.randomUUID();
     await db.rubricTemplates.add({
       id,
@@ -427,7 +435,7 @@ export function ManagementTasksPage() {
     if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) {
       return;
     }
-    await saveIfDirty();
+    if (!(await saveIfDirty())) return;
     const id = crypto.randomUUID();
     await db.checklistTemplates.add({
       id,
@@ -439,6 +447,56 @@ export function ManagementTasksPage() {
     });
     await assignChecklistTemplate(id);
     setNotice("Lista de cotejo creada y asignada a la tarea.");
+  };
+
+  const reuseSelectedTask = async (): Promise<void> => {
+    if (!selectedSubjectId || !reusableTaskId) return;
+    if (!(await saveIfDirty())) return;
+    await addTaskSubjectLink(
+      reusableTaskId,
+      selectedSubjectId,
+      selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? undefined : selectedUnitFilterId
+    );
+    setSelectedTaskId(reusableTaskId);
+    setReusableTaskId("");
+    setNotice("Tarea reutilizada en la asignatura actual.");
+  };
+
+  const copySelectedInstrument = async (): Promise<void> => {
+    if (!selectedClassId || !selectedTask || !reusableInstrumentId) return;
+    if (!(await saveIfDirty())) return;
+    if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) return;
+
+    const [kind, sourceId] = reusableInstrumentId.split(":", 2);
+    if (kind === "rubric") {
+      const source = rubricTemplates.find((template) => template.id === sourceId);
+      if (!source) return;
+      const id = crypto.randomUUID();
+      await db.rubricTemplates.add({
+        ...structuredClone(source),
+        id,
+        classId: selectedClassId,
+        taskId: selectedTask.id,
+        name: `${source.name} (copia)`
+      });
+      await assignRubricTemplate(id);
+    } else if (kind === "checklist") {
+      const source = checklistTemplates.find((template) => template.id === sourceId);
+      if (!source) return;
+      const id = crypto.randomUUID();
+      await db.checklistTemplates.add({
+        ...structuredClone(source),
+        id,
+        classId: selectedClassId,
+        taskId: selectedTask.id,
+        name: `${source.name} (copia)`
+      });
+      await assignChecklistTemplate(id);
+    } else {
+      return;
+    }
+    setReusableInstrumentId("");
+    setNotice("Instrumento copiado y asignado sin trasladar calificaciones anteriores.");
   };
 
   const deleteEvaluationData = async (): Promise<void> => {
@@ -641,15 +699,15 @@ export function ManagementTasksPage() {
     return true;
   };
 
-  const saveIfDirty = useCallback(async () => {
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
     if (taskDirty && selectedTask) {
       const title = detailTitle.trim();
-      if (title.length < 2) return;
-      await updateTask(selectedTask.id, title, detailDescription, detailSessionCount, detailSendToGradebook);
-      if (currentLink) await updateTaskSubjectLink(currentLink.id, detailUnitId || undefined);
+      if (currentLink && !(await updateTaskSubjectLink(currentLink.id, detailUnitId || undefined))) return false;
+      const taskSaved = await updateTask(selectedTask.id, title, detailDescription, detailSessionCount, detailSendToGradebook);
+      if (!taskSaved) return false;
       setTaskDirty(false);
     }
-    await persistInstrument();
+    return persistInstrument();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     taskDirty,
@@ -862,6 +920,7 @@ export function ManagementTasksPage() {
 
   return (
     <article className="management-card">
+      <h1 className="sr-only">Tareas</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <ContextSidebarTabs beforeChange={saveIfDirty} />
@@ -870,25 +929,42 @@ export function ManagementTasksPage() {
               <div className="context-sidebar-group">
                 <strong>Unidades</strong>
                 {unitsForSubject.length > 0 ? (
-                  <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Unidades">
+                  <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Unidades">
                     {unitsForSubject.map((unit) => (
                       <button
                         key={unit.id}
                         type="button"
-                        role="tab"
-                        aria-selected={selectedUnitFilterId === unit.id}
+                        aria-pressed={selectedUnitFilterId === unit.id}
                         className={`section-tab ${selectedUnitFilterId === unit.id ? "active" : ""}`}
                         onClick={async () => {
-                          await saveIfDirty();
+                          if (!(await saveIfDirty())) return;
                           setSelectedUnitFilterId(unit.id);
                         }}
                       >
                         <span>{unit.name || "Unidad sin nombre"}</span>
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      aria-pressed={selectedUnitFilterId === UNASSIGNED_UNIT_FILTER}
+                      className={`section-tab ${selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? "active" : ""}`}
+                      onClick={async () => {
+                        if (!(await saveIfDirty())) return;
+                        setSelectedUnitFilterId(UNASSIGNED_UNIT_FILTER);
+                      }}
+                    >
+                      <span>Sin unidad</span>
+                    </button>
                   </div>
                 ) : (
-                  <p className="hint">No hay unidades creadas para esta asignatura.</p>
+                  <button
+                    type="button"
+                    aria-pressed="true"
+                    className="section-tab active"
+                    onClick={() => setSelectedUnitFilterId(UNASSIGNED_UNIT_FILTER)}
+                  >
+                    <span>Sin unidad</span>
+                  </button>
                 )}
               </div>
             </div>
@@ -898,23 +974,55 @@ export function ManagementTasksPage() {
             <IconButton
               icon="add"
               label="Crear tarea"
-              disabled={!selectedSubjectId || !selectedUnitFilterId}
+              disabled={!selectedSubjectId}
               onClick={async () => {
-                if (!selectedSubjectId || !selectedUnitFilterId) {
-                  setNotice("Selecciona una unidad para crear la tarea.");
+                if (!selectedSubjectId) {
+                  setNotice("Selecciona una asignatura para crear la tarea.");
                   return;
                 }
-                await saveIfDirty();
+                if (!(await saveIfDirty())) return;
                 const createdId = await createEmptyTask();
                 if (createdId) {
-                  await addTaskSubjectLink(createdId, selectedSubjectId, selectedUnitFilterId);
+                  await addTaskSubjectLink(
+                    createdId,
+                    selectedSubjectId,
+                    selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? undefined : selectedUnitFilterId
+                  );
                   setSelectedTaskId(createdId);
                 }
               }}
             />
           </div>
 
-          <div className="courses-list section-tabs" role="tablist" aria-label="Tareas">
+          {selectedSubjectId && reusableTasks.length > 0 ? (
+            <div className="sidebar-reuse-panel">
+              <label className="detail-field">
+                <span>Reutilizar tarea existente</span>
+                <select
+                  className="input"
+                  value={reusableTaskId}
+                  onChange={(event) => setReusableTaskId(event.target.value)}
+                >
+                  <option value="">Selecciona una tarea</option>
+                  {reusableTasks.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.title || "Sin título"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={!reusableTaskId}
+                onClick={() => void reuseSelectedTask()}
+              >
+                Añadir a esta unidad
+              </button>
+            </div>
+          ) : null}
+
+          <div className="courses-list section-tabs" role="group" aria-label="Tareas">
             {selectedSubjectId ? tasksForUnitFilter.map((task) => {
               const link = linkByTaskId.get(task.id);
               const unitName = link?.unitId
@@ -924,11 +1032,10 @@ export function ManagementTasksPage() {
                 <div key={task.id} className="courses-list-row">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={selectedTaskId === task.id}
+                    aria-pressed={selectedTaskId === task.id}
                     className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       setSelectedTaskId(task.id);
                     }}
                   >
@@ -939,7 +1046,7 @@ export function ManagementTasksPage() {
                     icon="delete"
                     label={`Eliminar ${task.title || "tarea"}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       if (link) await removeTaskSubjectLink(link.id);
                       await deleteTask(task.id);
                     }}
@@ -947,16 +1054,9 @@ export function ManagementTasksPage() {
                 </div>
               );
             }) : null}
-            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length === 0 && (
+            {selectedSubjectId && tasksForUnitFilter.length === 0 && (
               <p className="empty-state">
-                Crea una unidad antes de crear tareas.
-              </p>
-            )}
-            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length > 0 && (
-              <p className="empty-state">
-                {tasksForSubject.length === 0
-                  ? "No hay tareas. Crea una con el botón +."
-                  : "No hay tareas en esta unidad."}
+                {tasksForSubject.length === 0 ? "No hay tareas. Crea una con el botón +." : "No hay tareas en esta sección."}
               </p>
             )}
           </div>
@@ -966,7 +1066,7 @@ export function ManagementTasksPage() {
           {selectedTask ? (
             <>
               <div className="course-detail-header">
-                <h4>Ficha de tarea</h4>
+                <h2>Ficha de tarea</h2>
               </div>
 
               <section className="detail-section">
@@ -1035,7 +1135,7 @@ export function ManagementTasksPage() {
               <section className="detail-section">
                 <div className="course-detail-header">
                   <div>
-                    <h5>Instrumento de evaluación</h5>
+                    <h3>Instrumento de evaluación</h3>
                     <p className="hint">
                       {activeInstrumentKind === "rubric"
                         ? "Rúbrica asignada a esta tarea."
@@ -1120,6 +1220,43 @@ export function ManagementTasksPage() {
                   <p className="hint">Selecciona curso y asignatura para crear o asignar instrumentos.</p>
                 ) : null}
 
+                {canChangeEvaluationMethod && (rubricTemplates.length > 0 || checklistTemplates.length > 0) ? (
+                  <div className="instrument-reuse-panel">
+                    <label className="detail-field">
+                      <span>Copiar instrumento existente</span>
+                      <select
+                        className="input"
+                        value={reusableInstrumentId}
+                        onChange={(event) => setReusableInstrumentId(event.target.value)}
+                      >
+                        <option value="">Selecciona un instrumento</option>
+                        {rubricTemplates
+                          .filter((template) => template.id !== selectedRubricTemplate?.id)
+                          .map((template) => (
+                            <option key={template.id} value={`rubric:${template.id}`}>
+                              Rúbrica · {template.name}
+                            </option>
+                          ))}
+                        {checklistTemplates
+                          .filter((template) => template.id !== selectedChecklistTemplate?.id)
+                          .map((template) => (
+                            <option key={template.id} value={`checklist:${template.id}`}>
+                              Lista · {template.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      disabled={!reusableInstrumentId}
+                      onClick={() => void copySelectedInstrument()}
+                    >
+                      Copiar y asignar
+                    </button>
+                  </div>
+                ) : null}
+
                 {selectedRubricTemplate ? (
                   <div className="planner-list">
                     <div className="detail-grid">
@@ -1149,7 +1286,7 @@ export function ManagementTasksPage() {
                     </div>
 
                     <div className="course-detail-header">
-                      <h5>Criterios</h5>
+                      <h3>Criterios</h3>
                       <IconButton
                         icon="add"
                         label="Anadir criterio"
@@ -1310,7 +1447,7 @@ export function ManagementTasksPage() {
                       </div>
                     </div>
                     <div className="course-detail-header">
-                      <h5>Items</h5>
+                      <h3>Items</h3>
                       <IconButton
                         icon="add"
                         label="Anadir item"

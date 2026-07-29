@@ -3,32 +3,43 @@
   "private": true,
   "version": "0.2.2",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:test": "tsc -b && vite build --mode test",
+    "build:production": "tsc -b && vite build --mode production",
     "preview": "vite preview",
+    "clean": "node scripts/clean.mjs",
     "test": "vitest run",
+    "lint": "eslint src scripts vite.config.ts vite.config.test.ts",
     "typecheck": "tsc -b",
-    "audit": "npm audit",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run audit"
+    "audit": "node scripts/audit.mjs",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run audit"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.12.0",
     "dexie": "^4.4.4",
     "history": "^5.3.0",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-redux": "^9.3.0",
-    "react-router-dom": "^7.18.1"
+    "react-router-dom": "7.18.2"
   },
   "devDependencies": {
-    "@types/node": "^25.9.4",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.0.4",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.8.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "vite-plugin-pwa": "^1.3.0",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }

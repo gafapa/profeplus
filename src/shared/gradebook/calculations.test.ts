@@ -588,8 +588,8 @@ describe("gradebook calculations", () => {
     expect(result.totalDistributedShare).toBeCloseTo(1);
   });
 
-  it("accepts legacy unscoped rows but rejects mismatched scoped rows", () => {
-    expect(matchesTaskScope({}, "class-1", "subject-1")).toBe(true);
+  it("requires task rows to match their class and subject scope", () => {
+    expect(matchesTaskScope({ classId: "class-1", subjectId: "subject-1" }, "class-1", "subject-1")).toBe(true);
     expect(matchesTaskScope({ classId: "class-2", subjectId: "subject-1" }, "class-1", "subject-1")).toBe(false);
     expect(matchesTaskScope({ classId: "class-1", subjectId: "subject-2" }, "class-1", "subject-1")).toBe(false);
   });

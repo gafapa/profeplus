@@ -11,8 +11,10 @@ import {
   type StudentFollowUpDraft
 } from "../../shared/students/followUp";
 import { resizeImageToMaxSide } from "../../shared/utils/image";
+import { toLocalIsoDate } from "../../shared/utils/date";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementStudentsPage() {
   const { formatName } = useStudentDisplay();
@@ -29,9 +31,10 @@ export function ManagementStudentsPage() {
   const [detailHasReinforcement, setDetailHasReinforcement] = useState(false);
   const [detailPhoto, setDetailPhoto] = useState<string | undefined>(undefined);
   const [studentDirty, setStudentDirty] = useState(false);
+  useUnsavedChangesGuard(studentDirty, "Hay cambios del alumno sin guardar.");
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
   const [followUps, setFollowUps] = useState<StudentFollowUp[]>([]);
-  const [followUpDraft, setFollowUpDraft] = useState<StudentFollowUpDraft>(() => defaultFollowUpDraft(new Date().toISOString().slice(0, 10)));
+  const [followUpDraft, setFollowUpDraft] = useState<StudentFollowUpDraft>(() => defaultFollowUpDraft(toLocalIsoDate()));
   const [editingFollowUpId, setEditingFollowUpId] = useState("");
   const [studentImportText, setStudentImportText] = useState("");
   const photoInputRef = useRef<HTMLInputElement | null>(null);
@@ -85,7 +88,7 @@ export function ManagementStudentsPage() {
       setStudentDirty(false);
       setFollowUps([]);
       setEditingFollowUpId("");
-      setFollowUpDraft(defaultFollowUpDraft(new Date().toISOString().slice(0, 10)));
+      setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
       return;
     }
     setDetailFirstName(selectedStudent.firstName ?? "");
@@ -97,7 +100,7 @@ export function ManagementStudentsPage() {
     setDetailPhoto(selectedStudent.photoDataUrl);
     setStudentDirty(false);
     setEditingFollowUpId("");
-    setFollowUpDraft(defaultFollowUpDraft(new Date().toISOString().slice(0, 10)));
+    setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
   }, [selectedStudent]);
 
   useEffect(() => {
@@ -133,7 +136,8 @@ export function ManagementStudentsPage() {
     const hasAcs = detailHasAcs;
     const hasReinforcement = detailHasReinforcement;
     const timer = setTimeout(() => {
-      void updateStudent(id, firstName, lastName, courseId, photo, comments, email, hasAcs, hasReinforcement).then(() => {
+      void updateStudent(id, firstName, lastName, courseId, photo, comments, email, hasAcs, hasReinforcement).then((saved) => {
+        if (!saved) return;
         if (courseId) {
           setSelectedCourseId(courseId);
         }
@@ -144,13 +148,13 @@ export function ManagementStudentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailEmail, detailComments, detailHasAcs, detailHasReinforcement, selectedCourseId, detailPhoto, selectedStudent?.id]);
 
-  const saveIfDirty = useCallback(async () => {
-    if (!studentDirty || !selectedStudent || isProcessingPhoto) return;
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
+    if (!studentDirty || !selectedStudent) return true;
+    if (isProcessingPhoto) return false;
     const firstName = detailFirstName.trim();
     const lastName = detailLastName.trim();
-    if (firstName.length < 2 || lastName.length < 2 || !selectedCourseId) return;
     const courseId = selectedCourseId;
-    await updateStudent(
+    const saved = await updateStudent(
       selectedStudent.id,
       firstName,
       lastName,
@@ -161,21 +165,23 @@ export function ManagementStudentsPage() {
       detailHasAcs,
       detailHasReinforcement
     );
+    if (!saved) return false;
     if (courseId) {
       setSelectedCourseId(courseId);
     }
     setStudentDirty(false);
+    return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailEmail, detailComments, detailHasAcs, detailHasReinforcement, selectedCourseId, detailPhoto, selectedStudent?.id]);
 
   const changeSelectedCourse = useCallback(async (courseId: string) => {
-    await saveIfDirty();
+    if (!(await saveIfDirty())) return;
     setSelectedCourseId(courseId);
   }, [saveIfDirty]);
 
-  const changeSelectedStudent = useCallback((studentId: string) => {
+  const changeSelectedStudent = useCallback(async (studentId: string) => {
+    if (!(await saveIfDirty())) return;
     setSelectedStudentId(studentId);
-    void saveIfDirty();
   }, [saveIfDirty]);
 
   const importStudentRows = async (parsedRows: ParsedStudentCsvRow[], sourceLabel: string): Promise<boolean> => {
@@ -213,6 +219,7 @@ export function ManagementStudentsPage() {
     await db.students.bulkAdd(
       rowsToAdd.map((row, index) => ({
         id: createdIds[index],
+        personId: createdIds[index],
         classId: targetCourseId,
         firstName: row.firstName,
         lastName: row.lastName,
@@ -248,7 +255,7 @@ export function ManagementStudentsPage() {
 
   const resetFollowUpForm = (): void => {
     setEditingFollowUpId("");
-    setFollowUpDraft(defaultFollowUpDraft(new Date().toISOString().slice(0, 10)));
+    setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
   };
 
   const editFollowUp = (followUp: StudentFollowUp): void => {
@@ -297,19 +304,19 @@ export function ManagementStudentsPage() {
 
   return (
     <article className="management-card">
+      <h1 className="sr-only">Alumnos</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="context-sidebar-tabs">
             <div className="context-sidebar-group">
               <strong>Curso</strong>
               {courses.length > 0 ? (
-                <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Cursos de alumnos">
+                <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Cursos de alumnos">
                   {courses.map((course) => (
                     <button
                       key={course.id}
                       type="button"
-                      role="tab"
-                      aria-selected={selectedCourseId === course.id}
+                      aria-pressed={selectedCourseId === course.id}
                       className={`section-tab ${selectedCourseId === course.id ? "active" : ""}`}
                       onClick={() => {
                         void changeSelectedCourse(course.id);
@@ -340,7 +347,7 @@ export function ManagementStudentsPage() {
                 icon="add"
                 label="Crear alumno"
                 onClick={async () => {
-                  await saveIfDirty();
+                  if (!(await saveIfDirty())) return;
                   const targetCourseId = selectedCourseId || courses[0]?.id;
                   const createdId = await createEmptyStudent(targetCourseId);
                   if (createdId) {
@@ -357,6 +364,7 @@ export function ManagementStudentsPage() {
             ref={importCsvInputRef}
             className="student-photo-input-hidden"
             type="file"
+            aria-label="Seleccionar archivo CSV de alumnos"
             accept=".csv,text/csv"
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -388,7 +396,7 @@ export function ManagementStudentsPage() {
 
           <div
             className="courses-list section-tabs"
-            role="tablist"
+            role="group"
             aria-label="Secciones de alumnos"
           >
             {filteredStudents.map((student) => {
@@ -397,11 +405,10 @@ export function ManagementStudentsPage() {
                 <div key={student.id} className="courses-list-row">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={selectedStudentId === student.id}
+                    aria-pressed={selectedStudentId === student.id}
                     className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
                     onClick={() => {
-                      changeSelectedStudent(student.id);
+                      void changeSelectedStudent(student.id);
                     }}
                   >
                     <span className="student-item-name">
@@ -422,7 +429,7 @@ export function ManagementStudentsPage() {
                     icon="delete"
                     label={`Eliminar ${formatName(student) || "alumno"}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       await deleteStudent(student.id);
                     }}
                   />
@@ -437,7 +444,7 @@ export function ManagementStudentsPage() {
             <>
               <div className="course-detail-header">
                 <div>
-                  <h4>Ficha del alumno</h4>
+                  <h2>Ficha del alumno</h2>
                 </div>
               </div>
 
@@ -454,7 +461,7 @@ export function ManagementStudentsPage() {
               </div>
 
               <section className="detail-section">
-                <h5>Datos del alumno</h5>
+                <h3>Datos del alumno</h3>
                 <div className="student-detail-top">
                   {/* Foto */}
                   <div className="student-photo-box">
@@ -481,6 +488,7 @@ export function ManagementStudentsPage() {
                       ref={photoInputRef}
                       className="student-photo-input-hidden"
                       type="file"
+                      aria-label={`Seleccionar foto de ${formatName(selectedStudent)}`}
                       accept="image/*"
                       disabled={isProcessingPhoto}
                       onChange={(event) => {
@@ -598,7 +606,7 @@ export function ManagementStudentsPage() {
 
               <section className="detail-section">
                 <div className="course-detail-header">
-                  <h5>Seguimiento tutorial</h5>
+                  <h3>Seguimiento tutorial</h3>
                   <button type="button" className="btn secondary" onClick={resetFollowUpForm}>
                     Nuevo registro
                   </button>

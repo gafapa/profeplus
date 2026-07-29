@@ -18,7 +18,6 @@ import type {
   TaskDirectGrade,
   TaskGradebookConfig,
   TaskRubricAssessment,
-  TaskSession,
   TaskStudentComment,
   TaskSubjectLink
 } from "../../shared/db/types";
@@ -31,11 +30,14 @@ import {
   taskStudentKey,
   taskSubjectKey
 } from "../../shared/gradebook/calculations";
+import { resolveGradeEntryScore, resolveGradeEntryStatus } from "../../shared/gradebook/manualAssessments";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { buildPrintableReportHtml } from "../../shared/reports/printableReports";
 import { followUpKindLabel } from "../../shared/students/followUp";
+import { buildCsv } from "../../shared/export/csv";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { Modal } from "../../shared/ui/Modal";
+import { toLocalIsoDate } from "../../shared/utils/date";
 
 export { taskStudentKey, taskSubjectKey };
 export const calculateContributions = calculateGradebookContributions;
@@ -70,7 +72,7 @@ export type AttendanceSummary = {
   late: number;
   absent: number;
   total: number;
-  rate: number;
+  rate: number | null;
 };
 
 type AiReportKind =
@@ -99,9 +101,7 @@ function downloadBlob(filename: string, blob: Blob): void {
 }
 
 function downloadCsv(filename: string, rows: string[][]): void {
-  const content = rows
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
+  const content = buildCsv(rows);
   downloadBlob(filename, new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" }));
 }
 
@@ -114,7 +114,7 @@ function downloadHtml(filename: string, html: string): void {
 }
 
 function formatDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalIsoDate();
 }
 
 function studentSubjectKey(studentId: string, subjectId: string): string {
@@ -138,18 +138,40 @@ function instrumentLabel(task: ReportTaskRow): string {
 
 export function riskLabel(
   grade: number | null | undefined,
-  attendanceRate: number,
-  missingRate: number,
-  hasAcs?: boolean,
-  hasReinforcement?: boolean
+  attendanceRate: number | null,
+  missingRate: number
 ): string {
-  if ((typeof grade === "number" && grade < 5) || attendanceRate < 75 || missingRate >= 40) {
+  if (
+    (typeof grade === "number" && grade < 5) ||
+    (attendanceRate !== null && attendanceRate < 75) ||
+    missingRate >= 40
+  ) {
     return "Alto";
   }
-  if ((typeof grade === "number" && grade < 6) || attendanceRate < 90 || missingRate >= 20 || hasAcs || hasReinforcement) {
+  if (
+    (typeof grade === "number" && grade < 6) ||
+    (attendanceRate !== null && attendanceRate < 90) ||
+    missingRate >= 20
+  ) {
     return "Medio";
   }
   return "Bajo";
+}
+
+export function formatAttendanceRate(rate: number | null): string {
+  return rate === null ? "Sin datos" : `${rate}%`;
+}
+
+export function attendanceRiskLabel(rate: number | null): string {
+  if (rate === null) return "Sin datos";
+  if (rate < 75) return "Alto";
+  if (rate < 90) return "Medio";
+  return "Bajo";
+}
+
+function formatAttendanceCounts(summary: AttendanceSummary): string {
+  if (summary.total === 0) return "Sin datos de asistencia";
+  return `${summary.present} presentes, ${summary.late} retrasos, ${summary.absent} ausencias`;
 }
 
 export function joinUnique(values: Array<string | undefined>): string {
@@ -177,20 +199,36 @@ export function calculateAttendanceSummary(attendance: AttendanceEntry[], studen
   const late = rows.filter((entry) => entry.status === "late").length;
   const absent = rows.filter((entry) => entry.status === "absent").length;
   const total = present + late + absent;
-  const rate = total > 0 ? Math.round(((present + late) / total) * 100) : 0;
+  const rate = total > 0 ? Math.round(((present + late) / total) * 100) : null;
   return { present, late, absent, total, rate };
+}
+
+function isDateInRange(date: string | undefined, start: string, end: string): boolean {
+  if (!date) return true;
+  if (start && date < start) return false;
+  if (end && date > end) return false;
+  return true;
+}
+
+export function isAssessmentInReportRange(
+  assessment: Pick<Assessment, "assessmentDate">,
+  start: string,
+  end: string
+): boolean {
+  if (!start && !end) return true;
+  return Boolean(assessment.assessmentDate) && isDateInRange(assessment.assessmentDate, start, end);
 }
 
 export function ReportsPage() {
   const { formatName, compareFn } = useStudentDisplay();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
+  const notSubmittedGradePolicy = useAppSelector((state) => state.app.notSubmittedGradePolicy);
   const [students, setStudents] = useState<Student[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectLinks, setSubjectLinks] = useState<SubjectCourseLink[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskLinks, setTaskLinks] = useState<TaskSubjectLink[]>([]);
   const [taskConfigs, setTaskConfigs] = useState<TaskGradebookConfig[]>([]);
-  const [taskSessions, setTaskSessions] = useState<TaskSession[]>([]);
   const [taskStudentComments, setTaskStudentComments] = useState<TaskStudentComment[]>([]);
   const [taskDailySettings, setTaskDailySettings] = useState<TaskDailyEvaluationSetting[]>([]);
   const [taskRubricAssessments, setTaskRubricAssessments] = useState<TaskRubricAssessment[]>([]);
@@ -203,6 +241,9 @@ export function ReportsPage() {
   const [entries, setEntries] = useState<GradeEntry[]>([]);
   const [attendance, setAttendance] = useState<AttendanceEntry[]>([]);
   const [studentFollowUps, setStudentFollowUps] = useState<StudentFollowUp[]>([]);
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [undatedAssessmentCount, setUndatedAssessmentCount] = useState(0);
   const [isAiReportModalOpen, setIsAiReportModalOpen] = useState(false);
   const [isGeneratingAiReport, setIsGeneratingAiReport] = useState(false);
   const [aiReportTitle, setAiReportTitle] = useState("");
@@ -222,7 +263,6 @@ export function ReportsPage() {
       setTasks([]);
       setTaskLinks([]);
       setTaskConfigs([]);
-      setTaskSessions([]);
       setTaskStudentComments([]);
       setTaskDailySettings([]);
       setTaskRubricAssessments([]);
@@ -235,6 +275,7 @@ export function ReportsPage() {
       setEntries([]);
       setAttendance([]);
       setStudentFollowUps([]);
+      setUndatedAssessmentCount(0);
     };
 
     const loadData = async (): Promise<void> => {
@@ -287,32 +328,48 @@ export function ReportsPage() {
 
       if (!active) return;
 
+      const filteredSessions = taskSessionsData.filter((session) => isDateInRange(session.date, periodStart, periodEnd));
+      const hasDateFilter = Boolean(periodStart || periodEnd);
+      const filteredTaskIds = new Set(filteredSessions.map((session) => session.taskId));
+      const filteredAssessments = assessmentsData.filter((assessment) =>
+        isAssessmentInReportRange(assessment, periodStart, periodEnd)
+      );
+      const filteredAssessmentIds = new Set(filteredAssessments.map((assessment) => assessment.id));
+
       setStudents(studentsData.sort(compareFn));
       setSubjects(subjectsData);
       setSubjectLinks(subjectLinksData);
-      setTasks(tasksData);
+      setTasks(hasDateFilter ? tasksData.filter((task) => filteredTaskIds.has(task.id)) : tasksData);
       setTaskLinks(taskLinksData);
       setTaskConfigs(taskConfigsData);
-      setTaskSessions(taskSessionsData);
-      setTaskStudentComments(taskStudentCommentsData);
-      setTaskDailySettings(taskDailySettingsData);
-      setTaskRubricAssessments(taskRubricAssessmentsData);
-      setTaskChecklistAssessments(taskChecklistAssessmentsData);
-      setTaskDirectGrades(taskDirectGradesData);
+      setTaskStudentComments(taskStudentCommentsData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
+      setTaskDailySettings(taskDailySettingsData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
+      setTaskRubricAssessments(taskRubricAssessmentsData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
+      setTaskChecklistAssessments(taskChecklistAssessmentsData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
+      setTaskDirectGrades(hasDateFilter ? taskDirectGradesData.filter((row) => filteredTaskIds.has(row.taskId)) : taskDirectGradesData);
       setRubricTemplates(rubricTemplatesData);
       setChecklistTemplates(checklistTemplatesData);
       setGradebookGroups(gradebookGroupsData);
-      setAssessments(assessmentsData);
-      setEntries(entriesData);
-      setAttendance(attendanceData);
-      setStudentFollowUps(studentFollowUpsData);
+      setAssessments(filteredAssessments);
+      setEntries(
+        hasDateFilter
+          ? entriesData.filter((entry) => filteredAssessmentIds.has(entry.assessmentId))
+          : entriesData
+      );
+      setUndatedAssessmentCount(
+        hasDateFilter
+          ? assessmentsData.filter((assessment) => !assessment.assessmentDate).length
+          : 0
+      );
+      setAttendance(attendanceData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
+      setStudentFollowUps(studentFollowUpsData.filter((row) => isDateInRange(row.date, periodStart, periodEnd)));
     };
 
     void loadData();
     return () => {
       active = false;
     };
-  }, [compareFn, selectedClassId]);
+  }, [compareFn, periodEnd, periodStart, selectedClassId]);
 
   const subjectsForClass = useMemo(() => {
     const linkedSubjectIds = new Set(subjectLinks.map((link) => link.subjectId));
@@ -450,8 +507,9 @@ export function ReportsPage() {
           const contribution = contributions.assessmentContributionById.get(assessment.id) ?? 0;
           if (contribution <= 0) continue;
           const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
-          if (typeof entry?.numericValue !== "number") continue;
-          weightedSum += entry.numericValue * contribution;
+          const score = resolveGradeEntryScore(entry, notSubmittedGradePolicy);
+          if (score === null) continue;
+          weightedSum += score * contribution;
           usedWeight += contribution;
         }
 
@@ -484,7 +542,16 @@ export function ReportsPage() {
 
     reportItems.sort((a, b) => a.subjectName.localeCompare(b.subjectName) || a.title.localeCompare(b.title));
     return { finalGradeByStudent, reportItems, subjectGradeByStudentSubject };
-  }, [assessments, entriesByKey, gradebookGroups, reportTasks, students, subjectsForClass, taskScoreByTaskStudent]);
+  }, [
+    assessments,
+    entriesByKey,
+    gradebookGroups,
+    notSubmittedGradePolicy,
+    reportTasks,
+    students,
+    subjectsForClass,
+    taskScoreByTaskStudent
+  ]);
 
   const attendanceByStudent = useMemo(() => {
     const map = new Map<string, AttendanceSummary>();
@@ -522,44 +589,18 @@ export function ReportsPage() {
   }, [studentFollowUps]);
 
   const taskCommentsByTaskSubjectStudent = useMemo(() => {
-    const taskSubjectsByTaskId = new Map<string, string[]>();
-    for (const task of reportTasks) {
-      if (!taskSubjectsByTaskId.has(task.taskId)) {
-        taskSubjectsByTaskId.set(task.taskId, []);
-      }
-      taskSubjectsByTaskId.get(task.taskId)?.push(task.subjectId);
-    }
-
-    const sessionSubjectByTaskDateSlot = new Map<string, string>();
-    for (const session of taskSessions) {
-      sessionSubjectByTaskDateSlot.set(
-        `${session.classId}:${session.taskId}:${session.date}:${session.scheduleSlotId ?? ""}`,
-        session.subjectId
-      );
-    }
-
     const map = new Map<string, string[]>();
     for (const comment of taskStudentComments) {
       if (!visibleTaskIds.has(comment.taskId) || !comment.comment.trim()) continue;
       if (!matchesTaskScope(comment, selectedClassId ?? "")) continue;
-      const inferredSubjectId = comment.subjectId
-        ? comment.subjectId
-        : comment.date
-        ? sessionSubjectByTaskDateSlot.get(
-            `${comment.classId ?? selectedClassId ?? ""}:${comment.taskId}:${comment.date}:${comment.scheduleSlotId ?? ""}`
-          )
-        : undefined;
-      const subjectIds = inferredSubjectId ? [inferredSubjectId] : taskSubjectsByTaskId.get(comment.taskId) ?? [];
-      for (const subjectId of subjectIds.filter((id) => matchesTaskScope(comment, selectedClassId ?? "", id))) {
-        const key = taskStudentKey(comment.taskId, subjectId, comment.studentId);
-        if (!map.has(key)) {
-          map.set(key, []);
-        }
-        map.get(key)?.push(comment.date ? `${comment.date}: ${comment.comment.trim()}` : comment.comment.trim());
+      const key = taskStudentKey(comment.taskId, comment.subjectId, comment.studentId);
+      if (!map.has(key)) {
+        map.set(key, []);
       }
+      map.get(key)?.push(`${comment.date}: ${comment.comment.trim()}`);
     }
     return map;
-  }, [reportTasks, selectedClassId, taskSessions, taskStudentComments, visibleTaskIds]);
+  }, [selectedClassId, taskStudentComments, visibleTaskIds]);
 
   const avgGrade = useMemo(() => {
     const values = Array.from(reportData.finalGradeByStudent.values()).filter(
@@ -570,7 +611,7 @@ export function ReportsPage() {
   }, [reportData.finalGradeByStudent]);
 
   const totalSessions = useMemo(() => {
-    const dates = new Set(attendance.map((item) => `${item.date}:${item.scheduleSlotId ?? ""}`));
+    const dates = new Set(attendance.map((item) => `${item.date}:${item.scheduleSlotId}`));
     return dates.size;
   }, [attendance]);
 
@@ -583,7 +624,7 @@ export function ReportsPage() {
   const getItemScore = (item: ReportItem, studentId: string): number | null => {
     if (item.type === "assessment") {
       const entry = entriesByKey.get(gradeCellKey(studentId, item.sourceId));
-      return typeof entry?.numericValue === "number" ? entry.numericValue : null;
+      return resolveGradeEntryScore(entry, notSubmittedGradePolicy);
     }
     const score = taskScoreByTaskStudent.get(taskStudentKey(item.sourceId, item.subjectId, studentId));
     return typeof score === "number" ? score : null;
@@ -598,7 +639,16 @@ export function ReportsPage() {
   };
 
   const getItemStats = (studentId: string, subjectId?: string): { total: number; scored: number; missing: number; missingRate: number } => {
-    const items = subjectId ? reportData.reportItems.filter((item) => item.subjectId === subjectId) : reportData.reportItems;
+    const scopedItems = subjectId
+      ? reportData.reportItems.filter((item) => item.subjectId === subjectId)
+      : reportData.reportItems;
+    const items = scopedItems.filter((item) => {
+      if (item.type !== "assessment") return true;
+      const entry = entriesByKey.get(gradeCellKey(studentId, item.sourceId));
+      const status = resolveGradeEntryStatus(entry);
+      if (status === "pending" || status === "exempt") return false;
+      return status !== "notSubmitted" || notSubmittedGradePolicy === "zero";
+    });
     const scored = items.filter((item) => typeof getItemScore(item, studentId) === "number").length;
     const total = items.length;
     const missing = total - scored;
@@ -624,10 +674,10 @@ export function ReportsPage() {
 
     for (const student of sourceStudents) {
       const studentLabel = anonymize ? studentLabelById.get(student.id) ?? "Alumno" : formatName(student);
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
       const overallStats = getItemStats(student.id);
-      const priority = riskLabel(finalGrade, attendanceSummary.rate, overallStats.missingRate, student.hasAcs, student.hasReinforcement);
+      const priority = riskLabel(finalGrade, attendanceSummary.rate, overallStats.missingRate);
 
       rows.push([
         "Alumno",
@@ -637,7 +687,7 @@ export function ReportsPage() {
         "",
         "Media final",
         formatOptionalNumber(finalGrade) || "Sin datos",
-        `${overallStats.missing} pendientes de ${overallStats.total}. Asistencia ${attendanceSummary.rate}%`,
+        `${overallStats.missing} pendientes de ${overallStats.total}. Asistencia ${formatAttendanceRate(attendanceSummary.rate)}`,
         priority
       ]);
 
@@ -682,7 +732,7 @@ export function ReportsPage() {
           "Media asignatura",
           formatOptionalNumber(subjectGrade) || "Sin datos",
           `${subjectStats.missing} pendientes de ${subjectStats.total}`,
-          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate, student.hasAcs, student.hasReinforcement)
+          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate)
         ]);
       }
 
@@ -892,7 +942,7 @@ export function ReportsPage() {
     const rows: string[][] = [header];
 
     for (const student of students) {
-      const summary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const summary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       rows.push([
         formatName(student),
         student.email ?? "",
@@ -902,7 +952,7 @@ export function ReportsPage() {
         String(summary.late),
         String(summary.absent),
         String(summary.total),
-        `${summary.rate}%`,
+        formatAttendanceRate(summary.rate),
         joinUnique([...(attendanceNotesByStudent.get(student.id) ?? []), ...(followUpNotesByStudent.get(student.id) ?? [])])
       ]);
     }
@@ -938,7 +988,7 @@ export function ReportsPage() {
           "",
           ""
         ]);
-        const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+        const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
         const summaryRows = [
           [
             formatName(student),
@@ -960,7 +1010,7 @@ export function ReportsPage() {
             "Asistencia",
             "",
             `${attendanceSummary.total} sesiones`,
-            `${attendanceSummary.rate}%`,
+            formatAttendanceRate(attendanceSummary.rate),
             "",
             joinUnique(attendanceNotesByStudent.get(student.id) ?? [])
           ],
@@ -1017,7 +1067,7 @@ export function ReportsPage() {
     ];
 
     for (const student of students) {
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
       for (const subject of subjectsForClass) {
         const subjectGrade = reportData.subjectGradeByStudentSubject.get(studentSubjectKey(student.id, subject.id));
@@ -1034,8 +1084,8 @@ export function ReportsPage() {
           String(stats.scored),
           String(stats.missing),
           formatOptionalPercent(stats.missingRate),
-          `${attendanceSummary.rate}%`,
-          riskLabel(subjectGrade ?? finalGrade, attendanceSummary.rate, stats.missingRate, student.hasAcs, student.hasReinforcement),
+          formatAttendanceRate(attendanceSummary.rate),
+          riskLabel(subjectGrade ?? finalGrade, attendanceSummary.rate, stats.missingRate),
           joinUnique([...(attendanceNotesByStudent.get(student.id) ?? []), ...(followUpNotesByStudent.get(student.id) ?? [])])
         ]);
       }
@@ -1098,10 +1148,10 @@ export function ReportsPage() {
     ];
 
     for (const student of students) {
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
       const overallStats = getItemStats(student.id);
-      const priority = riskLabel(finalGrade, attendanceSummary.rate, overallStats.missingRate, student.hasAcs, student.hasReinforcement);
+      const priority = riskLabel(finalGrade, attendanceSummary.rate, overallStats.missingRate);
 
       rows.push([
         "Alumno",
@@ -1122,9 +1172,9 @@ export function ReportsPage() {
         student.hasReinforcement ? "Sí" : "No",
         "",
         "% asistencia",
-        `${attendanceSummary.rate}%`,
+        formatAttendanceRate(attendanceSummary.rate),
         `Presentes: ${attendanceSummary.present}; retrasos: ${attendanceSummary.late}; ausencias: ${attendanceSummary.absent}`,
-        attendanceSummary.rate < 75 ? "Alto" : attendanceSummary.rate < 90 ? "Medio" : "Bajo"
+        attendanceRiskLabel(attendanceSummary.rate)
       ]);
 
       const attendanceNotes = joinUnique(attendanceNotesByStudent.get(student.id) ?? []);
@@ -1168,7 +1218,7 @@ export function ReportsPage() {
           "Media asignatura",
           formatOptionalNumber(subjectGrade) || "Sin datos",
           `${subjectStats.missing} pendientes de ${subjectStats.total}`,
-          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate, student.hasAcs, student.hasReinforcement)
+          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate)
         ]);
       }
 
@@ -1196,7 +1246,7 @@ export function ReportsPage() {
   const exportPrintableGroupReport = (): void => {
     const studentRows = students.map((student) => {
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const stats = getItemStats(student.id);
       return [
         formatName(student),
@@ -1204,9 +1254,9 @@ export function ReportsPage() {
         student.hasAcs ? "Sí" : "No",
         student.hasReinforcement ? "Sí" : "No",
         formatOptionalNumber(finalGrade) || "-",
-        `${attendanceSummary.rate}% (${attendanceSummary.total} sesiones)`,
+        `${formatAttendanceRate(attendanceSummary.rate)} (${attendanceSummary.total} sesiones)`,
         `${stats.missing}/${stats.total}`,
-        riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate, student.hasAcs, student.hasReinforcement),
+        riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate),
         joinUnique([...(attendanceNotesByStudent.get(student.id) ?? []), ...(followUpNotesByStudent.get(student.id) ?? [])])
       ];
     });
@@ -1221,13 +1271,7 @@ export function ReportsPage() {
           formatOptionalNumber(subjectGrade) || "-",
           `${stats.scored}/${stats.total}`,
           String(stats.missing),
-          riskLabel(
-            subjectGrade,
-            attendanceByStudent.get(student.id)?.rate ?? 0,
-            stats.missingRate,
-            student.hasAcs,
-            student.hasReinforcement
-          )
+          riskLabel(subjectGrade, attendanceByStudent.get(student.id)?.rate ?? null, stats.missingRate)
         ];
       })
     );
@@ -1241,7 +1285,7 @@ export function ReportsPage() {
           { label: "Alumnos", value: String(students.length) },
           { label: "Elementos evaluables", value: String(reportData.reportItems.length) },
           { label: "Media global", value: avgGrade !== null ? avgGrade.toFixed(2) : "-" },
-          { label: "Asistencia", value: attendanceRate !== null ? `${attendanceRate}%` : "-" }
+          { label: "Asistencia", value: formatAttendanceRate(attendanceRate) }
         ],
         tables: [
           {
@@ -1262,23 +1306,23 @@ export function ReportsPage() {
   const exportPrintableStudentReports = (): void => {
     const indexRows = students.map((student) => {
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const stats = getItemStats(student.id);
       return [
         formatName(student),
         student.email ?? "",
         formatOptionalNumber(finalGrade) || "-",
-        `${attendanceSummary.rate}%`,
+        formatAttendanceRate(attendanceSummary.rate),
         `${stats.missing}/${stats.total}`,
-        riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate, student.hasAcs, student.hasReinforcement)
+        riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate)
       ];
     });
 
     const sections = students.map((student, index) => {
       const finalGrade = reportData.finalGradeByStudent.get(student.id);
-      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: 0 };
+      const attendanceSummary = attendanceByStudent.get(student.id) ?? { present: 0, late: 0, absent: 0, total: 0, rate: null };
       const stats = getItemStats(student.id);
-      const risk = riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate, student.hasAcs, student.hasReinforcement);
+      const risk = riskLabel(finalGrade, attendanceSummary.rate, stats.missingRate);
       const support = joinUnique([
         student.hasAcs ? "ACS" : undefined,
         student.hasReinforcement ? "Refuerzo" : undefined
@@ -1296,7 +1340,7 @@ export function ReportsPage() {
           formatOptionalNumber(subjectGrade) || "-",
           `${subjectStats.scored}/${subjectStats.total}`,
           String(subjectStats.missing),
-          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate, student.hasAcs, student.hasReinforcement)
+          riskLabel(subjectGrade, attendanceSummary.rate, subjectStats.missingRate)
         ];
       });
 
@@ -1320,7 +1364,7 @@ export function ReportsPage() {
         pageBreakBefore: index > 0,
         summary: [
           { label: "Media final", value: formatOptionalNumber(finalGrade) || "-" },
-          { label: "Asistencia", value: `${attendanceSummary.rate}%` },
+          { label: "Asistencia", value: formatAttendanceRate(attendanceSummary.rate) },
           { label: "Pendientes", value: `${stats.missing}/${stats.total}` },
           { label: "Riesgo", value: risk }
         ],
@@ -1328,7 +1372,7 @@ export function ReportsPage() {
           {
             title: "Datos tutoriales",
             headers: ["Email", "Apoyos", "Asistencia", "Observaciones y seguimiento"],
-            rows: [[student.email ?? "", support, `${attendanceSummary.present} presentes, ${attendanceSummary.late} retrasos, ${attendanceSummary.absent} ausencias`, observations]]
+            rows: [[student.email ?? "", support, formatAttendanceCounts(attendanceSummary), observations]]
           },
           {
             title: "Resumen por asignatura",
@@ -1353,7 +1397,7 @@ export function ReportsPage() {
           { label: "Alumnos", value: String(students.length) },
           { label: "Elementos evaluables", value: String(reportData.reportItems.length) },
           { label: "Media global", value: avgGrade !== null ? avgGrade.toFixed(2) : "-" },
-          { label: "Asistencia", value: attendanceRate !== null ? `${attendanceRate}%` : "-" }
+          { label: "Asistencia", value: formatAttendanceRate(attendanceRate) }
         ],
         tables: [
           {
@@ -1474,6 +1518,32 @@ export function ReportsPage() {
         </aside>
 
         <section className="course-detail-panel">
+          <section className="detail-section flush reports-period-filter" aria-labelledby="reports-period-title">
+            <div>
+              <h1 id="reports-period-title">Informes</h1>
+              <p>Delimita los registros fechados que se incluirán en cálculos y exportaciones.</p>
+            </div>
+            <div className="reports-period-controls">
+              <label className="detail-field">
+                <span>Desde</span>
+                <input className="input" type="date" value={periodStart} max={periodEnd || undefined} onChange={(event) => setPeriodStart(event.target.value)} />
+              </label>
+              <label className="detail-field">
+                <span>Hasta</span>
+                <input className="input" type="date" value={periodEnd} min={periodStart || undefined} onChange={(event) => setPeriodEnd(event.target.value)} />
+              </label>
+              <button type="button" className="btn secondary" disabled={!periodStart && !periodEnd} onClick={() => { setPeriodStart(""); setPeriodEnd(""); }}>
+                Todo el curso
+              </button>
+            </div>
+            {undatedAssessmentCount > 0 ? (
+              <p className="hint" role="status">
+                {undatedAssessmentCount} prueba{undatedAssessmentCount === 1 ? "" : "s"} manual
+                {undatedAssessmentCount === 1 ? "" : "es"} sin fecha se excluyen del intervalo.
+                Así se evita mezclar evaluaciones de periodos distintos.
+              </p>
+            ) : null}
+          </section>
           <section className="detail-section flush">
             <div className="metric-grid compact">
               <article className="metric-item">
@@ -1491,7 +1561,7 @@ export function ReportsPage() {
               <article className="metric-item">
                 <strong>Asistencia</strong>
                 <div>
-                  {attendanceRate !== null ? `${attendanceRate}%` : "-"}
+                  {formatAttendanceRate(attendanceRate)}
                   {totalSessions > 0 ? <small className="metric-subvalue">{totalSessions} sesiones</small> : null}
                 </div>
               </article>

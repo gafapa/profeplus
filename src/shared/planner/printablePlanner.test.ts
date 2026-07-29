@@ -35,7 +35,7 @@ describe("printable planner report", () => {
       ]
     });
 
-    expect(report.title).toBe("Planner semanal - 1 ESO A");
+    expect(report.title).toBe("Planificador semanal - 1 ESO A");
     expect(report.summary?.[1]).toEqual({ label: "Filtro", value: "Matemáticas" });
     expect(report.tables?.[0].rows[0][3]).toBe("Ecuaciones");
     expect(report.tables?.[0].rows[1][3]).toBe("Problemas");

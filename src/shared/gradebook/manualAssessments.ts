@@ -1,5 +1,25 @@
 import type { Assessment, GradeEntry } from "../db/types";
 
+export type GradeEntryStatus = NonNullable<GradeEntry["status"]>;
+export type NotSubmittedGradePolicy = "exclude" | "zero";
+
+export function resolveGradeEntryStatus(entry?: GradeEntry): GradeEntryStatus {
+  if (entry?.status) return entry.status;
+  return typeof entry?.numericValue === "number" ? "graded" : "pending";
+}
+
+export function resolveGradeEntryScore(
+  entry: GradeEntry | undefined,
+  notSubmittedPolicy: NotSubmittedGradePolicy
+): number | null {
+  const status = resolveGradeEntryStatus(entry);
+  if (status === "notSubmitted") {
+    return notSubmittedPolicy === "zero" ? 0 : null;
+  }
+  if (status !== "graded") return null;
+  return typeof entry?.numericValue === "number" ? entry.numericValue : null;
+}
+
 export type ManualAssessmentDraft = {
   title: string;
   weight: string;
@@ -54,6 +74,7 @@ export function buildManualGradeEntry(input: {
   studentId: string;
   numericValue?: number;
   comment?: string;
+  status?: GradeEntryStatus;
 }): GradeEntry {
   const comment = input.comment === undefined ? input.existingEntry?.comment : input.comment.trim() || undefined;
   return {
@@ -62,6 +83,7 @@ export function buildManualGradeEntry(input: {
     assessmentId: input.assessment.id,
     studentId: input.studentId,
     numericValue: input.numericValue,
+    status: input.status ?? (typeof input.numericValue === "number" ? "graded" : resolveGradeEntryStatus(input.existingEntry)),
     comment,
     colorTag: input.existingEntry?.colorTag,
     iconTag: input.existingEntry?.iconTag,

@@ -1,4 +1,5 @@
-import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { useAppSelector } from "../../app/hooks";
 import { db } from "../../shared/db/database";
 import type {
@@ -30,11 +31,16 @@ import {
   buildManualGradeEntry,
   normalizeManualAssessmentDraft,
   parseManualGradeValue,
+  resolveGradeEntryScore,
+  resolveGradeEntryStatus,
+  type GradeEntryStatus,
   type ManualAssessmentDraft
 } from "../../shared/gradebook/manualAssessments";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { parsePastedGradeGrid } from "../../shared/gradebook/bulkGrades";
+import { toLocalIsoDate } from "../../shared/utils/date";
 
 type IncludedTaskRow = {
   configKey: string;
@@ -272,6 +278,13 @@ export function GradebookPage() {
   const [assessmentDrafts, setAssessmentDrafts] = useState<Record<string, ManualAssessmentDraft>>({});
   const [gradeDrafts, setGradeDrafts] = useState<Record<string, string>>({});
   const [gradeCommentDrafts, setGradeCommentDrafts] = useState<Record<string, string>>({});
+  const [gradeStatusDrafts, setGradeStatusDrafts] = useState<Record<string, GradeEntryStatus>>({});
+  const [studentGradeFilter, setStudentGradeFilter] = useState("");
+  const [bulkGradeDraft, setBulkGradeDraft] = useState("");
+  const [bulkGradeStatus, setBulkGradeStatus] = useState<GradeEntryStatus>("graded");
+  const [bulkAssessmentId, setBulkAssessmentId] = useState("");
+  const [pastedGradeDraft, setPastedGradeDraft] = useState("");
+  const notSubmittedGradePolicy = useAppSelector((state) => state.app.notSubmittedGradePolicy);
 
   const [activeGradebookTab, setActiveGradebookTab] = useState<"tree" | "grades" | "table">("tree");
   const [gradebookNotice, setGradebookNotice] = useState("");
@@ -316,6 +329,7 @@ export function GradebookPage() {
       setAssessmentDrafts({});
       setGradeDrafts({});
       setGradeCommentDrafts({});
+      setGradeStatusDrafts({});
       setExpandedGroupIds(new Set());
       setNewGroupDraftByParent({});
       setDraggedTaskKey(null);
@@ -504,6 +518,14 @@ export function GradebookPage() {
         gradeEntriesData
           .filter((entry) => typeof entry.comment === "string" && entry.comment.trim().length > 0)
           .map((entry) => [gradeCellKey(entry.studentId, entry.assessmentId), entry.comment ?? ""])
+      )
+    );
+    setGradeStatusDrafts(
+      Object.fromEntries(
+        gradeEntriesData.map((entry) => [
+          gradeCellKey(entry.studentId, entry.assessmentId),
+          resolveGradeEntryStatus(entry)
+        ])
       )
     );
 
@@ -748,11 +770,14 @@ export function GradebookPage() {
           if (contribution <= 0) {
             continue;
           }
-          const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
-          if (typeof entry?.numericValue !== "number") {
+          const score = resolveGradeEntryScore(
+            entriesByKey.get(gradeCellKey(student.id, assessment.id)),
+            notSubmittedGradePolicy
+          );
+          if (typeof score !== "number") {
             continue;
           }
-          weightedSum += entry.numericValue * contribution;
+          weightedSum += score * contribution;
           usedWeight += contribution;
         }
 
@@ -786,7 +811,8 @@ export function GradebookPage() {
     filteredIncludedTaskConfigs,
     orderedGroupRows,
     students,
-    taskScoreByTaskStudent
+    taskScoreByTaskStudent,
+    notSubmittedGradePolicy
   ]);
 
   const finalByStudent = useMemo(() => {
@@ -801,11 +827,14 @@ export function GradebookPage() {
         if (contribution <= 0) {
           continue;
         }
-        const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
-        if (typeof entry?.numericValue !== "number") {
+        const score = resolveGradeEntryScore(
+          entriesByKey.get(gradeCellKey(student.id, assessment.id)),
+          notSubmittedGradePolicy
+        );
+        if (typeof score !== "number") {
           continue;
         }
-        weightedSum += entry.numericValue * contribution;
+        weightedSum += score * contribution;
         usedWeight += contribution;
       }
 
@@ -832,6 +861,40 @@ export function GradebookPage() {
     filteredAssessments,
     filteredIncludedTaskConfigs,
     students,
+    taskScoreByTaskStudent,
+    notSubmittedGradePolicy
+  ]);
+
+  const evaluatedWeightByStudent = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const student of students) {
+      let evaluatedWeight = 0;
+      for (const assessment of filteredAssessments) {
+        const contribution = contributionData.assessmentContributionById.get(assessment.id) ?? 0;
+        const score = resolveGradeEntryScore(
+          entriesByKey.get(gradeCellKey(student.id, assessment.id)),
+          notSubmittedGradePolicy
+        );
+        if (contribution > 0 && typeof score === "number") evaluatedWeight += contribution;
+      }
+      for (const task of filteredIncludedTaskConfigs) {
+        const contribution =
+          contributionData.taskContributionByKey.get(taskConfigKey(task.taskId, task.subjectId)) ?? 0;
+        const score = taskScoreByTaskStudent.get(
+          taskStudentKey(task.taskId, task.subjectId, student.id)
+        );
+        if (contribution > 0 && typeof score === "number") evaluatedWeight += contribution;
+      }
+      map.set(student.id, Math.min(1, evaluatedWeight));
+    }
+    return map;
+  }, [
+    contributionData,
+    entriesByKey,
+    filteredAssessments,
+    filteredIncludedTaskConfigs,
+    notSubmittedGradePolicy,
+    students,
     taskScoreByTaskStudent
   ]);
 
@@ -839,6 +902,12 @@ export function GradebookPage() {
     () => students.find((student) => student.id === selectedStudentId) ?? students[0] ?? null,
     [selectedStudentId, students]
   );
+
+  const visibleGradeStudents = useMemo(() => {
+    const query = studentGradeFilter.trim().toLocaleLowerCase("es");
+    if (!query) return students;
+    return students.filter((student) => formatName(student).toLocaleLowerCase("es").includes(query));
+  }, [formatName, studentGradeFilter, students]);
 
   const gradebookMatrixData = useMemo<{
     columns: GradebookTableColumn[];
@@ -1035,9 +1104,18 @@ export function GradebookPage() {
     await loadData();
   };
 
+  const isClosedAcademicPeriod = async (academicPeriodId?: string): Promise<boolean> => {
+    if (!academicPeriodId) return false;
+    return (await db.academicPeriods.get(academicPeriodId))?.status === "closed";
+  };
+
   const updateTaskGroup = async (taskKey: string, groupId: string): Promise<void> => {
     const task = includedTaskConfigById.get(taskKey);
     if (!task) {
+      return;
+    }
+    if (await isClosedAcademicPeriod(task.academicPeriodId)) {
+      setGradebookNotice("Reabre el periodo académico antes de modificar esta tarea.");
       return;
     }
 
@@ -1112,6 +1190,10 @@ export function GradebookPage() {
       }
       const task = includedTaskConfigById.get(taskKey);
       if (task) {
+        if (await isClosedAcademicPeriod(task.academicPeriodId)) {
+          setGradebookNotice("Reabre el periodo académico antes de modificar sus ponderaciones.");
+          return false;
+        }
         const nextConfig: TaskGradebookConfig = { ...task, gradebookWeight: parsed };
         if (isMeaningfulTaskGradebookConfig(nextConfig)) {
           taskUpdates.push(nextConfig);
@@ -1175,13 +1257,24 @@ export function GradebookPage() {
     }
 
     const nextIndex = filteredAssessments.length + 1;
+    const assessmentDate = toLocalIsoDate();
+    const matchingPeriod = (
+      await db.academicPeriods
+        .where("[classId+status]")
+        .equals([selectedClassId, "open"])
+        .toArray()
+    ).find(
+      (period) => assessmentDate >= period.startDate && assessmentDate <= period.endDate
+    );
     await db.assessments.add({
       id: crypto.randomUUID(),
       classId: selectedClassId,
       subjectId: selectedSubjectId,
+      academicPeriodId: matchingPeriod?.id,
+      assessmentDate,
       title: `Prueba ${nextIndex}`,
       weight: 0,
-      period: ""
+      period: matchingPeriod?.name ?? ""
     });
     setGradebookNotice("Prueba creada.");
     await loadData();
@@ -1210,6 +1303,11 @@ export function GradebookPage() {
     if (!assessment) {
       return;
     }
+    if (await isClosedAcademicPeriod(assessment.academicPeriodId)) {
+      setGradebookNotice("Reabre el periodo académico antes de modificar esta prueba.");
+      await loadData();
+      return;
+    }
     const normalized = normalizeManualAssessmentDraft(overrideDraft ?? assessmentDrafts[assessmentId] ?? assessmentDraftFromRow(assessment));
     if (!normalized) {
       setGradebookNotice("La prueba necesita título válido y peso mayor o igual a 0.");
@@ -1225,6 +1323,11 @@ export function GradebookPage() {
   };
 
   const deleteManualAssessment = async (assessmentId: string): Promise<void> => {
+    const assessment = filteredAssessments.find((item) => item.id === assessmentId);
+    if (await isClosedAcademicPeriod(assessment?.academicPeriodId)) {
+      setGradebookNotice("Reabre el periodo académico antes de eliminar esta prueba.");
+      return;
+    }
     const entriesCount = await db.gradeEntries.where("assessmentId").equals(assessmentId).count();
     if (entriesCount > 0) {
       setGradebookNotice("No se puede eliminar una prueba que ya tiene notas.");
@@ -1235,7 +1338,13 @@ export function GradebookPage() {
     await loadData();
   };
 
-  const saveManualGradeCell = async (studentId: string, assessmentId: string, rawValue: string, rawComment: string): Promise<void> => {
+  const saveManualGradeCell = async (
+    studentId: string,
+    assessmentId: string,
+    rawValue: string,
+    rawComment: string,
+    requestedStatus?: GradeEntryStatus
+  ): Promise<void> => {
     if (!selectedClassId) {
       setGradebookNotice("Selecciona un curso para guardar notas.");
       return;
@@ -1244,17 +1353,26 @@ export function GradebookPage() {
     if (!assessment) {
       return;
     }
+    if (await isClosedAcademicPeriod(assessment.academicPeriodId)) {
+      setGradebookNotice("Reabre el periodo académico antes de modificar sus notas.");
+      await loadData();
+      return;
+    }
     const parsed = parseManualGradeValue(rawValue);
     const comment = rawComment.trim();
     const key = gradeCellKey(studentId, assessmentId);
     const existingEntry = entriesByKey.get(key);
+    const status =
+      parsed !== null
+        ? "graded"
+        : (requestedStatus ?? gradeStatusDrafts[key] ?? resolveGradeEntryStatus(existingEntry));
 
     if (Number.isNaN(parsed)) {
       setGradebookNotice("La nota debe estar entre 0 y 10.");
       return;
     }
 
-    if (parsed === null && comment.length === 0) {
+    if (parsed === null && comment.length === 0 && status === "pending") {
       if (existingEntry) {
         await db.gradeEntries.delete(existingEntry.id);
       }
@@ -1270,11 +1388,125 @@ export function GradebookPage() {
         assessment,
         studentId,
         numericValue: parsed ?? undefined,
-        comment
+        comment,
+        status
       })
     );
     setGradebookNotice("Nota guardada.");
     await loadData();
+  };
+
+  const applyBulkGrade = async (): Promise<void> => {
+    if (!selectedClassId || visibleGradeStudents.length === 0) {
+      setGradebookNotice("No hay alumnos visibles a los que aplicar el cambio.");
+      return;
+    }
+    const assessment = filteredAssessments.find((item) => item.id === bulkAssessmentId) ?? filteredAssessments[0];
+    if (!assessment) {
+      setGradebookNotice("Selecciona una prueba.");
+      return;
+    }
+    if (await isClosedAcademicPeriod(assessment.academicPeriodId)) {
+      setGradebookNotice("Reabre el periodo académico antes de aplicar notas masivas.");
+      return;
+    }
+
+    const parsed = bulkGradeStatus === "graded" ? parseManualGradeValue(bulkGradeDraft) : null;
+    if (bulkGradeStatus === "graded" && (parsed === null || Number.isNaN(parsed))) {
+      setGradebookNotice("Indica una nota entre 0 y 10 para aplicar al grupo.");
+      return;
+    }
+
+    const updates = visibleGradeStudents.map((student) =>
+      buildManualGradeEntry({
+        existingEntry: entriesByKey.get(gradeCellKey(student.id, assessment.id)),
+        classId: selectedClassId,
+        assessment,
+        studentId: student.id,
+        numericValue: parsed ?? undefined,
+        comment: entriesByKey.get(gradeCellKey(student.id, assessment.id))?.comment ?? "",
+        status: bulkGradeStatus
+      })
+    );
+    await db.gradeEntries.bulkPut(updates);
+    setGradebookNotice(
+      `Cambio aplicado a ${updates.length} alumno${updates.length === 1 ? "" : "s"} en ${assessment.title}.`
+    );
+    await loadData();
+  };
+
+  const applyPastedGrades = async (): Promise<void> => {
+    if (!selectedClassId) return;
+    const assignedPeriodIds = Array.from(
+      new Set(filteredAssessments.flatMap((assessment) => assessment.academicPeriodId ? [assessment.academicPeriodId] : []))
+    );
+    const assignedPeriods = assignedPeriodIds.length > 0
+      ? await db.academicPeriods.where("id").anyOf(assignedPeriodIds).toArray()
+      : [];
+    if (assignedPeriods.some((period) => period.status === "closed")) {
+      setGradebookNotice("La tabla contiene pruebas de un periodo cerrado. Reábrelo antes de pegar notas.");
+      return;
+    }
+    const parsed = parsePastedGradeGrid(
+      pastedGradeDraft,
+      visibleGradeStudents.length,
+      filteredAssessments.length
+    );
+    if (!parsed.ok) {
+      setGradebookNotice(parsed.message);
+      return;
+    }
+
+    const updates: GradeEntry[] = [];
+    parsed.rows.forEach((row, rowIndex) => {
+      row.forEach((numericValue, columnIndex) => {
+        if (numericValue === null) return;
+        const student = visibleGradeStudents[rowIndex];
+        const assessment = filteredAssessments[columnIndex];
+        if (!student || !assessment) return;
+        updates.push(
+          buildManualGradeEntry({
+            existingEntry: entriesByKey.get(gradeCellKey(student.id, assessment.id)),
+            classId: selectedClassId,
+            assessment,
+            studentId: student.id,
+            numericValue,
+            comment: entriesByKey.get(gradeCellKey(student.id, assessment.id))?.comment ?? "",
+            status: "graded"
+          })
+        );
+      });
+    });
+    if (updates.length === 0) {
+      setGradebookNotice("La matriz pegada no contiene notas.");
+      return;
+    }
+    await db.gradeEntries.bulkPut(updates);
+    setPastedGradeDraft("");
+    setGradebookNotice(`${updates.length} notas pegadas correctamente.`);
+    await loadData();
+  };
+
+  const focusAdjacentGradeCell = (
+    event: KeyboardEvent<HTMLInputElement>,
+    rowIndex: number,
+    columnIndex: number
+  ): void => {
+    const offsets: Record<string, [number, number]> = {
+      Enter: [1, 0],
+      ArrowDown: [1, 0],
+      ArrowUp: [-1, 0]
+    };
+    const offset = offsets[event.key];
+    if (!offset) return;
+    const target = document.querySelector<HTMLInputElement>(
+      `[data-grade-row="${rowIndex + offset[0]}"][data-grade-column="${columnIndex + offset[1]}"]`
+    );
+    if (target) {
+      event.preventDefault();
+      target.focus();
+      target.select();
+    }
   };
 
   useEffect(() => {
@@ -1530,6 +1762,21 @@ export function GradebookPage() {
               }}
             />
           </label>
+          <label className="gradebook-weight-field">
+            <span>Mover a</span>
+            <select
+              className="input gradebook-group-select"
+              value={task.groupId ?? ""}
+              onChange={(event) => {
+                void updateTaskGroup(task.configKey, event.target.value).then(() => {
+                  setGradebookNotice("Tarea movida.");
+                });
+              }}
+              aria-label={`Mover ${task.title} a otra carpeta`}
+            >
+              {renderGradebookGroupOptions()}
+            </select>
+          </label>
           <span className="pill">{task.instrument}</span>
           <span className="pill">Aporta {formatContribution(taskContribution)}</span>
         </div>
@@ -1706,6 +1953,24 @@ export function GradebookPage() {
             <span className="aporte-empty-dot" title="Carpeta vacia: no aporta" aria-label="Carpeta vacia: no aporta" />
           ) : null}
           <span className="pill">Aporta {formatContribution(groupLeafContribution)}</span>
+          <label className="gradebook-weight-field">
+            <span>Mover a</span>
+            <select
+              className="input gradebook-group-select"
+              value={group.parentId ?? ""}
+              onChange={(event) => void updateGroupParent(group.id, event.target.value)}
+              aria-label={`Mover la carpeta ${group.name}`}
+            >
+              <option value="">Raíz del cuaderno</option>
+              {orderedGroupRows
+                .filter((candidate) => !(groupSubtreeById.get(group.id) ?? new Set([group.id])).has(candidate.id))
+                .map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.treeLabel}
+                  </option>
+                ))}
+            </select>
+          </label>
             <span className="gradebook-tree-actions">
             <button
               type="button"
@@ -1753,7 +2018,16 @@ export function GradebookPage() {
   const renderStudentAssessmentNode = (student: Student, assessment: Assessment) => {
     const entry = entriesByKey.get(gradeCellKey(student.id, assessment.id));
     const contribution = contributionData.assessmentContributionById.get(assessment.id) ?? 0;
-    const value = typeof entry?.numericValue === "number" ? entry.numericValue : null;
+    const value = resolveGradeEntryScore(entry, notSubmittedGradePolicy);
+    const status = resolveGradeEntryStatus(entry);
+    const statusLabel =
+      status === "notSubmitted"
+        ? "No presentado"
+        : status === "exempt"
+          ? "Exento"
+          : status === "pending"
+            ? "Pendiente"
+            : null;
 
     return (
       <li key={`student-${student.id}-assessment-${assessment.id}`} className="gradebook-tree-item">
@@ -1767,7 +2041,7 @@ export function GradebookPage() {
             </span>
             <span className="gradebook-tree-node-meta">Prueba | Peso {Number(assessment.weight ?? 0).toFixed(2)}</span>
           </span>
-          <span className="pill">{typeof value === "number" ? value.toFixed(2) : "-"}</span>
+          <span className="pill">{typeof value === "number" ? value.toFixed(2) : (statusLabel ?? "-")}</span>
           <span className="pill">Aporta {formatContribution(contribution)}</span>
         </div>
       </li>
@@ -1859,6 +2133,7 @@ export function GradebookPage() {
     const rootAssessments = assessmentsByGroupId.get("") ?? [];
     const rootTasks = tasksByGroupId.get("") ?? [];
     const finalValue = finalByStudent.get(student.id);
+    const evaluatedWeight = evaluatedWeightByStudent.get(student.id) ?? 0;
     const hasChildren = rootGroupIds.length > 0 || rootAssessments.length > 0 || rootTasks.length > 0;
 
     return (
@@ -1874,7 +2149,9 @@ export function GradebookPage() {
               </span>
               <span className="gradebook-tree-node-name">{formatName(student)}</span>
             </span>
-            <span className="gradebook-tree-node-meta">Nota final del cuaderno</span>
+            <span className="gradebook-tree-node-meta">
+              Nota final · {(evaluatedWeight * 100).toFixed(0)}% evaluado
+            </span>
           </span>
           <span className="pill">{typeof finalValue === "number" ? finalValue.toFixed(2) : "-"}</span>
           <span className="gradebook-tree-actions">
@@ -1925,20 +2202,27 @@ export function GradebookPage() {
         </aside>
 
         <section className="course-detail-panel">
-          <div className="gradebook-internal-tabs section-tabs" role="tablist" aria-label="Secciones del cuaderno">
+          <header className="workflow-page-header">
+            <div>
+              <h1>Cuaderno de notas</h1>
+              <p>{selectedSubjectId ? gradebookRootName : "Selecciona curso y asignatura"}</p>
+            </div>
+            <NavLink className="btn secondary" to="/management/periods">
+              Periodos y cierre
+            </NavLink>
+          </header>
+          <div className="gradebook-internal-tabs section-tabs" role="group" aria-label="Secciones del cuaderno">
             <button
               type="button"
-              role="tab"
-              aria-selected={activeGradebookTab === "tree"}
+              aria-pressed={activeGradebookTab === "tree"}
               className={`section-tab ${activeGradebookTab === "tree" ? "active" : ""}`}
               onClick={() => void changeGradebookTab("tree")}
             >
-              <span>Definición</span>
+              <span>Organización</span>
             </button>
             <button
               type="button"
-              role="tab"
-              aria-selected={activeGradebookTab === "grades"}
+              aria-pressed={activeGradebookTab === "grades"}
               className={`section-tab ${activeGradebookTab === "grades" ? "active" : ""}`}
               onClick={() => void changeGradebookTab("grades")}
             >
@@ -1946,12 +2230,11 @@ export function GradebookPage() {
             </button>
             <button
               type="button"
-              role="tab"
-              aria-selected={activeGradebookTab === "table"}
+              aria-pressed={activeGradebookTab === "table"}
               className={`section-tab ${activeGradebookTab === "table" ? "active" : ""}`}
               onClick={() => void changeGradebookTab("table")}
             >
-              <span>Resumen</span>
+              <span>Resultados</span>
             </button>
           </div>
 
@@ -2074,6 +2357,72 @@ export function GradebookPage() {
                 Plegar ramas
               </button>
             </div>
+            <div className="gradebook-bulk-toolbar" aria-label="Herramientas de calificación masiva">
+              <label className="detail-field">
+                <span>Filtrar alumnos</span>
+                <input
+                  className="input"
+                  type="search"
+                  value={studentGradeFilter}
+                  onChange={(event) => setStudentGradeFilter(event.target.value)}
+                  placeholder="Nombre o apellidos"
+                />
+              </label>
+              <label className="detail-field">
+                <span>Prueba</span>
+                <select
+                  className="input"
+                  value={bulkAssessmentId || filteredAssessments[0]?.id || ""}
+                  onChange={(event) => setBulkAssessmentId(event.target.value)}
+                >
+                  {filteredAssessments.map((assessment) => (
+                    <option key={assessment.id} value={assessment.id}>
+                      {assessment.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="detail-field">
+                <span>Estado común</span>
+                <select
+                  className="input"
+                  value={bulkGradeStatus}
+                  onChange={(event) => setBulkGradeStatus(event.target.value as GradeEntryStatus)}
+                >
+                  <option value="graded">Calificado</option>
+                  <option value="pending">Pendiente</option>
+                  <option value="notSubmitted">No presentado</option>
+                  <option value="exempt">Exento</option>
+                </select>
+              </label>
+              <label className="detail-field">
+                <span>Nota común</span>
+                <input
+                  className="input grade-input"
+                  value={bulkGradeDraft}
+                  inputMode="decimal"
+                  disabled={bulkGradeStatus !== "graded"}
+                  onChange={(event) => setBulkGradeDraft(event.target.value)}
+                  placeholder="0-10"
+                />
+              </label>
+              <button type="button" className="btn secondary" onClick={() => void applyBulkGrade()}>
+                Aplicar a {visibleGradeStudents.length} visibles
+              </button>
+              <label className="detail-field gradebook-paste-field">
+                <span>Pegar desde hoja de cálculo (filas × pruebas)</span>
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={pastedGradeDraft}
+                  onChange={(event) => setPastedGradeDraft(event.target.value)}
+                  placeholder={"7,5\t8\n9\t6"}
+                />
+              </label>
+              <button type="button" className="btn secondary" onClick={() => void applyPastedGrades()}>
+                Importar matriz
+              </button>
+            </div>
             {filteredAssessments.length > 0 ? (
               <div className="table-scroll gradebook-manual-grades-scroll">
                 <table className="gradebook-manual-grades-table" aria-label="Notas de pruebas manuales">
@@ -2089,14 +2438,15 @@ export function GradebookPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {students.map((student) => (
+                    {visibleGradeStudents.map((student, rowIndex) => (
                       <tr key={student.id}>
                         <th>{formatName(student)}</th>
-                        {filteredAssessments.map((assessment) => {
+                        {filteredAssessments.map((assessment, columnIndex) => {
                           const key = gradeCellKey(student.id, assessment.id);
                           const entry = entriesByKey.get(key);
                           const value = gradeDrafts[key] ?? formatGradeValue(entry?.numericValue);
                           const comment = gradeCommentDrafts[key] ?? entry?.comment ?? "";
+                          const status = gradeStatusDrafts[key] ?? resolveGradeEntryStatus(entry);
                           return (
                             <td key={key}>
                               <div className="manual-grade-cell">
@@ -2105,7 +2455,12 @@ export function GradebookPage() {
                                   value={value}
                                   inputMode="decimal"
                                   placeholder="0-10"
+                                  data-grade-row={rowIndex}
+                                  data-grade-column={columnIndex}
                                   aria-label={`Nota de ${formatName(student)} en ${assessment.title}`}
+                                  onKeyDown={(event) =>
+                                    focusAdjacentGradeCell(event, rowIndex, columnIndex)
+                                  }
                                   onChange={(event) => {
                                     const nextValue = event.target.value;
                                     setGradeDrafts((current) => ({
@@ -2114,8 +2469,46 @@ export function GradebookPage() {
                                     }));
                                     setGradebookNotice("");
                                   }}
-                                  onBlur={(event) => void saveManualGradeCell(student.id, assessment.id, event.target.value, comment)}
+                                  onBlur={(event) =>
+                                    void saveManualGradeCell(
+                                      student.id,
+                                      assessment.id,
+                                      event.target.value,
+                                      comment,
+                                      status
+                                    )
+                                  }
                                 />
+                                <select
+                                  className="input manual-grade-status"
+                                  value={status}
+                                  aria-label={`Estado de ${formatName(student)} en ${assessment.title}`}
+                                  onChange={(event) => {
+                                    const nextStatus = event.target.value as GradeEntryStatus;
+                                    setGradeStatusDrafts((current) => ({
+                                      ...current,
+                                      [key]: nextStatus
+                                    }));
+                                    if (nextStatus !== "graded") {
+                                      setGradeDrafts((current) => ({
+                                        ...current,
+                                        [key]: ""
+                                      }));
+                                    }
+                                    void saveManualGradeCell(
+                                      student.id,
+                                      assessment.id,
+                                      nextStatus === "graded" ? value : "",
+                                      comment,
+                                      nextStatus
+                                    );
+                                  }}
+                                >
+                                  <option value="graded">Calificado</option>
+                                  <option value="pending">Pendiente</option>
+                                  <option value="notSubmitted">No presentado</option>
+                                  <option value="exempt">Exento</option>
+                                </select>
                                 <textarea
                                   className="input manual-grade-comment"
                                   value={comment}
@@ -2130,7 +2523,15 @@ export function GradebookPage() {
                                     }));
                                     setGradebookNotice("");
                                   }}
-                                  onBlur={(event) => void saveManualGradeCell(student.id, assessment.id, value, event.target.value)}
+                                  onBlur={(event) =>
+                                    void saveManualGradeCell(
+                                      student.id,
+                                      assessment.id,
+                                      value,
+                                      event.target.value,
+                                      status
+                                    )
+                                  }
                                 />
                               </div>
                             </td>
@@ -2142,7 +2543,7 @@ export function GradebookPage() {
                 </table>
               </div>
             ) : (
-              <p className="hint">Crea una prueba manual en Definición para introducir notas aquí.</p>
+              <p className="hint">Crea una prueba manual en Organización para introducir notas aquí.</p>
             )}
             <div className="student-grade-tree-list">
               {selectedStudent ? renderStudentGradeTree(selectedStudent) : null}
@@ -2223,7 +2624,10 @@ export function GradebookPage() {
                           column.kind === "group"
                             ? partialByStudentGroup.get(studentGroupKey(student.id, column.sourceId))
                             : column.kind === "assessment"
-                              ? entriesByKey.get(gradeCellKey(student.id, column.sourceId))?.numericValue
+                              ? resolveGradeEntryScore(
+                                  entriesByKey.get(gradeCellKey(student.id, column.sourceId)),
+                                  notSubmittedGradePolicy
+                                )
                               : column.kind === "task"
                                 ? taskScoreByTaskStudent.get(taskStudentKey(column.sourceId, selectedSubjectId ?? "", student.id))
                                 : finalByStudent.get(student.id);

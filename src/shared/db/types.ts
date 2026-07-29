@@ -2,7 +2,7 @@ export type Subject = {
   id: string;
   name: string;
   teachingHours?: string;
-  scheduleSlotIds?: string[];
+  scheduleSlotIds: string[];
 };
 
 export type UnitBlock = {
@@ -40,6 +40,7 @@ export type AppPreferences = {
   studentSortBy: "lastName" | "firstName";
   studentNameFormat: "firstLast" | "lastFirst";
   weekStartsOn: "monday" | "sunday";
+  notSubmittedGradePolicy?: "exclude" | "zero";
 };
 
 export type ClassGroup = {
@@ -52,6 +53,7 @@ export type ClassGroup = {
 
 export type Student = {
   id: string;
+  personId?: string;
   classId: string;
   firstName: string;
   lastName: string;
@@ -67,6 +69,8 @@ export type Assessment = {
   id: string;
   classId: string;
   subjectId: string;
+  academicPeriodId?: string;
+  assessmentDate?: string;
   title: string;
   weight: number;
   period: string;
@@ -84,16 +88,43 @@ export type GradeEntry = {
   colorTag?: string;
   iconTag?: string;
   comment?: string;
+  status?: "graded" | "pending" | "notSubmitted" | "exempt";
 };
 
 export type AttendanceEntry = {
   id: string;
   classId: string;
+  subjectId: string;
   studentId: string;
   date: string;
-  scheduleSlotId?: string;
+  scheduleSlotId: string;
+  startTime?: string;
+  endTime?: string;
   status: "present" | "late" | "absent";
+  absenceJustified?: boolean;
+  lateMinutes?: number;
+  earlyDepartureMinutes?: number;
   note?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DailyClassRecord = {
+  id: string;
+  classId: string;
+  subjectId: string;
+  date: string;
+  scheduleSlotId: string;
+  sessionKind?: "adHoc" | "rescheduled";
+  sessionTitle?: string;
+  startTime?: string;
+  endTime?: string;
+  originalDate?: string;
+  originalScheduleSlotId?: string;
+  generalComment: string;
+  studentComments: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /** Reusable task definition. Subject, unit, and gradebook settings live in related tables. */
@@ -118,6 +149,7 @@ export type TaskGradebookConfig = {
   taskId: string;
   subjectId: string;
   classId: string;
+  academicPeriodId?: string;
   gradebookWeight: number;
   groupId?: string;
   rubricTemplateId?: string;
@@ -135,6 +167,54 @@ export type GradebookGroup = {
   weight?: number;
 };
 
+export type AcademicPeriodStatus = "open" | "closed";
+
+export type AcademicPeriod = {
+  id: string;
+  classId: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  position: number;
+  status: AcademicPeriodStatus;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+  reopenedAt?: string;
+  currentSnapshotId?: string;
+  closureVersion: number;
+};
+
+export type GradebookPeriodSnapshotData = {
+  classGroup: ClassGroup;
+  students: Student[];
+  subjects: Subject[];
+  subjectCourseLinks: SubjectCourseLink[];
+  subjectStudentLinks: SubjectStudentLink[];
+  assessments: Assessment[];
+  gradeEntries: GradeEntry[];
+  gradebookGroups: GradebookGroup[];
+  taskGradebookConfigs: TaskGradebookConfig[];
+  tasks: Task[];
+  taskSubjectLinks: TaskSubjectLink[];
+  taskSessions: TaskSession[];
+  taskDailyEvaluationSettings: TaskDailyEvaluationSetting[];
+  taskRubricAssessments: TaskRubricAssessment[];
+  taskChecklistAssessments: TaskChecklistAssessment[];
+  taskDirectGrades: TaskDirectGrade[];
+  rubricTemplates: RubricTemplate[];
+  checklistTemplates: ChecklistTemplate[];
+};
+
+export type GradebookPeriodSnapshot = {
+  id: string;
+  academicPeriodId: string;
+  classId: string;
+  version: number;
+  createdAt: string;
+  data: GradebookPeriodSnapshotData;
+};
+
 export type TaskSession = {
   id: string;
   taskId: string;
@@ -143,7 +223,7 @@ export type TaskSession = {
   classId: string;
   date: string;
   scheduleSlotId: string;
-  status?: "planned" | "done" | "moved" | "cancelled";
+  status: "planned" | "done" | "moved" | "cancelled";
   objectives?: string;
   competencies?: string;
   materials?: string;
@@ -154,10 +234,10 @@ export type TaskSession = {
 export type TaskStudentComment = {
   id: string;
   taskId: string;
-  subjectId?: string;
-  classId?: string;
-  date?: string;
-  scheduleSlotId?: string;
+  subjectId: string;
+  classId: string;
+  date: string;
+  scheduleSlotId: string;
   studentId: string;
   comment: string;
 };
@@ -165,10 +245,10 @@ export type TaskStudentComment = {
 export type TaskDailyEvaluationSetting = {
   id: string;
   taskId: string;
-  subjectId?: string;
-  classId?: string;
+  subjectId: string;
+  classId: string;
   date: string;
-  scheduleSlotId?: string;
+  scheduleSlotId: string;
   generalComment?: string;
   rubricTemplateId?: string;
   checklistTemplateId?: string;
@@ -177,10 +257,10 @@ export type TaskDailyEvaluationSetting = {
 export type TaskRubricAssessment = {
   id: string;
   taskId: string;
-  subjectId?: string;
-  classId?: string;
+  subjectId: string;
+  classId: string;
   date: string;
-  scheduleSlotId?: string;
+  scheduleSlotId: string;
   studentId: string;
   rubricTemplateId: string;
   criterionId: string;
@@ -191,10 +271,10 @@ export type TaskRubricAssessment = {
 export type TaskChecklistAssessment = {
   id: string;
   taskId: string;
-  subjectId?: string;
-  classId?: string;
+  subjectId: string;
+  classId: string;
   date: string;
-  scheduleSlotId?: string;
+  scheduleSlotId: string;
   studentId: string;
   checklistTemplateId: string;
   itemId: string;
@@ -262,6 +342,8 @@ export type SubjectStudentLink = {
 };
 
 export type StudentFollowUpKind = "incident" | "family" | "tutorial" | "agreement" | "adaptation" | "wellbeing";
+export type FollowUpPriority = "low" | "normal" | "high";
+export type FollowUpStatus = "open" | "inProgress" | "done";
 
 export type StudentFollowUp = {
   id: string;
@@ -272,5 +354,46 @@ export type StudentFollowUp = {
   title: string;
   notes: string;
   nextStep?: string;
+  dueDate?: string;
+  responsiblePerson?: string;
+  priority?: FollowUpPriority;
+  status?: FollowUpStatus;
   resolved: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type FamilyContactChannel = "phone" | "email" | "meeting" | "message" | "other";
+
+export type FamilyContact = {
+  id: string;
+  studentId: string;
+  classId: string;
+  date: string;
+  channel: FamilyContactChannel;
+  contactName: string;
+  relationship: string;
+  summary: string;
+  agreements?: string;
+  nextStep?: string;
+  dueDate?: string;
+  responsiblePerson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SupportGroup = {
+  id: string;
+  name: string;
+  responsiblePerson: string;
+  focus?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SupportGroupMember = {
+  id: string;
+  supportGroupId: string;
+  studentId: string;
+  createdAt: string;
 };

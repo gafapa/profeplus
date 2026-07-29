@@ -33,8 +33,8 @@ type GradebookScoreTask = Pick<
 >;
 
 type ScopedTaskRow = {
-  classId?: string;
-  subjectId?: string;
+  classId: string;
+  subjectId: string;
 };
 
 export function taskSubjectKey(taskId: string, subjectId: string): string {
@@ -50,13 +50,7 @@ export function gradeCellKey(studentId: string, assessmentId: string): string {
 }
 
 export function matchesTaskScope(row: ScopedTaskRow, classId: string, subjectId?: string): boolean {
-  if (row.classId && row.classId !== classId) {
-    return false;
-  }
-  if (subjectId && row.subjectId && row.subjectId !== subjectId) {
-    return false;
-  }
-  return true;
+  return row.classId === classId && (!subjectId || row.subjectId === subjectId);
 }
 
 function buildOrderedGroupIdsByParent(groups: GradebookGroup[]): Map<string, string[]> {
@@ -302,7 +296,7 @@ export function calculateTaskScoresByStudent(input: {
 
       const sessionScores: number[] = [];
       for (const setting of settings) {
-        const sessionSlotId = setting.scheduleSlotId ?? "";
+        const sessionSlotId = setting.scheduleSlotId;
         const rubricId = task.rubricTemplateId || setting.rubricTemplateId || "";
         const checklistId = task.checklistTemplateId || setting.checklistTemplateId || "";
 
@@ -323,7 +317,7 @@ export function calculateTaskScoresByStudent(input: {
               row.taskId === task.taskId &&
               row.studentId === student.id &&
               row.date === setting.date &&
-              (row.scheduleSlotId ?? "") === sessionSlotId &&
+              row.scheduleSlotId === sessionSlotId &&
               row.rubricTemplateId === rubricId &&
               matchesTaskScope(row, input.selectedClassId, task.subjectId)
           );
@@ -356,7 +350,7 @@ export function calculateTaskScoresByStudent(input: {
                   row.taskId === task.taskId &&
                   row.studentId === student.id &&
                   row.date === setting.date &&
-                  (row.scheduleSlotId ?? "") === sessionSlotId &&
+                  row.scheduleSlotId === sessionSlotId &&
                   row.checklistTemplateId === checklistId &&
                   row.checked &&
                   activeItemIds.has(row.itemId) &&
