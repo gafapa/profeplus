@@ -3,17 +3,20 @@ import { configureStore, createSlice, type PayloadAction } from "@reduxjs/toolki
 export type StudentSortBy = "lastName" | "firstName";
 export type StudentNameFormat = "firstLast" | "lastFirst";
 export type WeekStartsOn = "monday" | "sunday";
+export type NotSubmittedGradePolicy = "exclude" | "zero";
 
 export type AppPreferences = {
   studentSortBy: StudentSortBy;
   studentNameFormat: StudentNameFormat;
   weekStartsOn: WeekStartsOn;
+  notSubmittedGradePolicy: NotSubmittedGradePolicy;
 };
 
 export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   studentSortBy: "lastName",
   studentNameFormat: "firstLast",
-  weekStartsOn: "monday"
+  weekStartsOn: "monday",
+  notSubmittedGradePolicy: "exclude"
 };
 
 type AppState = {
@@ -22,6 +25,7 @@ type AppState = {
   studentSortBy: StudentSortBy;
   studentNameFormat: StudentNameFormat;
   weekStartsOn: WeekStartsOn;
+  notSubmittedGradePolicy: NotSubmittedGradePolicy;
 };
 
 function readStudentSortBy(): StudentSortBy {
@@ -42,11 +46,17 @@ function readWeekStartsOn(): WeekStartsOn {
   return v === "sunday" ? "sunday" : DEFAULT_APP_PREFERENCES.weekStartsOn;
 }
 
+function readNotSubmittedGradePolicy(): NotSubmittedGradePolicy {
+  if (typeof window === "undefined") return DEFAULT_APP_PREFERENCES.notSubmittedGradePolicy;
+  return window.localStorage.getItem("not_submitted_grade_policy") === "zero" ? "zero" : "exclude";
+}
+
 function writePreferencesToLocalStorage(preferences: AppPreferences): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem("student_sort_by", preferences.studentSortBy);
   window.localStorage.setItem("student_name_format", preferences.studentNameFormat);
   window.localStorage.setItem("week_starts_on", preferences.weekStartsOn);
+  window.localStorage.setItem("not_submitted_grade_policy", preferences.notSubmittedGradePolicy);
 }
 
 const initialState: AppState = {
@@ -54,7 +64,8 @@ const initialState: AppState = {
   selectedSubjectId: "",
   studentSortBy: readStudentSortBy(),
   studentNameFormat: readStudentNameFormat(),
-  weekStartsOn: readWeekStartsOn()
+  weekStartsOn: readWeekStartsOn(),
+  notSubmittedGradePolicy: readNotSubmittedGradePolicy()
 };
 
 const appSlice = createSlice({
@@ -62,8 +73,8 @@ const appSlice = createSlice({
   initialState,
   reducers: {
     setSelectedClass(state, action: PayloadAction<string | null>) {
-      // Al cambiar de curso siempre se limpia la asignatura activa;
-      // TopTabs re-seleccionará la primera disponible del nuevo curso.
+      // Changing the course always clears the active subject.
+      // TopTabs selects the first available subject for the new course.
       if (state.selectedClassId !== action.payload) {
         state.selectedSubjectId = "";
       }
@@ -84,6 +95,10 @@ const appSlice = createSlice({
       state.weekStartsOn = action.payload;
       writePreferencesToLocalStorage(state);
     },
+    setNotSubmittedGradePolicy(state, action: PayloadAction<NotSubmittedGradePolicy>) {
+      state.notSubmittedGradePolicy = action.payload;
+      writePreferencesToLocalStorage(state);
+    },
     hydrateAppPreferences(state, action: PayloadAction<Partial<AppPreferences>>) {
       const next = {
         studentSortBy:
@@ -93,11 +108,16 @@ const appSlice = createSlice({
             ? "lastFirst"
             : DEFAULT_APP_PREFERENCES.studentNameFormat,
         weekStartsOn:
-          action.payload.weekStartsOn === "sunday" ? "sunday" : DEFAULT_APP_PREFERENCES.weekStartsOn
+          action.payload.weekStartsOn === "sunday" ? "sunday" : DEFAULT_APP_PREFERENCES.weekStartsOn,
+        notSubmittedGradePolicy:
+          action.payload.notSubmittedGradePolicy === "zero"
+            ? "zero"
+            : DEFAULT_APP_PREFERENCES.notSubmittedGradePolicy
       };
       state.studentSortBy = next.studentSortBy;
       state.studentNameFormat = next.studentNameFormat;
       state.weekStartsOn = next.weekStartsOn;
+      state.notSubmittedGradePolicy = next.notSubmittedGradePolicy;
       writePreferencesToLocalStorage(next);
     }
   }
@@ -109,6 +129,7 @@ export const {
   setStudentSortBy,
   setStudentNameFormat,
   setWeekStartsOn,
+  setNotSubmittedGradePolicy,
   hydrateAppPreferences
 } = appSlice.actions;
 

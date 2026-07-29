@@ -1,0 +1,23 @@
+{
+  "id": ".",
+  "name": "ProfePlus",
+  "short_name": "ProfePlus",
+  "description": "Cuaderno digital docente para la gestión diaria del aula.",
+  "theme_color": "#1f4b99",
+  "background_color": "#f5f7fb",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
+  "start_url": ".",
+  "scope": ".",
+  "categories": ["education", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

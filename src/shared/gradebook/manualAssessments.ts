@@ -1,0 +1,92 @@
+import type { Assessment, GradeEntry } from "../db/types";
+
+export type GradeEntryStatus = NonNullable<GradeEntry["status"]>;
+export type NotSubmittedGradePolicy = "exclude" | "zero";
+
+export function resolveGradeEntryStatus(entry?: GradeEntry): GradeEntryStatus {
+  if (entry?.status) return entry.status;
+  return typeof entry?.numericValue === "number" ? "graded" : "pending";
+}
+
+export function resolveGradeEntryScore(
+  entry: GradeEntry | undefined,
+  notSubmittedPolicy: NotSubmittedGradePolicy
+): number | null {
+  const status = resolveGradeEntryStatus(entry);
+  if (status === "notSubmitted") {
+    return notSubmittedPolicy === "zero" ? 0 : null;
+  }
+  if (status !== "graded") return null;
+  return typeof entry?.numericValue === "number" ? entry.numericValue : null;
+}
+
+export type ManualAssessmentDraft = {
+  title: string;
+  weight: string;
+  period: string;
+  competency: string;
+  groupId: string;
+};
+
+export function parseManualGradeValue(rawValue: string): number | null {
+  const normalized = rawValue.replace(",", ".").trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 10) {
+    return Number.NaN;
+  }
+  return Number(parsed.toFixed(2));
+}
+
+export function normalizeManualAssessmentDraft(draft: ManualAssessmentDraft): {
+  title: string;
+  weight: number;
+  period: string;
+  competency?: string;
+  groupId?: string;
+} | null {
+  const title = draft.title.trim();
+  if (title.length < 2) {
+    return null;
+  }
+
+  const normalizedWeight = draft.weight.replace(",", ".").trim();
+  const weight = normalizedWeight.length > 0 ? Number(normalizedWeight) : 0;
+  if (!Number.isFinite(weight) || weight < 0) {
+    return null;
+  }
+
+  return {
+    title,
+    weight: Number(weight.toFixed(2)),
+    period: draft.period.trim(),
+    competency: draft.competency.trim() || undefined,
+    groupId: draft.groupId || undefined
+  };
+}
+
+export function buildManualGradeEntry(input: {
+  existingEntry?: GradeEntry;
+  classId: string;
+  assessment: Assessment;
+  studentId: string;
+  numericValue?: number;
+  comment?: string;
+  status?: GradeEntryStatus;
+}): GradeEntry {
+  const comment = input.comment === undefined ? input.existingEntry?.comment : input.comment.trim() || undefined;
+  return {
+    id: input.existingEntry?.id ?? `grade-${input.assessment.id}-${input.studentId}`,
+    classId: input.classId,
+    assessmentId: input.assessment.id,
+    studentId: input.studentId,
+    numericValue: input.numericValue,
+    status: input.status ?? (typeof input.numericValue === "number" ? "graded" : resolveGradeEntryStatus(input.existingEntry)),
+    comment,
+    colorTag: input.existingEntry?.colorTag,
+    iconTag: input.existingEntry?.iconTag,
+    textValue: input.existingEntry?.textValue
+  };
+}

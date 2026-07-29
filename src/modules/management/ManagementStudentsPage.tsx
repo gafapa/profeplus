@@ -1,23 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useManagement } from "./ManagementContext";
+import { db } from "../../shared/db/database";
+import type { StudentFollowUp, StudentFollowUpKind } from "../../shared/db/types";
+import { parseStudentsCsv, type ParsedStudentCsvRow } from "../../shared/import/studentsCsv";
+import {
+  FOLLOW_UP_KINDS,
+  defaultFollowUpDraft,
+  followUpKindLabel,
+  normalizeFollowUpDraft,
+  type StudentFollowUpDraft
+} from "../../shared/students/followUp";
 import { resizeImageToMaxSide } from "../../shared/utils/image";
+import { toLocalIsoDate } from "../../shared/utils/date";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementStudentsPage() {
   const { formatName } = useStudentDisplay();
-  const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice } =
+  const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice, refreshAll } =
     useManagement();
 
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [detailFirstName, setDetailFirstName] = useState("");
   const [detailLastName, setDetailLastName] = useState("");
+  const [detailEmail, setDetailEmail] = useState("");
   const [detailComments, setDetailComments] = useState("");
+  const [detailHasAcs, setDetailHasAcs] = useState(false);
+  const [detailHasReinforcement, setDetailHasReinforcement] = useState(false);
   const [detailPhoto, setDetailPhoto] = useState<string | undefined>(undefined);
   const [studentDirty, setStudentDirty] = useState(false);
+  useUnsavedChangesGuard(studentDirty, "Hay cambios del alumno sin guardar.");
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
+  const [followUps, setFollowUps] = useState<StudentFollowUp[]>([]);
+  const [followUpDraft, setFollowUpDraft] = useState<StudentFollowUpDraft>(() => defaultFollowUpDraft(toLocalIsoDate()));
+  const [editingFollowUpId, setEditingFollowUpId] = useState("");
+  const [studentImportText, setStudentImportText] = useState("");
   const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const importCsvInputRef = useRef<HTMLInputElement | null>(null);
   const selectedCourseRef = useRef("");
 
   useEffect(() => {
@@ -59,19 +80,49 @@ export function ManagementStudentsPage() {
     if (!selectedStudent) {
       setDetailFirstName("");
       setDetailLastName("");
+      setDetailEmail("");
       setDetailComments("");
+      setDetailHasAcs(false);
+      setDetailHasReinforcement(false);
       setDetailPhoto(undefined);
       setStudentDirty(false);
+      setFollowUps([]);
+      setEditingFollowUpId("");
+      setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
       return;
     }
     setDetailFirstName(selectedStudent.firstName ?? "");
     setDetailLastName(selectedStudent.lastName ?? "");
+    setDetailEmail(selectedStudent.email ?? "");
     setDetailComments(selectedStudent.comments ?? "");
+    setDetailHasAcs(Boolean(selectedStudent.hasAcs));
+    setDetailHasReinforcement(Boolean(selectedStudent.hasReinforcement));
     setDetailPhoto(selectedStudent.photoDataUrl);
     setStudentDirty(false);
+    setEditingFollowUpId("");
+    setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
   }, [selectedStudent]);
 
-  // Auto-guardado con debounce (updateStudent excluido de deps: su referencia cambia en cada render del contexto)
+  useEffect(() => {
+    let active = true;
+    const loadFollowUps = async (): Promise<void> => {
+      if (!selectedStudentId) {
+        if (active) setFollowUps([]);
+        return;
+      }
+      const rows = await db.studentFollowUps.where("studentId").equals(selectedStudentId).toArray();
+      rows.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title));
+      if (active) {
+        setFollowUps(rows);
+      }
+    };
+    void loadFollowUps();
+    return () => {
+      active = false;
+    };
+  }, [selectedStudentId]);
+
+  // Debounced autosave. updateStudent is omitted because the context recreates its reference on each render.
   useEffect(() => {
     if (!studentDirty || !selectedStudent || isProcessingPhoto) return;
     const firstName = detailFirstName.trim();
@@ -81,8 +132,12 @@ export function ManagementStudentsPage() {
     const courseId = selectedCourseId;
     const photo = detailPhoto;
     const comments = detailComments;
+    const email = detailEmail;
+    const hasAcs = detailHasAcs;
+    const hasReinforcement = detailHasReinforcement;
     const timer = setTimeout(() => {
-      void updateStudent(id, firstName, lastName, courseId, photo, comments).then(() => {
+      void updateStudent(id, firstName, lastName, courseId, photo, comments, email, hasAcs, hasReinforcement).then((saved) => {
+        if (!saved) return;
         if (courseId) {
           setSelectedCourseId(courseId);
         }
@@ -91,47 +146,177 @@ export function ManagementStudentsPage() {
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailComments, selectedCourseId, detailPhoto, selectedStudent?.id]);
+  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailEmail, detailComments, detailHasAcs, detailHasReinforcement, selectedCourseId, detailPhoto, selectedStudent?.id]);
 
-  const saveIfDirty = useCallback(async () => {
-    if (!studentDirty || !selectedStudent || isProcessingPhoto) return;
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
+    if (!studentDirty || !selectedStudent) return true;
+    if (isProcessingPhoto) return false;
     const firstName = detailFirstName.trim();
     const lastName = detailLastName.trim();
-    if (firstName.length < 2 || lastName.length < 2 || !selectedCourseId) return;
     const courseId = selectedCourseId;
-    await updateStudent(selectedStudent.id, firstName, lastName, courseId, detailPhoto, detailComments);
+    const saved = await updateStudent(
+      selectedStudent.id,
+      firstName,
+      lastName,
+      courseId,
+      detailPhoto,
+      detailComments,
+      detailEmail,
+      detailHasAcs,
+      detailHasReinforcement
+    );
+    if (!saved) return false;
     if (courseId) {
       setSelectedCourseId(courseId);
     }
     setStudentDirty(false);
+    return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailComments, selectedCourseId, detailPhoto, selectedStudent?.id]);
+  }, [studentDirty, isProcessingPhoto, detailFirstName, detailLastName, detailEmail, detailComments, detailHasAcs, detailHasReinforcement, selectedCourseId, detailPhoto, selectedStudent?.id]);
 
   const changeSelectedCourse = useCallback(async (courseId: string) => {
-    await saveIfDirty();
+    if (!(await saveIfDirty())) return;
     setSelectedCourseId(courseId);
   }, [saveIfDirty]);
 
-  const changeSelectedStudent = useCallback((studentId: string) => {
+  const changeSelectedStudent = useCallback(async (studentId: string) => {
+    if (!(await saveIfDirty())) return;
     setSelectedStudentId(studentId);
-    void saveIfDirty();
   }, [saveIfDirty]);
+
+  const importStudentRows = async (parsedRows: ParsedStudentCsvRow[], sourceLabel: string): Promise<boolean> => {
+    const targetCourseId = selectedCourseId || courses[0]?.id;
+    if (!targetCourseId) {
+      setNotice("Crea o selecciona un curso antes de importar alumnos.");
+      return false;
+    }
+
+    if (parsedRows.length === 0) {
+      setNotice(`No se encontraron alumnos válidos en ${sourceLabel}.`);
+      return false;
+    }
+
+    const existingNames = new Set(
+      students
+        .filter((student) => student.classId === targetCourseId)
+        .map((student) => `${student.firstName} ${student.lastName}`.trim().toLowerCase())
+    );
+    const rowsToAdd = parsedRows.filter((row) => {
+      const key = `${row.firstName} ${row.lastName}`.trim().toLowerCase();
+      if (existingNames.has(key)) {
+        return false;
+      }
+      existingNames.add(key);
+      return true;
+    });
+
+    if (rowsToAdd.length === 0) {
+      setNotice(`Todos los alumnos de ${sourceLabel} ya existen en el curso seleccionado.`);
+      return false;
+    }
+
+    const createdIds = rowsToAdd.map(() => crypto.randomUUID());
+    await db.students.bulkAdd(
+      rowsToAdd.map((row, index) => ({
+        id: createdIds[index],
+        personId: createdIds[index],
+        classId: targetCourseId,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        fullName: `${row.firstName} ${row.lastName}`.trim(),
+        email: row.email,
+        comments: row.comments,
+        hasAcs: row.hasAcs,
+        hasReinforcement: row.hasReinforcement
+      }))
+    );
+    await refreshAll();
+    setSelectedCourseId(targetCourseId);
+    setSelectedStudentId(createdIds[0] ?? "");
+    setNotice(`Importados ${rowsToAdd.length} alumnos desde ${sourceLabel}.`);
+    return true;
+  };
+
+  const importStudentsCsvFile = async (file: File): Promise<void> => {
+    if (file.size > 1024 * 1024) {
+      setNotice("El CSV es demasiado grande. Usa un archivo de hasta 1 MB.");
+      return;
+    }
+
+    await importStudentRows(parseStudentsCsv(await file.text()), "CSV");
+  };
+
+  const importStudentsFromText = async (): Promise<void> => {
+    const imported = await importStudentRows(parseStudentsCsv(studentImportText), "la tabla pegada");
+    if (imported) {
+      setStudentImportText("");
+    }
+  };
+
+  const resetFollowUpForm = (): void => {
+    setEditingFollowUpId("");
+    setFollowUpDraft(defaultFollowUpDraft(toLocalIsoDate()));
+  };
+
+  const editFollowUp = (followUp: StudentFollowUp): void => {
+    setEditingFollowUpId(followUp.id);
+    setFollowUpDraft({
+      date: followUp.date,
+      kind: followUp.kind,
+      title: followUp.title,
+      notes: followUp.notes,
+      nextStep: followUp.nextStep ?? "",
+      resolved: followUp.resolved
+    });
+  };
+
+  const saveFollowUp = async (): Promise<void> => {
+    if (!selectedStudent) {
+      return;
+    }
+    const normalized = normalizeFollowUpDraft(followUpDraft);
+    if (!normalized) {
+      setNotice("El seguimiento necesita fecha válida, título y notas.");
+      return;
+    }
+    const id = editingFollowUpId || crypto.randomUUID();
+    await db.studentFollowUps.put({
+      id,
+      studentId: selectedStudent.id,
+      classId: selectedStudent.classId,
+      ...normalized
+    });
+    const rows = await db.studentFollowUps.where("studentId").equals(selectedStudent.id).toArray();
+    rows.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title));
+    setFollowUps(rows);
+    resetFollowUpForm();
+    setNotice(editingFollowUpId ? "Seguimiento actualizado." : "Seguimiento añadido.");
+  };
+
+  const deleteFollowUp = async (followUpId: string): Promise<void> => {
+    await db.studentFollowUps.delete(followUpId);
+    setFollowUps((current) => current.filter((item) => item.id !== followUpId));
+    if (editingFollowUpId === followUpId) {
+      resetFollowUpForm();
+    }
+    setNotice("Seguimiento eliminado.");
+  };
 
   return (
     <article className="management-card">
+      <h1 className="sr-only">Alumnos</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="context-sidebar-tabs">
             <div className="context-sidebar-group">
               <strong>Curso</strong>
               {courses.length > 0 ? (
-                <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Cursos de alumnos">
+                <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Cursos de alumnos">
                   {courses.map((course) => (
                     <button
                       key={course.id}
                       type="button"
-                      role="tab"
-                      aria-selected={selectedCourseId === course.id}
+                      aria-pressed={selectedCourseId === course.id}
                       className={`section-tab ${selectedCourseId === course.id ? "active" : ""}`}
                       onClick={() => {
                         void changeSelectedCourse(course.id);
@@ -149,26 +334,69 @@ export function ManagementStudentsPage() {
           </div>
           <div className="courses-list-header">
             <strong>Listado</strong>
-            <IconButton
-              icon="add"
-              label="Crear alumno"
-              onClick={async () => {
-                await saveIfDirty();
-                const targetCourseId = selectedCourseId || courses[0]?.id;
-                const createdId = await createEmptyStudent(targetCourseId);
-                if (createdId) {
-                  if (targetCourseId) {
-                    setSelectedCourseId(targetCourseId);
+            <span className="courses-list-actions">
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={courses.length === 0}
+                onClick={() => importCsvInputRef.current?.click()}
+              >
+                Importar CSV
+              </button>
+              <IconButton
+                icon="add"
+                label="Crear alumno"
+                onClick={async () => {
+                  if (!(await saveIfDirty())) return;
+                  const targetCourseId = selectedCourseId || courses[0]?.id;
+                  const createdId = await createEmptyStudent(targetCourseId);
+                  if (createdId) {
+                    if (targetCourseId) {
+                      setSelectedCourseId(targetCourseId);
+                    }
+                    setSelectedStudentId(createdId);
                   }
-                  setSelectedStudentId(createdId);
-                }
-              }}
+                }}
+              />
+            </span>
+          </div>
+          <input
+            ref={importCsvInputRef}
+            className="student-photo-input-hidden"
+            type="file"
+            aria-label="Seleccionar archivo CSV de alumnos"
+            accept=".csv,text/csv"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.currentTarget.value = "";
+              if (file) {
+                void importStudentsCsvFile(file);
+              }
+            }}
+          />
+
+          <div className="student-import-panel">
+            <textarea
+              className="input"
+              value={studentImportText}
+              onChange={(event) => setStudentImportText(event.target.value)}
+              rows={3}
+              aria-label="Tabla de alumnos"
+              placeholder="Nombre	Apellidos	Correo	Observaciones	ACS	Refuerzo"
             />
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={courses.length === 0 || studentImportText.trim().length === 0}
+              onClick={() => void importStudentsFromText()}
+            >
+              Importar tabla
+            </button>
           </div>
 
           <div
             className="courses-list section-tabs"
-            role="tablist"
+            role="group"
             aria-label="Secciones de alumnos"
           >
             {filteredStudents.map((student) => {
@@ -177,11 +405,10 @@ export function ManagementStudentsPage() {
                 <div key={student.id} className="courses-list-row">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={selectedStudentId === student.id}
+                    aria-pressed={selectedStudentId === student.id}
                     className={`section-tab ${selectedStudentId === student.id ? "active" : ""}`}
                     onClick={() => {
-                      changeSelectedStudent(student.id);
+                      void changeSelectedStudent(student.id);
                     }}
                   >
                     <span className="student-item-name">
@@ -202,7 +429,7 @@ export function ManagementStudentsPage() {
                     icon="delete"
                     label={`Eliminar ${formatName(student) || "alumno"}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       await deleteStudent(student.id);
                     }}
                   />
@@ -217,7 +444,7 @@ export function ManagementStudentsPage() {
             <>
               <div className="course-detail-header">
                 <div>
-                  <h4>Ficha del alumno</h4>
+                  <h2>Ficha del alumno</h2>
                 </div>
               </div>
 
@@ -234,7 +461,7 @@ export function ManagementStudentsPage() {
               </div>
 
               <section className="detail-section">
-                <h5>Datos del alumno</h5>
+                <h3>Datos del alumno</h3>
                 <div className="student-detail-top">
                   {/* Foto */}
                   <div className="student-photo-box">
@@ -261,6 +488,7 @@ export function ManagementStudentsPage() {
                       ref={photoInputRef}
                       className="student-photo-input-hidden"
                       type="file"
+                      aria-label={`Seleccionar foto de ${formatName(selectedStudent)}`}
                       accept="image/*"
                       disabled={isProcessingPhoto}
                       onChange={(event) => {
@@ -294,7 +522,6 @@ export function ManagementStudentsPage() {
                     </button>
                   </div>
 
-                  {/* Campos */}
                   <div className="detail-grid">
                     <div className="detail-field">
                       <label>Nombre</label>
@@ -321,6 +548,46 @@ export function ManagementStudentsPage() {
                       />
                     </div>
                     <div className="detail-field full">
+                      <label>Email</label>
+                      <input
+                        className="input"
+                        type="email"
+                        placeholder="correo@centro.es"
+                        value={detailEmail}
+                        onChange={(event) => {
+                          setDetailEmail(event.target.value);
+                          setStudentDirty(true);
+                        }}
+                      />
+                    </div>
+                    <div className="detail-field full">
+                      <label>Medidas educativas</label>
+                      <div className="student-support-options">
+                        <label className="chip-toggle">
+                          <input
+                            type="checkbox"
+                            checked={detailHasAcs}
+                            onChange={(event) => {
+                              setDetailHasAcs(event.target.checked);
+                              setStudentDirty(true);
+                            }}
+                          />
+                          <span>ACS</span>
+                        </label>
+                        <label className="chip-toggle">
+                          <input
+                            type="checkbox"
+                            checked={detailHasReinforcement}
+                            onChange={(event) => {
+                              setDetailHasReinforcement(event.target.checked);
+                              setStudentDirty(true);
+                            }}
+                          />
+                          <span>Refuerzo</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div className="detail-field full">
                       <label>Comentarios</label>
                       <textarea
                         className="input"
@@ -334,6 +601,120 @@ export function ManagementStudentsPage() {
                       />
                     </div>
                   </div>
+                </div>
+              </section>
+
+              <section className="detail-section">
+                <div className="course-detail-header">
+                  <h3>Seguimiento tutorial</h3>
+                  <button type="button" className="btn secondary" onClick={resetFollowUpForm}>
+                    Nuevo registro
+                  </button>
+                </div>
+                <div className="follow-up-form">
+                  <label className="detail-field">
+                    <span>Fecha</span>
+                    <input
+                      className="input"
+                      type="date"
+                      value={followUpDraft.date}
+                      onChange={(event) => setFollowUpDraft((current) => ({ ...current, date: event.target.value }))}
+                    />
+                  </label>
+                  <label className="detail-field">
+                    <span>Tipo</span>
+                    <select
+                      className="input"
+                      value={followUpDraft.kind}
+                      onChange={(event) =>
+                        setFollowUpDraft((current) => ({
+                          ...current,
+                          kind: event.target.value as StudentFollowUpKind
+                        }))
+                      }
+                    >
+                      {FOLLOW_UP_KINDS.map((kind) => (
+                        <option key={kind} value={kind}>
+                          {followUpKindLabel(kind)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="detail-field">
+                    <span>Título</span>
+                    <input
+                      className="input"
+                      value={followUpDraft.title}
+                      placeholder="Ej. Entrevista con familia"
+                      onChange={(event) => setFollowUpDraft((current) => ({ ...current, title: event.target.value }))}
+                    />
+                  </label>
+                  <label className="chip-toggle follow-up-resolved-toggle">
+                    <input
+                      type="checkbox"
+                      checked={followUpDraft.resolved}
+                      onChange={(event) => setFollowUpDraft((current) => ({ ...current, resolved: event.target.checked }))}
+                    />
+                    <span>Resuelto</span>
+                  </label>
+                  <label className="detail-field full">
+                    <span>Notas</span>
+                    <textarea
+                      className="input"
+                      value={followUpDraft.notes}
+                      placeholder="Evidencias, acuerdos, incidencias o medidas observadas"
+                      onChange={(event) => setFollowUpDraft((current) => ({ ...current, notes: event.target.value }))}
+                    />
+                  </label>
+                  <label className="detail-field full">
+                    <span>Próximo paso</span>
+                    <input
+                      className="input"
+                      value={followUpDraft.nextStep}
+                      placeholder="Ej. Revisar evolución la próxima semana"
+                      onChange={(event) => setFollowUpDraft((current) => ({ ...current, nextStep: event.target.value }))}
+                    />
+                  </label>
+                  <div className="inline-form full">
+                    <button type="button" className="btn secondary" onClick={() => void saveFollowUp()}>
+                      {editingFollowUpId ? "Actualizar seguimiento" : "Añadir seguimiento"}
+                    </button>
+                    {editingFollowUpId ? (
+                      <button type="button" className="btn secondary" onClick={resetFollowUpForm}>
+                        Cancelar edición
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="follow-up-list">
+                  {followUps.map((followUp) => (
+                    <article key={followUp.id} className={`follow-up-card ${followUp.resolved ? "resolved" : ""}`}>
+                      <div>
+                        <strong>{followUp.title}</strong>
+                        <span>
+                          {followUp.date} · {followUpKindLabel(followUp.kind)} · {followUp.resolved ? "Resuelto" : "Abierto"}
+                        </span>
+                      </div>
+                      <p>{followUp.notes}</p>
+                      {followUp.nextStep ? <small>Próximo paso: {followUp.nextStep}</small> : null}
+                      <div className="inline-form tight">
+                        <button type="button" className="btn secondary" onClick={() => editFollowUp(followUp)}>
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          className="btn secondary management-danger-btn"
+                          onClick={() => void deleteFollowUp(followUp.id)}
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {followUps.length === 0 ? (
+                    <p className="hint">No hay seguimiento tutorial registrado para este alumno.</p>
+                  ) : null}
                 </div>
               </section>
             </>

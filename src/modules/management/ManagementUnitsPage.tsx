@@ -3,17 +3,29 @@ import { useManagement } from "./ManagementContext";
 import { useAppSelector } from "../../app/hooks";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementUnitsPage() {
   const selectedSubjectId = useAppSelector((s) => s.app.selectedSubjectId);
 
-  const { units, createEmptyUnit, updateUnit, deleteUnit } = useManagement();
+  const {
+    units,
+    subjects,
+    taskSubjectLinks,
+    createEmptyUnit,
+    updateUnit,
+    deleteUnit,
+    addTaskSubjectLink,
+    setNotice
+  } = useManagement();
 
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [detailName, setDetailName] = useState("");
   const [detailDescription, setDetailDescription] = useState("");
   const [detailSessionCount, setDetailSessionCount] = useState(1);
   const [unitDirty, setUnitDirty] = useState(false);
+  const [reusableUnitId, setReusableUnitId] = useState("");
+  useUnsavedChangesGuard(unitDirty, "Hay cambios de la unidad sin guardar.");
 
   const unitsBySubject = useMemo(
     () =>
@@ -30,6 +42,13 @@ export function ManagementUnitsPage() {
   }, [selectedSubjectId, unitsBySubject]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedUnit = unitsBySubject.find((u) => u.id === selectedUnitId) ?? null;
+  const reusableUnits = useMemo(
+    () =>
+      units
+        .filter((unit) => unit.subjectId !== selectedSubjectId)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [selectedSubjectId, units]
+  );
 
   useEffect(() => {
     if (!selectedUnit) {
@@ -45,7 +64,7 @@ export function ManagementUnitsPage() {
     setUnitDirty(false);
   }, [selectedUnit]);
 
-  // Auto-guardado con debounce (updateUnit excluido de deps: su referencia cambia en cada render del contexto)
+  // Debounced autosave. The context action is intentionally omitted because its reference is unstable.
   useEffect(() => {
     if (!unitDirty || !selectedUnit) return;
     const name = detailName.trim();
@@ -54,23 +73,51 @@ export function ManagementUnitsPage() {
     const desc = detailDescription;
     const count = detailSessionCount;
     const timer = setTimeout(() => {
-      void updateUnit(id, name, desc, count);
-      setUnitDirty(false);
+      void updateUnit(id, name, desc, count).then((saved) => {
+        if (saved) setUnitDirty(false);
+      });
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitDirty, detailName, detailDescription, detailSessionCount, selectedUnit?.id]);
 
-  const saveIfDirty = useCallback(async () => {
-    if (!unitDirty || !selectedUnit) return;
-    if (detailName.trim().length < 2) return;
-    await updateUnit(selectedUnit.id, detailName.trim(), detailDescription, detailSessionCount);
-    setUnitDirty(false);
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
+    if (!unitDirty || !selectedUnit) return true;
+    const saved = await updateUnit(selectedUnit.id, detailName.trim(), detailDescription, detailSessionCount);
+    if (saved) setUnitDirty(false);
+    return saved;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitDirty, detailName, detailDescription, detailSessionCount, selectedUnit?.id]);
 
+  const reuseUnit = async (): Promise<void> => {
+    if (!selectedSubjectId || !reusableUnitId) return;
+    if (!(await saveIfDirty())) return;
+    const source = units.find((unit) => unit.id === reusableUnitId);
+    if (!source) return;
+    const createdId = await createEmptyUnit(selectedSubjectId);
+    if (!createdId) return;
+    const saved = await updateUnit(
+      createdId,
+      `${source.name} (copia)`,
+      source.description,
+      source.sessionCount
+    );
+    if (!saved) return;
+
+    const sourceLinks = taskSubjectLinks.filter((link) => link.unitId === source.id);
+    for (const link of sourceLinks) {
+      await addTaskSubjectLink(link.taskId, selectedSubjectId, createdId);
+    }
+    setSelectedUnitId(createdId);
+    setReusableUnitId("");
+    setNotice(
+      `Unidad reutilizada con ${sourceLinks.length} tarea${sourceLinks.length === 1 ? "" : "s"} vinculada${sourceLinks.length === 1 ? "" : "s"}.`
+    );
+  };
+
   return (
     <article className="management-card">
+      <h1 className="sr-only">Unidades</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <ContextSidebarTabs beforeChange={saveIfDirty} />
@@ -81,22 +128,48 @@ export function ManagementUnitsPage() {
               label="Crear unidad"
               disabled={!selectedSubjectId}
               onClick={async () => {
-                await saveIfDirty();
+                if (!(await saveIfDirty())) return;
                 const createdId = await createEmptyUnit(selectedSubjectId);
                 if (createdId) setSelectedUnitId(createdId);
               }}
             />
           </div>
-          <div className="courses-list section-tabs" role="tablist" aria-label="Unidades">
+          {selectedSubjectId && reusableUnits.length > 0 ? (
+            <div className="sidebar-reuse-panel">
+              <label className="detail-field">
+                <span>Reutilizar unidad</span>
+                <select
+                  className="input"
+                  value={reusableUnitId}
+                  onChange={(event) => setReusableUnitId(event.target.value)}
+                >
+                  <option value="">Selecciona una unidad</option>
+                  {reusableUnits.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.name} · {subjects.find((subject) => subject.id === unit.subjectId)?.name ?? "Otra asignatura"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={!reusableUnitId}
+                onClick={() => void reuseUnit()}
+              >
+                Copiar estructura
+              </button>
+            </div>
+          ) : null}
+          <div className="courses-list section-tabs" role="group" aria-label="Unidades">
             {selectedSubjectId ? unitsBySubject.map((unit) => (
               <div key={unit.id} className="courses-list-row">
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={selectedUnitId === unit.id}
+                  aria-pressed={selectedUnitId === unit.id}
                   className={`section-tab ${selectedUnitId === unit.id ? "active" : ""}`}
                   onClick={async () => {
-                    await saveIfDirty();
+                    if (!(await saveIfDirty())) return;
                     setSelectedUnitId(unit.id);
                   }}
                 >
@@ -107,8 +180,8 @@ export function ManagementUnitsPage() {
                   icon="delete"
                   label={`Eliminar ${unit.name || "unidad"}`}
                   onClick={async () => {
-                    await saveIfDirty();
-                  await deleteUnit(unit.id);
+                    if (!(await saveIfDirty())) return;
+                    await deleteUnit(unit.id);
                 }}
               />
             </div>
@@ -123,7 +196,7 @@ export function ManagementUnitsPage() {
           {selectedUnit ? (
             <>
               <div className="course-detail-header">
-                <h4>Detalle de unidad</h4>
+                <h2>Detalle de unidad</h2>
               </div>
 
               <section className="detail-section">

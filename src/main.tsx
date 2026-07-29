@@ -4,13 +4,54 @@ import { unstable_HistoryRouter as HistoryRouter } from "react-router-dom";
 import type { HistoryRouterProps, To } from "react-router-dom";
 import { createBrowserHistory } from "history";
 import { Provider } from "react-redux";
-import { registerSW } from "virtual:pwa-register";
 import App from "./App";
 import { store } from "./app/store";
+import { AppErrorBoundary } from "./shared/ui/AppErrorBoundary";
 import { UnsavedChangesDialogProvider } from "./shared/ui/UnsavedChangesDialog";
 import "./styles.css";
 
-registerSW({ immediate: true });
+function registerServiceWorker(): void {
+  if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
+  let reloading = false;
+  let updatePromptShown = false;
+  const offerUpdate = (worker: ServiceWorker): void => {
+    if (!navigator.serviceWorker.controller || updatePromptShown) return;
+    updatePromptShown = true;
+    const shouldReload = window.confirm(
+      "Hay una nueva versión de ProfePlus. ¿Quieres recargar ahora?"
+    );
+    if (shouldReload) {
+      worker.postMessage({ type: "SKIP_WAITING" });
+    }
+  };
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL })
+      .then((registration) => {
+        if (registration.waiting) {
+          offerUpdate(registration.waiting);
+        }
+        registration.addEventListener("updatefound", () => {
+          const installingWorker = registration.installing;
+          if (!installingWorker) return;
+          installingWorker.addEventListener("statechange", () => {
+            if (installingWorker.state !== "installed" || !navigator.serviceWorker.controller) return;
+            offerUpdate(registration.waiting ?? installingWorker);
+          });
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("ProfePlus could not register its offline worker.", error);
+      });
+  });
+}
+
+registerServiceWorker();
 const rawHistory = createBrowserHistory();
 type RouterHistory = HistoryRouterProps["history"];
 type BlockableRouterHistory = RouterHistory & {
@@ -70,12 +111,14 @@ function resolveRouterBase(): string {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Provider store={store}>
-      <UnsavedChangesDialogProvider>
-        <HistoryRouter history={appHistory} basename={resolveRouterBase()}>
-          <App />
-        </HistoryRouter>
-      </UnsavedChangesDialogProvider>
-    </Provider>
+    <AppErrorBoundary>
+      <Provider store={store}>
+        <UnsavedChangesDialogProvider>
+          <HistoryRouter history={appHistory} basename={resolveRouterBase()}>
+            <App />
+          </HistoryRouter>
+        </UnsavedChangesDialogProvider>
+      </Provider>
+    </AppErrorBoundary>
   </StrictMode>
 );

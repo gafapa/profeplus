@@ -2,172 +2,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useManagement } from "./ManagementContext";
 import { useAppSelector } from "../../app/hooks";
 import { db } from "../../shared/db/database";
-import type { ChecklistItem, ChecklistTemplate, RubricCriterion, RubricLevel, RubricTemplate, TaskGradebookConfig } from "../../shared/db/types";
+import type { ChecklistItem, ChecklistTemplate, RubricCriterion, RubricTemplate, TaskGradebookConfig } from "../../shared/db/types";
 import { generateAiText } from "../../shared/ai/extensionRuntime";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import {
+  defaultChecklist,
+  defaultRubric,
+  normalizeGeneratedChecklist,
+  normalizeGeneratedRubric,
+  parseFirstJsonObject,
+  type GeneratedChecklist,
+  type GeneratedRubric
+} from "./instrumentAi";
 
-type InstrumentKind = "rubric" | "checklist";
-
-type GeneratedRubric = {
-  name?: string;
-  description?: string;
-  criteria?: Array<{
-    name?: string;
-    description?: string;
-    levels?: Array<{
-      name?: string;
-      score?: number;
-    }>;
-  }>;
-};
-
-type GeneratedChecklist = {
-  name?: string;
-  title?: string;
-  description?: string;
-  items?: Array<string | { text?: string; name?: string; item?: string }>;
-  checklist?: {
-    name?: string;
-    title?: string;
-    description?: string;
-    items?: Array<string | { text?: string; name?: string; item?: string }>;
-  };
-};
-
-function extractFirstBalancedJSONObject(text: string): string | null {
-  for (let start = 0; start < text.length; start += 1) {
-    if (text[start] !== "{") continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let end = start; end < text.length; end += 1) {
-      const ch = text[end];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === "\\") escaped = true;
-        else if (ch === "\"") inString = false;
-        continue;
-      }
-      if (ch === "\"") {
-        inString = true;
-        continue;
-      }
-      if (ch === "{") depth += 1;
-      else if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) return text.slice(start, end + 1);
-      }
-    }
-  }
-  return null;
-}
-
-function parseFirstJsonObject<T>(raw: string): T | null {
-  const cleaned = raw
-    .trim()
-    .replace(/<think>[\s\S]*?(<\/think>|$)/gi, "")
-    .replace(/```json/gi, "```")
-    .replace(/```([\s\S]*?)```/g, "$1")
-    .replace(/,\s*([}\]])/g, "$1")
-    .replace(/[\u201C\u201D]/g, "\"")
-    .replace(/[\u2018\u2019]/g, "'");
-
-  const candidates = [cleaned, extractFirstBalancedJSONObject(cleaned)].filter(Boolean) as string[];
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(candidate) as T;
-    } catch {
-      // Try the next candidate.
-    }
-  }
-  return null;
-}
-
-function defaultRubric(taskTitle: string): { name: string; description: string; criteria: RubricCriterion[] } {
-  const levels: RubricLevel[] = [
-    { id: crypto.randomUUID(), name: "Excelente", score: 4 },
-    { id: crypto.randomUUID(), name: "Notable", score: 3 },
-    { id: crypto.randomUUID(), name: "Basico", score: 2 },
-    { id: crypto.randomUUID(), name: "Inicial", score: 1 }
-  ];
-  const criteria = ["Contenido", "Proceso", "Presentacion"].map((name) => ({
-    id: crypto.randomUUID(),
-    name,
-    levels: levels.map((level) => ({ ...level, id: crypto.randomUUID() }))
-  }));
-  return {
-    name: `Rúbrica: ${taskTitle || "tarea"}`,
-    description: "",
-    criteria
-  };
-}
-
-function defaultChecklist(taskTitle: string): { name: string; description: string; items: ChecklistItem[] } {
-  const items = [
-    "Completa todos los apartados solicitados",
-    "Usa los contenidos trabajados en clase",
-    "Explica el procedimiento o razonamiento",
-    "Presenta el trabajo de forma clara y ordenada",
-    "Entrega en el plazo indicado"
-  ].map((text) => ({ id: crypto.randomUUID(), text }));
-  return {
-    name: `Lista de cotejo: ${taskTitle || "tarea"}`,
-    description: "",
-    items
-  };
-}
-
-function normalizeGeneratedRubric(
-  generated: GeneratedRubric,
-  fallbackTitle: string
-): { name: string; description: string; criteria: RubricCriterion[] } | null {
-  const criteria = (generated.criteria ?? [])
-    .map((criterion) => ({
-      id: crypto.randomUUID(),
-      name: criterion.name?.trim() || "",
-      description: criterion.description?.trim() || undefined,
-      levels: (criterion.levels ?? [])
-        .map((level) => ({
-          id: crypto.randomUUID(),
-          name: level.name?.trim() || "",
-          score: Number(level.score)
-        }))
-        .filter((level) => level.name.length > 0 && Number.isFinite(level.score))
-    }))
-    .filter((criterion) => criterion.name.length > 0 && (criterion.levels?.length ?? 0) >= 2);
-
-  if (criteria.length === 0) return null;
-  return {
-      name: generated.name?.trim() || `Rúbrica: ${fallbackTitle || "tarea"}`,
-    description: generated.description?.trim() || "",
-    criteria
-  };
-}
-
-function normalizeGeneratedChecklist(
-  generated: GeneratedChecklist,
-  fallbackTitle: string
-): { name: string; description: string; items: ChecklistItem[] } | null {
-  const source = generated.checklist ?? generated;
-  const items = (source.items ?? [])
-    .map((item): ChecklistItem | null => {
-      const text =
-        typeof item === "string"
-          ? item.trim()
-          : String(item.text ?? item.name ?? item.item ?? "").trim();
-      return text ? { id: crypto.randomUUID(), text } : null;
-    })
-    .filter((item): item is ChecklistItem => Boolean(item));
-
-  if (items.length === 0) return null;
-  return {
-    name: String(source.name ?? source.title ?? "").trim() || `Lista de cotejo: ${fallbackTitle || "tarea"}`,
-    description: String(source.description ?? "").trim(),
-    items
-  };
-}
+type InstrumentKind = "rubric" | "checklist" | "direct";
+const UNASSIGNED_UNIT_FILTER = "__unassigned__";
 
 export function ManagementTasksPage() {
   const selectedClassId = useAppSelector((s) => s.app.selectedClassId);
@@ -204,11 +56,15 @@ export function ManagementTasksPage() {
   const [checklistDescription, setChecklistDescription] = useState("");
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [instrumentDirty, setInstrumentDirty] = useState(false);
+  useUnsavedChangesGuard(taskDirty || instrumentDirty, "Hay cambios de la tarea o su instrumento sin guardar.");
+  const [evaluationDataCount, setEvaluationDataCount] = useState(0);
   const [aiInstrumentKind, setAiInstrumentKind] = useState<InstrumentKind>("rubric");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiStatus, setAiStatus] = useState("");
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [reusableTaskId, setReusableTaskId] = useState("");
+  const [reusableInstrumentId, setReusableInstrumentId] = useState("");
 
   const unitsForSubject = useMemo(
     () => units.filter((u) => u.subjectId === selectedSubjectId).sort((a, b) => a.position - b.position),
@@ -235,9 +91,17 @@ export function ManagementTasksPage() {
     [allTasks, taskIdsForSubject]
   );
 
+  const reusableTasks = useMemo(
+    () => allTasks.filter((task) => !taskIdsForSubject.has(task.id)).sort((a, b) => a.title.localeCompare(b.title)),
+    [allTasks, taskIdsForSubject]
+  );
+
   const tasksForUnitFilter = useMemo(() => {
     if (!selectedUnitFilterId) return [];
-    return tasksForSubject.filter((task) => linkByTaskId.get(task.id)?.unitId === selectedUnitFilterId);
+    return tasksForSubject.filter((task) => {
+      const unitId = linkByTaskId.get(task.id)?.unitId;
+      return selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? !unitId : unitId === selectedUnitFilterId;
+    });
   }, [linkByTaskId, selectedUnitFilterId, tasksForSubject]);
 
   useEffect(() => {
@@ -245,12 +109,9 @@ export function ManagementTasksPage() {
       setSelectedUnitFilterId("");
       return;
     }
-    if (unitsForSubject.length === 0) {
-      setSelectedUnitFilterId("");
-      return;
-    }
-    if (!unitsForSubject.some((unit) => unit.id === selectedUnitFilterId)) {
-      setSelectedUnitFilterId(unitsForSubject[0].id);
+    const isValidUnit = unitsForSubject.some((unit) => unit.id === selectedUnitFilterId);
+    if (!isValidUnit && selectedUnitFilterId !== UNASSIGNED_UNIT_FILTER) {
+      setSelectedUnitFilterId(unitsForSubject[0]?.id ?? UNASSIGNED_UNIT_FILTER);
     }
   }, [selectedSubjectId, selectedUnitFilterId, unitsForSubject]);
 
@@ -271,7 +132,9 @@ export function ManagementTasksPage() {
   );
 
   const selectedUnitName = useMemo(
-    () => unitsForSubject.find((unit) => unit.id === selectedUnitFilterId)?.name || "Unidad seleccionada",
+    () => selectedUnitFilterId === UNASSIGNED_UNIT_FILTER
+      ? "Sin unidad"
+      : unitsForSubject.find((unit) => unit.id === selectedUnitFilterId)?.name || "Unidad seleccionada",
     [selectedUnitFilterId, unitsForSubject]
   );
 
@@ -283,8 +146,8 @@ export function ManagementTasksPage() {
       return;
     }
     const [rubrics, checklists, configs] = await Promise.all([
-      db.rubricTemplates.where("classId").equals(selectedClassId).toArray(),
-      db.checklistTemplates.where("classId").equals(selectedClassId).toArray(),
+      db.rubricTemplates.toArray(),
+      db.checklistTemplates.toArray(),
       db.taskGradebookConfigs.where("[classId+subjectId]").equals([selectedClassId, selectedSubjectId]).toArray()
     ]);
     setRubricTemplates(rubrics);
@@ -327,7 +190,76 @@ export function ManagementTasksPage() {
     ? "rubric"
     : selectedChecklistTemplate
       ? "checklist"
-      : "";
+      : currentTaskConfig?.directGradeEnabled
+        ? "direct"
+        : "";
+  const hasInstrumentContext = Boolean(selectedClassId && selectedSubjectId);
+  const hasEvaluationData = evaluationDataCount > 0;
+  const canChangeEvaluationMethod = hasInstrumentContext && !hasEvaluationData;
+  const showCreateRubricButton = canChangeEvaluationMethod && activeInstrumentKind !== "rubric";
+  const showCreateChecklistButton = canChangeEvaluationMethod && activeInstrumentKind !== "checklist";
+  const showDirectGradeButton = canChangeEvaluationMethod && activeInstrumentKind !== "direct";
+  const showGenerateRubricButton = canChangeEvaluationMethod;
+  const showGenerateChecklistButton = canChangeEvaluationMethod;
+  const showDeleteInstrumentButton = Boolean(activeInstrumentKind) && !hasEvaluationData;
+  const showDeleteEvaluationDataButton = Boolean(activeInstrumentKind) && hasEvaluationData;
+  const showSaveInstrumentButton = instrumentDirty && !hasEvaluationData;
+
+  const getEvaluationDataCount = useCallback(async (config: TaskGradebookConfig | null): Promise<number> => {
+    if (!config) {
+      return 0;
+    }
+    if (config.rubricTemplateId) {
+      return db.taskRubricAssessments
+        .where("rubricTemplateId")
+        .equals(config.rubricTemplateId)
+        .filter((row) => row.taskId === config.taskId)
+        .count();
+    }
+    if (config.checklistTemplateId) {
+      return db.taskChecklistAssessments
+        .where("checklistTemplateId")
+        .equals(config.checklistTemplateId)
+        .filter((row) => row.taskId === config.taskId)
+        .count();
+    }
+    if (config.directGradeEnabled) {
+      return db.taskDirectGrades
+        .where("[taskId+subjectId+classId]")
+        .equals([config.taskId, config.subjectId, config.classId])
+        .count();
+    }
+    return 0;
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadCount = async (): Promise<void> => {
+      const count = await getEvaluationDataCount(currentTaskConfig);
+      if (active) {
+        setEvaluationDataCount(count);
+      }
+    };
+    void loadCount();
+    return () => {
+      active = false;
+    };
+  }, [
+    currentTaskConfig,
+    getEvaluationDataCount
+  ]);
+
+  const ensureInstrumentCanBeReplaced = async (): Promise<boolean> => {
+    const count = await getEvaluationDataCount(currentTaskConfig);
+    setEvaluationDataCount(count);
+    if (activeInstrumentKind && count > 0) {
+      setNotice(
+        `No se puede cambiar el metodo de evaluacion porque tiene ${count} registros. Borra primero los datos de evaluacion.`
+      );
+      return false;
+    }
+    return true;
+  };
 
   useEffect(() => {
     if (!selectedTask) {
@@ -375,7 +307,7 @@ export function ManagementTasksPage() {
     setInstrumentDirty(false);
   }, [selectedChecklistTemplate, selectedRubricTemplate]);
 
-  // Auto-guardado con debounce (funciones de contexto excluidas de deps: su referencia cambia en cada render)
+  // Debounced autosave. Context actions are intentionally omitted because their references are unstable.
   useEffect(() => {
     if (!taskDirty || !selectedTask) return;
     const title = detailTitle.trim();
@@ -387,9 +319,10 @@ export function ManagementTasksPage() {
     const unitId = detailUnitId;
     const linkId = currentLink?.id;
     const timer = setTimeout(async () => {
-      await updateTask(taskId, title, desc, sessionCount, toGradebook);
-      if (linkId) await updateTaskSubjectLink(linkId, unitId || undefined);
-      setTaskDirty(false);
+      const linkSaved = linkId ? await updateTaskSubjectLink(linkId, unitId || undefined) : true;
+      if (!linkSaved) return;
+      const taskSaved = await updateTask(taskId, title, desc, sessionCount, toGradebook);
+      if (taskSaved) setTaskDirty(false);
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -422,10 +355,16 @@ export function ManagementTasksPage() {
   const assignRubricTemplate = async (rubricTemplateId: string): Promise<void> => {
     const config = await ensureTaskGradebookConfig();
     if (!config) return;
+    const isSameInstrument =
+      config.rubricTemplateId === rubricTemplateId && !config.checklistTemplateId && !config.directGradeEnabled;
+    if (!isSameInstrument && !(await ensureInstrumentCanBeReplaced())) {
+      return;
+    }
     await db.taskGradebookConfigs.put({
       ...config,
       rubricTemplateId,
-      checklistTemplateId: undefined
+      checklistTemplateId: undefined,
+      directGradeEnabled: false
     });
     await loadInstrumentData();
   };
@@ -433,11 +372,34 @@ export function ManagementTasksPage() {
   const assignChecklistTemplate = async (checklistTemplateId: string): Promise<void> => {
     const config = await ensureTaskGradebookConfig();
     if (!config) return;
+    const isSameInstrument =
+      config.checklistTemplateId === checklistTemplateId && !config.rubricTemplateId && !config.directGradeEnabled;
+    if (!isSameInstrument && !(await ensureInstrumentCanBeReplaced())) {
+      return;
+    }
     await db.taskGradebookConfigs.put({
       ...config,
       rubricTemplateId: undefined,
-      checklistTemplateId
+      checklistTemplateId,
+      directGradeEnabled: false
     });
+    await loadInstrumentData();
+  };
+
+  const assignDirectGrade = async (): Promise<void> => {
+    if (activeInstrumentKind !== "direct" && !(await ensureInstrumentCanBeReplaced())) {
+      return;
+    }
+    const config = await ensureTaskGradebookConfig();
+    if (!config) return;
+    await db.taskGradebookConfigs.put({
+      ...config,
+      rubricTemplateId: undefined,
+      checklistTemplateId: undefined,
+      directGradeEnabled: true
+    });
+    setInstrumentDirty(false);
+    setNotice("Nota directa asignada a la tarea.");
     await loadInstrumentData();
   };
 
@@ -446,7 +408,10 @@ export function ManagementTasksPage() {
       setNotice("Selecciona curso y tarea para crear la rúbrica.");
       return;
     }
-    await saveIfDirty();
+    if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) {
+      return;
+    }
+    if (!(await saveIfDirty())) return;
     const id = crypto.randomUUID();
     await db.rubricTemplates.add({
       id,
@@ -467,7 +432,10 @@ export function ManagementTasksPage() {
       setNotice("Selecciona curso y tarea para crear la lista de cotejo.");
       return;
     }
-    await saveIfDirty();
+    if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) {
+      return;
+    }
+    if (!(await saveIfDirty())) return;
     const id = crypto.randomUUID();
     await db.checklistTemplates.add({
       id,
@@ -479,6 +447,110 @@ export function ManagementTasksPage() {
     });
     await assignChecklistTemplate(id);
     setNotice("Lista de cotejo creada y asignada a la tarea.");
+  };
+
+  const reuseSelectedTask = async (): Promise<void> => {
+    if (!selectedSubjectId || !reusableTaskId) return;
+    if (!(await saveIfDirty())) return;
+    await addTaskSubjectLink(
+      reusableTaskId,
+      selectedSubjectId,
+      selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? undefined : selectedUnitFilterId
+    );
+    setSelectedTaskId(reusableTaskId);
+    setReusableTaskId("");
+    setNotice("Tarea reutilizada en la asignatura actual.");
+  };
+
+  const copySelectedInstrument = async (): Promise<void> => {
+    if (!selectedClassId || !selectedTask || !reusableInstrumentId) return;
+    if (!(await saveIfDirty())) return;
+    if (activeInstrumentKind && !(await ensureInstrumentCanBeReplaced())) return;
+
+    const [kind, sourceId] = reusableInstrumentId.split(":", 2);
+    if (kind === "rubric") {
+      const source = rubricTemplates.find((template) => template.id === sourceId);
+      if (!source) return;
+      const id = crypto.randomUUID();
+      await db.rubricTemplates.add({
+        ...structuredClone(source),
+        id,
+        classId: selectedClassId,
+        taskId: selectedTask.id,
+        name: `${source.name} (copia)`
+      });
+      await assignRubricTemplate(id);
+    } else if (kind === "checklist") {
+      const source = checklistTemplates.find((template) => template.id === sourceId);
+      if (!source) return;
+      const id = crypto.randomUUID();
+      await db.checklistTemplates.add({
+        ...structuredClone(source),
+        id,
+        classId: selectedClassId,
+        taskId: selectedTask.id,
+        name: `${source.name} (copia)`
+      });
+      await assignChecklistTemplate(id);
+    } else {
+      return;
+    }
+    setReusableInstrumentId("");
+    setNotice("Instrumento copiado y asignado sin trasladar calificaciones anteriores.");
+  };
+
+  const deleteEvaluationData = async (): Promise<void> => {
+    if (!currentTaskConfig || !activeInstrumentKind) {
+      return;
+    }
+    const count = await getEvaluationDataCount(currentTaskConfig);
+    setEvaluationDataCount(count);
+    if (count === 0) {
+      setNotice("No hay datos de evaluacion que borrar.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Se borraran ${count} registros de evaluacion de esta tarea. Esta accion no se puede deshacer.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await db.transaction(
+      "rw",
+      db.taskRubricAssessments,
+      db.taskChecklistAssessments,
+      db.taskDirectGrades,
+      async () => {
+        if (currentTaskConfig.rubricTemplateId) {
+          const rows = await db.taskRubricAssessments
+            .where("rubricTemplateId")
+            .equals(currentTaskConfig.rubricTemplateId)
+            .filter((row) => row.taskId === currentTaskConfig.taskId)
+            .toArray();
+          if (rows.length > 0) {
+            await db.taskRubricAssessments.bulkDelete(rows.map((row) => row.id));
+          }
+        } else if (currentTaskConfig.checklistTemplateId) {
+          const rows = await db.taskChecklistAssessments
+            .where("checklistTemplateId")
+            .equals(currentTaskConfig.checklistTemplateId)
+            .filter((row) => row.taskId === currentTaskConfig.taskId)
+            .toArray();
+          if (rows.length > 0) {
+            await db.taskChecklistAssessments.bulkDelete(rows.map((row) => row.id));
+          }
+        } else if (currentTaskConfig.directGradeEnabled) {
+          await db.taskDirectGrades
+            .where("[taskId+subjectId+classId]")
+            .equals([currentTaskConfig.taskId, currentTaskConfig.subjectId, currentTaskConfig.classId])
+            .delete();
+        }
+      }
+    );
+
+    setEvaluationDataCount(0);
+    setNotice("Datos de evaluacion borrados. Ahora puedes cambiar o eliminar el metodo.");
   };
 
   const deleteAssignedRubric = async (): Promise<void> => {
@@ -519,6 +591,55 @@ export function ManagementTasksPage() {
     setRubricDescription("");
     setRubricCriteria([]);
     setNotice("Rúbrica eliminada.");
+    await loadInstrumentData();
+  };
+
+  const deleteAssignedInstrument = async (): Promise<void> => {
+    if (!currentTaskConfig || !activeInstrumentKind) {
+      return;
+    }
+    const count = await getEvaluationDataCount(currentTaskConfig);
+    setEvaluationDataCount(count);
+    if (count > 0) {
+      setNotice(
+        `No se puede eliminar el metodo de evaluacion porque tiene ${count} registros. Borra primero los datos de evaluacion.`
+      );
+      return;
+    }
+    if (currentTaskConfig.rubricTemplateId) {
+      await deleteAssignedRubric();
+      return;
+    }
+    await db.transaction("rw", db.checklistTemplates, db.taskGradebookConfigs, db.taskDailyEvaluationSettings, async () => {
+      if (currentTaskConfig.checklistTemplateId) {
+        await db.checklistTemplates.delete(currentTaskConfig.checklistTemplateId);
+        const settings = await db.taskDailyEvaluationSettings
+          .where("checklistTemplateId")
+          .equals(currentTaskConfig.checklistTemplateId)
+          .toArray();
+        const matchingSettings = settings.filter((setting) => setting.taskId === currentTaskConfig.taskId);
+        if (matchingSettings.length > 0) {
+          await db.taskDailyEvaluationSettings.bulkPut(
+            matchingSettings.map((setting) => ({
+              ...setting,
+              checklistTemplateId: undefined
+            }))
+          );
+        }
+      }
+      await db.taskGradebookConfigs.put({
+        ...currentTaskConfig,
+        rubricTemplateId: undefined,
+        checklistTemplateId: undefined,
+        directGradeEnabled: false
+      });
+    });
+    setInstrumentDirty(false);
+    setChecklistName("");
+    setChecklistDescription("");
+    setChecklistItems([]);
+    setEvaluationDataCount(0);
+    setNotice("Metodo de evaluacion eliminado.");
     await loadInstrumentData();
   };
 
@@ -578,15 +699,15 @@ export function ManagementTasksPage() {
     return true;
   };
 
-  const saveIfDirty = useCallback(async () => {
+  const saveIfDirty = useCallback(async (): Promise<boolean> => {
     if (taskDirty && selectedTask) {
       const title = detailTitle.trim();
-      if (title.length < 2) return;
-      await updateTask(selectedTask.id, title, detailDescription, detailSessionCount, detailSendToGradebook);
-      if (currentLink) await updateTaskSubjectLink(currentLink.id, detailUnitId || undefined);
+      if (currentLink && !(await updateTaskSubjectLink(currentLink.id, detailUnitId || undefined))) return false;
+      const taskSaved = await updateTask(selectedTask.id, title, detailDescription, detailSessionCount, detailSendToGradebook);
+      if (!taskSaved) return false;
       setTaskDirty(false);
     }
-    await persistInstrument();
+    return persistInstrument();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     taskDirty,
@@ -726,11 +847,11 @@ export function ManagementTasksPage() {
           usedFallback = true;
         }
         await applyGeneratedRubric(normalized);
-        setAiStatus(
-          usedFallback
-              ? "La IA no devolvió JSON válido. Se creó una rúbrica base para ajustarla."
-              : "Rúbrica generada."
-        );
+        const message = usedFallback
+          ? "La IA no devolvió JSON válido. Se creó una rúbrica base para ajustarla."
+          : "Rúbrica generada.";
+        setAiStatus(message);
+        setNotice(message);
       } else {
         const response = await generateAiText(
           [
@@ -782,11 +903,11 @@ export function ManagementTasksPage() {
           usedFallback = true;
         }
         await applyGeneratedChecklist(normalized);
-        setAiStatus(
-          usedFallback
-            ? "La IA no devolvió JSON válido. Se creó una lista base para ajustarla."
-            : "Lista de cotejo generada."
-        );
+        const message = usedFallback
+          ? "La IA no devolvió JSON válido. Se creó una lista base para ajustarla."
+          : "Lista de cotejo generada.";
+        setAiStatus(message);
+        setNotice(message);
       }
       setIsAIModalOpen(false);
     } catch (error) {
@@ -799,6 +920,7 @@ export function ManagementTasksPage() {
 
   return (
     <article className="management-card">
+      <h1 className="sr-only">Tareas</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <ContextSidebarTabs beforeChange={saveIfDirty} />
@@ -807,25 +929,42 @@ export function ManagementTasksPage() {
               <div className="context-sidebar-group">
                 <strong>Unidades</strong>
                 {unitsForSubject.length > 0 ? (
-                  <div className="courses-list section-tabs context-sidebar-list" role="tablist" aria-label="Unidades">
+                  <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Unidades">
                     {unitsForSubject.map((unit) => (
                       <button
                         key={unit.id}
                         type="button"
-                        role="tab"
-                        aria-selected={selectedUnitFilterId === unit.id}
+                        aria-pressed={selectedUnitFilterId === unit.id}
                         className={`section-tab ${selectedUnitFilterId === unit.id ? "active" : ""}`}
                         onClick={async () => {
-                          await saveIfDirty();
+                          if (!(await saveIfDirty())) return;
                           setSelectedUnitFilterId(unit.id);
                         }}
                       >
                         <span>{unit.name || "Unidad sin nombre"}</span>
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      aria-pressed={selectedUnitFilterId === UNASSIGNED_UNIT_FILTER}
+                      className={`section-tab ${selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? "active" : ""}`}
+                      onClick={async () => {
+                        if (!(await saveIfDirty())) return;
+                        setSelectedUnitFilterId(UNASSIGNED_UNIT_FILTER);
+                      }}
+                    >
+                      <span>Sin unidad</span>
+                    </button>
                   </div>
                 ) : (
-                  <p className="hint">No hay unidades creadas para esta asignatura.</p>
+                  <button
+                    type="button"
+                    aria-pressed="true"
+                    className="section-tab active"
+                    onClick={() => setSelectedUnitFilterId(UNASSIGNED_UNIT_FILTER)}
+                  >
+                    <span>Sin unidad</span>
+                  </button>
                 )}
               </div>
             </div>
@@ -835,23 +974,55 @@ export function ManagementTasksPage() {
             <IconButton
               icon="add"
               label="Crear tarea"
-              disabled={!selectedSubjectId || !selectedUnitFilterId}
+              disabled={!selectedSubjectId}
               onClick={async () => {
-                if (!selectedSubjectId || !selectedUnitFilterId) {
-                  setNotice("Selecciona una unidad para crear la tarea.");
+                if (!selectedSubjectId) {
+                  setNotice("Selecciona una asignatura para crear la tarea.");
                   return;
                 }
-                await saveIfDirty();
+                if (!(await saveIfDirty())) return;
                 const createdId = await createEmptyTask();
                 if (createdId) {
-                  await addTaskSubjectLink(createdId, selectedSubjectId, selectedUnitFilterId);
+                  await addTaskSubjectLink(
+                    createdId,
+                    selectedSubjectId,
+                    selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? undefined : selectedUnitFilterId
+                  );
                   setSelectedTaskId(createdId);
                 }
               }}
             />
           </div>
 
-          <div className="courses-list section-tabs" role="tablist" aria-label="Tareas">
+          {selectedSubjectId && reusableTasks.length > 0 ? (
+            <div className="sidebar-reuse-panel">
+              <label className="detail-field">
+                <span>Reutilizar tarea existente</span>
+                <select
+                  className="input"
+                  value={reusableTaskId}
+                  onChange={(event) => setReusableTaskId(event.target.value)}
+                >
+                  <option value="">Selecciona una tarea</option>
+                  {reusableTasks.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.title || "Sin título"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={!reusableTaskId}
+                onClick={() => void reuseSelectedTask()}
+              >
+                Añadir a esta unidad
+              </button>
+            </div>
+          ) : null}
+
+          <div className="courses-list section-tabs" role="group" aria-label="Tareas">
             {selectedSubjectId ? tasksForUnitFilter.map((task) => {
               const link = linkByTaskId.get(task.id);
               const unitName = link?.unitId
@@ -861,11 +1032,10 @@ export function ManagementTasksPage() {
                 <div key={task.id} className="courses-list-row">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={selectedTaskId === task.id}
+                    aria-pressed={selectedTaskId === task.id}
                     className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       setSelectedTaskId(task.id);
                     }}
                   >
@@ -876,7 +1046,7 @@ export function ManagementTasksPage() {
                     icon="delete"
                     label={`Eliminar ${task.title || "tarea"}`}
                     onClick={async () => {
-                      await saveIfDirty();
+                      if (!(await saveIfDirty())) return;
                       if (link) await removeTaskSubjectLink(link.id);
                       await deleteTask(task.id);
                     }}
@@ -884,16 +1054,9 @@ export function ManagementTasksPage() {
                 </div>
               );
             }) : null}
-            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length === 0 && (
+            {selectedSubjectId && tasksForUnitFilter.length === 0 && (
               <p className="empty-state">
-                Crea una unidad antes de crear tareas.
-              </p>
-            )}
-            {selectedSubjectId && tasksForUnitFilter.length === 0 && unitsForSubject.length > 0 && (
-              <p className="empty-state">
-                {tasksForSubject.length === 0
-                  ? "No hay tareas. Crea una con el botón +."
-                  : "No hay tareas en esta unidad."}
+                {tasksForSubject.length === 0 ? "No hay tareas. Crea una con el botón +." : "No hay tareas en esta sección."}
               </p>
             )}
           </div>
@@ -903,7 +1066,7 @@ export function ManagementTasksPage() {
           {selectedTask ? (
             <>
               <div className="course-detail-header">
-                <h4>Ficha de tarea</h4>
+                <h2>Ficha de tarea</h2>
               </div>
 
               <section className="detail-section">
@@ -972,45 +1135,61 @@ export function ManagementTasksPage() {
               <section className="detail-section">
                 <div className="course-detail-header">
                   <div>
-                    <h5>Instrumento de evaluación</h5>
+                    <h3>Instrumento de evaluación</h3>
                     <p className="hint">
                       {activeInstrumentKind === "rubric"
                         ? "Rúbrica asignada a esta tarea."
                         : activeInstrumentKind === "checklist"
                           ? "Lista de cotejo asignada a esta tarea."
-                          : "Sin rúbrica ni lista de cotejo asignada."}
+                          : activeInstrumentKind === "direct"
+                            ? "Nota directa asignada a esta tarea."
+                            : "Sin instrumento de evaluación asignado."}
+                      {evaluationDataCount > 0
+                        ? ` Tiene ${evaluationDataCount} registros de evaluacion.`
+                        : ""}
                     </p>
                   </div>
                   <div className="actions-cell">
-                    <IconButton
-                      icon="rubric"
+                    {showCreateRubricButton ? (
+                      <IconButton
+                        icon="rubric"
                         label="Crear rúbrica"
-                      className="instrument-rubric"
-                      disabled={!selectedClassId || !selectedSubjectId}
-                      onClick={() => void createTaskRubric()}
-                    />
-                    <IconButton
-                      icon="checklist"
-                      label="Crear lista de cotejo"
-                      className="instrument-checklist"
-                      disabled={!selectedClassId || !selectedSubjectId}
-                      onClick={() => void createTaskChecklist()}
-                    />
-                    <IconButton
-                      icon="ai"
+                        className="instrument-rubric"
+                        onClick={() => void createTaskRubric()}
+                      />
+                    ) : null}
+                    {showCreateChecklistButton ? (
+                      <IconButton
+                        icon="checklist"
+                        label="Crear lista de cotejo"
+                        className="instrument-checklist"
+                        onClick={() => void createTaskChecklist()}
+                      />
+                    ) : null}
+                    {showDirectGradeButton ? (
+                      <IconButton
+                        icon="assign"
+                        label="Usar nota directa"
+                        onClick={() => void assignDirectGrade()}
+                      />
+                    ) : null}
+                    {showGenerateRubricButton ? (
+                      <IconButton
+                        icon="ai"
                         label="Generar rúbrica con IA"
-                      className="instrument-rubric"
-                      disabled={!selectedClassId || !selectedSubjectId}
-                      onClick={() => openAiInstrumentModal("rubric")}
-                    />
-                    <IconButton
-                      icon="ai"
-                      label="Generar lista de cotejo con IA"
-                      className="instrument-checklist"
-                      disabled={!selectedClassId || !selectedSubjectId}
-                      onClick={() => openAiInstrumentModal("checklist")}
-                    />
-                    {instrumentDirty ? (
+                        className="instrument-rubric"
+                        onClick={() => openAiInstrumentModal("rubric")}
+                      />
+                    ) : null}
+                    {showGenerateChecklistButton ? (
+                      <IconButton
+                        icon="ai"
+                        label="Generar lista de cotejo con IA"
+                        className="instrument-checklist"
+                        onClick={() => openAiInstrumentModal("checklist")}
+                      />
+                    ) : null}
+                    {showSaveInstrumentButton ? (
                       <IconButton
                         icon="save"
                         label="Guardar instrumento"
@@ -1018,12 +1197,20 @@ export function ManagementTasksPage() {
                         onClick={() => void persistInstrument()}
                       />
                     ) : null}
-                    {selectedRubricTemplate ? (
+                    {showDeleteEvaluationDataButton ? (
+                      <IconButton
+                        icon="remove"
+                        label="Borrar datos de evaluacion"
+                        className="danger"
+                        onClick={() => void deleteEvaluationData()}
+                      />
+                    ) : null}
+                    {showDeleteInstrumentButton ? (
                       <IconButton
                         icon="delete"
-                        label="Eliminar rúbrica"
-                        className="instrument-rubric"
-                        onClick={() => void deleteAssignedRubric()}
+                        label="Eliminar metodo de evaluacion"
+                        className="danger"
+                        onClick={() => void deleteAssignedInstrument()}
                       />
                     ) : null}
                   </div>
@@ -1031,6 +1218,43 @@ export function ManagementTasksPage() {
 
                 {!selectedClassId || !selectedSubjectId ? (
                   <p className="hint">Selecciona curso y asignatura para crear o asignar instrumentos.</p>
+                ) : null}
+
+                {canChangeEvaluationMethod && (rubricTemplates.length > 0 || checklistTemplates.length > 0) ? (
+                  <div className="instrument-reuse-panel">
+                    <label className="detail-field">
+                      <span>Copiar instrumento existente</span>
+                      <select
+                        className="input"
+                        value={reusableInstrumentId}
+                        onChange={(event) => setReusableInstrumentId(event.target.value)}
+                      >
+                        <option value="">Selecciona un instrumento</option>
+                        {rubricTemplates
+                          .filter((template) => template.id !== selectedRubricTemplate?.id)
+                          .map((template) => (
+                            <option key={template.id} value={`rubric:${template.id}`}>
+                              Rúbrica · {template.name}
+                            </option>
+                          ))}
+                        {checklistTemplates
+                          .filter((template) => template.id !== selectedChecklistTemplate?.id)
+                          .map((template) => (
+                            <option key={template.id} value={`checklist:${template.id}`}>
+                              Lista · {template.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      disabled={!reusableInstrumentId}
+                      onClick={() => void copySelectedInstrument()}
+                    >
+                      Copiar y asignar
+                    </button>
+                  </div>
                 ) : null}
 
                 {selectedRubricTemplate ? (
@@ -1062,7 +1286,7 @@ export function ManagementTasksPage() {
                     </div>
 
                     <div className="course-detail-header">
-                      <h5>Criterios</h5>
+                      <h3>Criterios</h3>
                       <IconButton
                         icon="add"
                         label="Anadir criterio"
@@ -1223,7 +1447,7 @@ export function ManagementTasksPage() {
                       </div>
                     </div>
                     <div className="course-detail-header">
-                      <h5>Items</h5>
+                      <h3>Items</h3>
                       <IconButton
                         icon="add"
                         label="Anadir item"

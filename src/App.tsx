@@ -1,25 +1,74 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "./app/hooks";
 import { hydrateAppPreferences, setSelectedClass } from "./app/store";
-import { AttendancePage } from "./modules/attendance/AttendancePage";
-import { ConfigLayout } from "./modules/config/ConfigLayout";
-import { GradebookPage } from "./modules/gradebook/GradebookPage";
-import { ManagementCoursesPage } from "./modules/management/ManagementCoursesPage";
-import { ManagementDatabasePage } from "./modules/management/ManagementDatabasePage";
-import { ManagementLayout } from "./modules/management/ManagementLayout";
-import { ManagementPreferencesPage } from "./modules/management/ManagementPreferencesPage";
-import { ManagementSchedulePage } from "./modules/management/ManagementSchedulePage";
-import { ManagementStudentsPage } from "./modules/management/ManagementStudentsPage";
-import { ManagementSubjectsPage } from "./modules/management/ManagementSubjectsPage";
-import { ManagementTasksPage } from "./modules/management/ManagementTasksPage";
-import { ManagementUnitsPage } from "./modules/management/ManagementUnitsPage";
-import { ReportsPage } from "./modules/reports/ReportsPage";
+import { NotFoundPage } from "./modules/NotFoundPage";
 import { enableAiExtensionOverlay } from "./shared/ai/extensionOverlay";
 import { db } from "./shared/db/database";
 import { NoContextBanner } from "./shared/ui/NoContextBanner";
 import { TopTabs } from "./shared/ui/TopTabs";
+import { ConnectionStatus } from "./shared/ui/ConnectionStatus";
+import { AppLockButton, AppLockGate } from "./shared/ui/AppLockGate";
 import packageJson from "../package.json";
+
+const AttendancePage = lazy(() =>
+  import("./modules/attendance/AttendancePage").then((module) => ({ default: module.AttendancePage }))
+);
+const AttendanceHistoryPage = lazy(() =>
+  import("./modules/attendance/AttendanceHistoryPage").then((module) => ({ default: module.AttendanceHistoryPage }))
+);
+const ConfigLayout = lazy(() =>
+  import("./modules/config/ConfigLayout").then((module) => ({ default: module.ConfigLayout }))
+);
+const GradebookPage = lazy(() =>
+  import("./modules/gradebook/GradebookPage").then((module) => ({ default: module.GradebookPage }))
+);
+const ManagementCoursesPage = lazy(() =>
+  import("./modules/management/ManagementCoursesPage").then((module) => ({ default: module.ManagementCoursesPage }))
+);
+const ManagementAcademicPeriodsPage = lazy(() =>
+  import("./modules/management/ManagementAcademicPeriodsPage").then((module) => ({
+    default: module.ManagementAcademicPeriodsPage
+  }))
+);
+const ManagementDatabasePage = lazy(() =>
+  import("./modules/management/ManagementDatabasePage").then((module) => ({ default: module.ManagementDatabasePage }))
+);
+const ManagementLayout = lazy(() =>
+  import("./modules/management/ManagementLayout").then((module) => ({ default: module.ManagementLayout }))
+);
+const ManagementPreferencesPage = lazy(() =>
+  import("./modules/management/ManagementPreferencesPage").then((module) => ({
+    default: module.ManagementPreferencesPage
+  }))
+);
+const ManagementSchedulePage = lazy(() =>
+  import("./modules/management/ManagementSchedulePage").then((module) => ({ default: module.ManagementSchedulePage }))
+);
+const ManagementStudentsPage = lazy(() =>
+  import("./modules/management/ManagementStudentsPage").then((module) => ({ default: module.ManagementStudentsPage }))
+);
+const ManagementTutorPage = lazy(() =>
+  import("./modules/management/ManagementTutorPage").then((module) => ({ default: module.ManagementTutorPage }))
+);
+const ManagementSubjectsPage = lazy(() =>
+  import("./modules/management/ManagementSubjectsPage").then((module) => ({ default: module.ManagementSubjectsPage }))
+);
+const ManagementTasksPage = lazy(() =>
+  import("./modules/management/ManagementTasksPage").then((module) => ({ default: module.ManagementTasksPage }))
+);
+const ManagementUnitsPage = lazy(() =>
+  import("./modules/management/ManagementUnitsPage").then((module) => ({ default: module.ManagementUnitsPage }))
+);
+const PlannerPage = lazy(() =>
+  import("./modules/planner/PlannerPage").then((module) => ({ default: module.PlannerPage }))
+);
+const ReportsPage = lazy(() =>
+  import("./modules/reports/ReportsPage").then((module) => ({ default: module.ReportsPage }))
+);
+const TodayPage = lazy(() =>
+  import("./modules/today/TodayPage").then((module) => ({ default: module.TodayPage }))
+);
 
 function App() {
   const location = useLocation();
@@ -28,7 +77,9 @@ function App() {
   const studentSortBy = useAppSelector((state) => state.app.studentSortBy);
   const studentNameFormat = useAppSelector((state) => state.app.studentNameFormat);
   const weekStartsOn = useAppSelector((state) => state.app.weekStartsOn);
+  const notSubmittedGradePolicy = useAppSelector((state) => state.app.notSubmittedGradePolicy);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [runtimeError, setRuntimeError] = useState("");
 
   const isConfigRoute = location.pathname.startsWith("/config");
   const isManagementRoute = location.pathname.startsWith("/management");
@@ -38,14 +89,38 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
+      const message = event.reason instanceof Error ? event.reason.message : "Error inesperado de almacenamiento.";
+      setRuntimeError(`No se pudo completar una operación: ${message}`);
+    };
+    const handleWindowError = (): void => {
+      setRuntimeError("Se ha producido un error inesperado en la aplicación.");
+    };
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    window.addEventListener("error", handleWindowError);
+    return () => {
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+      window.removeEventListener("error", handleWindowError);
+    };
+  }, []);
+
+  useEffect(() => {
     let active = true;
-    db.appPreferences.get("default").then((preferences) => {
-      if (!active) return;
-      if (preferences) {
-        dispatch(hydrateAppPreferences(preferences));
-      }
-      setPreferencesLoaded(true);
-    });
+    db.appPreferences
+      .get("default")
+      .then((preferences) => {
+        if (!active) return;
+        if (preferences) {
+          dispatch(hydrateAppPreferences(preferences));
+        }
+        setPreferencesLoaded(true);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const message = error instanceof Error ? error.message : "Error desconocido";
+        setRuntimeError(`No se pudieron cargar las preferencias: ${message}`);
+        setPreferencesLoaded(true);
+      });
     return () => {
       active = false;
     };
@@ -53,13 +128,25 @@ function App() {
 
   useEffect(() => {
     if (!preferencesLoaded) return;
-    void db.appPreferences.put({
-      id: "default",
-      studentSortBy,
-      studentNameFormat,
-      weekStartsOn
-    });
-  }, [preferencesLoaded, studentNameFormat, studentSortBy, weekStartsOn]);
+    void db.appPreferences
+      .put({
+        id: "default",
+        studentSortBy,
+        studentNameFormat,
+        weekStartsOn,
+        notSubmittedGradePolicy
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Error desconocido";
+        setRuntimeError(`No se pudieron guardar las preferencias: ${message}`);
+      });
+  }, [
+    notSubmittedGradePolicy,
+    preferencesLoaded,
+    studentNameFormat,
+    studentSortBy,
+    weekStartsOn
+  ]);
 
   useEffect(() => {
     if (isConfigRoute || isManagementRoute) return;
@@ -73,17 +160,34 @@ function App() {
       if (groups.length === 0) dispatch(setSelectedClass(null));
     };
 
-    void load();
+    void load().catch((error: unknown) => {
+      if (!active) return;
+      const message = error instanceof Error ? error.message : "Error desconocido";
+      setRuntimeError(`No se pudo cargar el contexto académico: ${message}`);
+    });
     return () => {
       active = false;
     };
   }, [dispatch, isConfigRoute, isManagementRoute, selectedClassId]);
 
   return (
+    <AppLockGate>
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Saltar al contenido principal
+      </a>
       <div className="acet-beam-bg" aria-hidden="true" />
 
       <TopTabs />
+
+      {runtimeError ? (
+        <div className="runtime-error" role="alert">
+          <span>{runtimeError}</span>
+          <button type="button" className="btn secondary" onClick={() => setRuntimeError("")}>
+            Cerrar
+          </button>
+        </div>
+      ) : null}
 
       {!isConfigRoute && !isManagementRoute && (
         <NoContextBanner
@@ -92,14 +196,23 @@ function App() {
         />
       )}
 
-      <main className="main-panel">
-        <Routes>
-          <Route path="/" element={<Navigate replace to="/gradebook" />} />
+      <main className="main-panel" id="main-content">
+        <Suspense
+          fallback={
+            <div className="route-loading" role="status" aria-live="polite">
+              Cargando sección…
+            </div>
+          }
+        >
+          <Routes>
+          <Route path="/" element={<Navigate replace to="/today" />} />
 
           <Route path="/management" element={<ManagementLayout />}>
             <Route index element={<Navigate replace to="/management/courses" />} />
             <Route path="courses" element={<ManagementCoursesPage />} />
+            <Route path="periods" element={<ManagementAcademicPeriodsPage />} />
             <Route path="students" element={<ManagementStudentsPage />} />
+            <Route path="tutor" element={<ManagementTutorPage />} />
             <Route path="subjects" element={<ManagementSubjectsPage />} />
             <Route path="tasks" element={<ManagementTasksPage />} />
             <Route path="units" element={<ManagementUnitsPage />} />
@@ -112,22 +225,25 @@ function App() {
             <Route path="database" element={<ManagementDatabasePage />} />
           </Route>
 
+          <Route path="/today" element={<TodayPage />} />
           <Route path="/gradebook" element={<GradebookPage />} />
           <Route path="/journal" element={<Navigate replace to="/journal/attendance" />} />
-          <Route path="/journal/attendance" element={<AttendancePage mode="attendance" />} />
+          <Route path="/journal/attendance" element={<AttendanceHistoryPage />} />
           <Route path="/journal/work" element={<AttendancePage mode="work" />} />
-          <Route path="/attendance" element={<Navigate replace to="/journal/attendance" />} />
-          <Route path="/tasks" element={<Navigate replace to="/management/tasks" />} />
-          <Route path="/planner" element={<Navigate replace to="/management/tasks" />} />
-          <Route path="/rubrics" element={<Navigate replace to="/management/tasks" />} />
+          <Route path="/planner" element={<PlannerPage />} />
           <Route path="/reports" element={<ReportsPage />} />
-        </Routes>
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </Suspense>
       </main>
       <footer className="status-bar" aria-label="Estado de la aplicación">
+        <ConnectionStatus />
+        <AppLockButton />
         <span>ProfePlus</span>
         <span>v{packageJson.version}</span>
       </footer>
     </div>
+    </AppLockGate>
   );
 }
 

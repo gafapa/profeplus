@@ -6,8 +6,7 @@ interface NoContextBannerProps {
 }
 
 /**
- * Banner que aparece cuando no hay curso o asignatura seleccionada,
- * guiando al docente al módulo de gestión para configurarlos.
+ * Guides the teacher to management when no course or subject is selected.
  */
 export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
   if (!noClass && !noSubject) return null;
@@ -34,10 +33,10 @@ export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
         )}
       </div>
       <NavLink
-        to={noClass ? "/management/courses" : "/management/subjects"}
+        to={noClass ? "/management/courses?onboarding=1" : "/management/subjects"}
         className="no-context-cta"
       >
-        {noClass ? "Crear curso" : "Gestionar asignaturas"}
+        {noClass ? "Empezar preparación" : "Gestionar asignaturas"}
       </NavLink>
     </div>
   );

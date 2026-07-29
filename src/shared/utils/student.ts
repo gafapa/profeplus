@@ -25,7 +25,7 @@ export function getStudentFullName(student: Student): string {
 }
 
 /**
- * Comparador base por apellido → nombre.
+ * Base comparator by last name, then first name.
  */
 export function compareStudents(a: Student, b: Student): number {
   const lastA = (a.lastName || a.fullName).trim();
@@ -36,7 +36,7 @@ export function compareStudents(a: Student, b: Student): number {
 }
 
 /**
- * Devuelve un comparador según la preferencia de ordenación.
+ * Returns a comparator for the selected sorting preference.
  */
 export function compareStudentsByField(sortBy: StudentSortBy): (a: Student, b: Student) => number {
   if (sortBy === "lastName") return compareStudents;
@@ -50,7 +50,7 @@ export function compareStudentsByField(sortBy: StudentSortBy): (a: Student, b: S
 }
 
 /**
- * Formatea el nombre del alumno según la preferencia de visualización.
+ * Formats a student name using the selected display preference.
  *   "firstLast" → "Ana García"
  *   "lastFirst"  → "García, Ana"
  */
@@ -62,4 +62,3 @@ export function formatStudentName(student: Student, format: StudentNameFormat): 
   if (!first) return last;
   return format === "lastFirst" ? `${last}, ${first}` : `${first} ${last}`;
 }
-
