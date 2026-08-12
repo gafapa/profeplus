@@ -12,7 +12,11 @@ export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
   if (!noClass && !noSubject) return null;
 
   return (
-    <div className="no-context-banner" role="status" aria-live="polite">
+    <div
+      className={`no-context-banner${noClass ? " setup" : ""}`}
+      role="status"
+      aria-live="polite"
+    >
       <span className="no-context-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8}>
           <circle cx="12" cy="12" r="9" />
@@ -22,8 +26,8 @@ export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
       <div className="no-context-text">
         {noClass ? (
           <>
-            <strong>No hay ningún curso creado.</strong>
-            <span>Crea un curso en Gestión para poder usar el panel docente.</span>
+            <strong>Necesitas crear un grupo para usar esta pantalla.</strong>
+            <span>Cuando lo guardes, podrás añadir el alumnado, el horario y las asignaturas.</span>
           </>
         ) : (
           <>
@@ -36,7 +40,7 @@ export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
         to={noClass ? "/management/courses?onboarding=1" : "/management/subjects"}
         className="no-context-cta"
       >
-        {noClass ? "Empezar preparación" : "Gestionar asignaturas"}
+        {noClass ? "Crear el primer grupo" : "Gestionar asignaturas"}
       </NavLink>
     </div>
   );

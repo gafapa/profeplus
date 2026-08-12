@@ -16,6 +16,7 @@ import type {
   TaskStudentComment
 } from "../../shared/db/types";
 import {
+  matchesAttendanceScope,
   normalizeAttendanceDetails,
   normalizeAttendanceNote,
   resolveAttendanceNoteForSave,
@@ -339,6 +340,7 @@ export function TodayPage() {
   }, [dailyClassRecords, selectedDate, selectedSession, selectedSlot]);
 
   useEffect(() => {
+    let active = true;
     const loadAttendance = async (): Promise<void> => {
       if (!selectedSlot) {
         setAttendanceEntries([]);
@@ -348,6 +350,7 @@ export function TodayPage() {
         .where("[classId+date+scheduleSlotId]")
         .equals([selectedSlot.classId, selectedDate, selectedSlot.slotId])
         .toArray();
+      if (!active) return;
       setAttendanceEntries(rows);
       setStatusDraft(new Map());
       setNoteDraft(new Map());
@@ -355,7 +358,14 @@ export function TodayPage() {
       setNotice("");
     };
 
-    void loadAttendance();
+    void loadAttendance().catch((error: unknown) => {
+      if (!active) return;
+      const message = error instanceof Error ? error.message : "Error desconocido";
+      setNotice(`No se pudo cargar la asistencia: ${message}`);
+    });
+    return () => {
+      active = false;
+    };
   }, [selectedDate, selectedSlot]);
 
   useEffect(() => {
@@ -438,7 +448,13 @@ export function TodayPage() {
     try {
       const now = new Date().toISOString();
       const attendanceRows: AttendanceEntry[] = students.map((student) => {
-        const existing = attendanceByStudent.get(student.id);
+        const candidate = attendanceByStudent.get(student.id);
+        const existing = matchesAttendanceScope(candidate, {
+          classId: selectedSlot.classId,
+          subjectId: selectedSlot.subjectId,
+          date: selectedDate,
+          scheduleSlotId: selectedSlot.slotId
+        }) ? candidate : undefined;
         const status = statusDraft.get(student.id) ?? existing?.status ?? "present";
         const detailsDraft = attendanceDetailsDraft.get(student.id) ?? {
           absenceJustified: Boolean(existing?.absenceJustified),

@@ -67,11 +67,46 @@ function hasOptionalString(record: Record<string, unknown>, key: string): boolea
 }
 
 function isIsoDate(value: unknown): boolean {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
 }
 
 function isIsoDateTime(value: unknown): boolean {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function hasOptionalIsoDate(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === undefined || isIsoDate(record[key]);
+}
+
+function hasOptionalIsoDateTime(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === undefined || isIsoDateTime(record[key]);
+}
+
+function hasOptionalBoolean(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === undefined || typeof record[key] === "boolean";
+}
+
+function hasAllowedValue(
+  record: Record<string, unknown>,
+  key: string,
+  allowedValues: readonly string[]
+): boolean {
+  return typeof record[key] === "string" && allowedValues.includes(record[key]);
+}
+
+function hasOptionalAllowedValue(
+  record: Record<string, unknown>,
+  key: string,
+  allowedValues: readonly string[]
+): boolean {
+  return record[key] === undefined || hasAllowedValue(record, key, allowedValues);
 }
 
 function requireUniqueIds(rows: Array<{ id: string }>, tableName: HandoffTableName): void {
@@ -90,7 +125,8 @@ function validateClassGroup(value: unknown): value is ClassGroup {
     hasString(value, "id") &&
     hasString(value, "name") &&
     hasString(value, "level") &&
-    hasString(value, "schoolYear")
+    hasString(value, "schoolYear") &&
+    hasOptionalString(value, "comments")
   );
 }
 
@@ -102,7 +138,12 @@ function validateStudent(value: unknown): value is Student {
     hasString(value, "firstName") &&
     hasString(value, "lastName") &&
     hasString(value, "fullName") &&
-    hasOptionalString(value, "personId")
+    hasOptionalString(value, "personId") &&
+    hasOptionalString(value, "comments") &&
+    hasOptionalString(value, "photoDataUrl") &&
+    hasOptionalString(value, "email") &&
+    hasOptionalBoolean(value, "hasAcs") &&
+    hasOptionalBoolean(value, "hasReinforcement")
   );
 }
 
@@ -113,12 +154,17 @@ function validateFollowUp(value: unknown): value is StudentFollowUp {
     hasString(value, "studentId") &&
     hasString(value, "classId") &&
     isIsoDate(value.date) &&
-    hasString(value, "kind") &&
+    hasAllowedValue(value, "kind", ["incident", "family", "tutorial", "agreement", "adaptation", "wellbeing"]) &&
     hasString(value, "title") &&
     hasString(value, "notes") &&
     typeof value.resolved === "boolean" &&
-    hasOptionalString(value, "dueDate") &&
-    hasOptionalString(value, "responsiblePerson")
+    hasOptionalString(value, "nextStep") &&
+    hasOptionalIsoDate(value, "dueDate") &&
+    hasOptionalString(value, "responsiblePerson") &&
+    hasOptionalAllowedValue(value, "priority", ["low", "normal", "high"]) &&
+    hasOptionalAllowedValue(value, "status", ["open", "inProgress", "done"]) &&
+    hasOptionalIsoDateTime(value, "createdAt") &&
+    hasOptionalIsoDateTime(value, "updatedAt")
   );
 }
 
@@ -129,10 +175,14 @@ function validateFamilyContact(value: unknown): value is FamilyContact {
     hasString(value, "studentId") &&
     hasString(value, "classId") &&
     isIsoDate(value.date) &&
-    hasString(value, "channel") &&
+    hasAllowedValue(value, "channel", ["phone", "email", "meeting", "message", "other"]) &&
     hasString(value, "contactName") &&
     hasString(value, "relationship") &&
     hasString(value, "summary") &&
+    hasOptionalString(value, "agreements") &&
+    hasOptionalString(value, "nextStep") &&
+    hasOptionalIsoDate(value, "dueDate") &&
+    hasOptionalString(value, "responsiblePerson") &&
     isIsoDateTime(value.createdAt) &&
     isIsoDateTime(value.updatedAt)
   );
@@ -187,12 +237,26 @@ function validateReferences(tables: HandoffTables): void {
     if (!studentIds.has(row.studentId) || !classIds.has(row.classId)) {
       throw new Error("El paquete contiene seguimiento sin alumno o curso de referencia.");
     }
+    const student = tables.students.find((candidate) => candidate.id === row.studentId);
+    if (student?.classId !== row.classId) {
+      throw new Error("El paquete contiene seguimiento asignado a un curso distinto del alumno.");
+    }
   }
+  const membershipKeys = new Set<string>();
   for (const member of tables.supportGroupMembers) {
     if (!supportGroupIds.has(member.supportGroupId) || !studentIds.has(member.studentId)) {
       throw new Error("El paquete contiene una pertenencia de apoyo sin referencias válidas.");
     }
+    const key = `${member.supportGroupId}\0${member.studentId}`;
+    if (membershipKeys.has(key)) {
+      throw new Error("El paquete contiene pertenencias de apoyo duplicadas.");
+    }
+    membershipKeys.add(key);
   }
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && new Set(left).size === left.length && left.every((item) => right.includes(item));
 }
 
 export function createStudentHandoffPayload(
@@ -249,6 +313,13 @@ export function parseStudentHandoffPayload(value: unknown): StudentHandoffPayloa
   }
 
   const rawTables = value.tables;
+  const tableNames = Object.keys(rawTables);
+  if (
+    tableNames.length !== HANDOFF_TABLE_NAMES.length ||
+    tableNames.some((tableName) => !HANDOFF_TABLE_NAMES.includes(tableName as HandoffTableName))
+  ) {
+    throw new Error("El paquete de relevo no contiene exactamente las tablas esperadas.");
+  }
   const validators: Record<HandoffTableName, (row: unknown) => boolean> = {
     classGroups: validateClassGroup,
     students: validateStudent,
@@ -269,6 +340,12 @@ export function parseStudentHandoffPayload(value: unknown): StudentHandoffPayloa
   }
 
   validateReferences(tables);
+  if (
+    !sameStringSet(value.scope.studentIds, tables.students.map((student) => student.id)) ||
+    !sameStringSet(value.scope.supportGroupIds, tables.supportGroups.map((group) => group.id))
+  ) {
+    throw new Error("El alcance declarado del paquete no coincide con sus datos.");
+  }
   return value as StudentHandoffPayload;
 }
 

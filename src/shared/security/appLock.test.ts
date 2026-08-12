@@ -30,4 +30,21 @@ describe("app lock", () => {
     storage.setItem(APP_LOCK_STORAGE_KEY, "{}");
     expect(readAppLockConfig(storage)).toBeNull();
   });
+
+  it("rejects stored work factors and timeouts outside the supported policy", async () => {
+    const config = await createAppLockConfig("teacher passphrase", 15);
+    const storage = new MemoryStorage();
+
+    storage.setItem(APP_LOCK_STORAGE_KEY, JSON.stringify({ ...config, iterations: 1 }));
+    expect(readAppLockConfig(storage)).toBeNull();
+    await expect(
+      verifyAppLockPassphrase({ ...config, iterations: Number.MAX_SAFE_INTEGER }, "teacher passphrase")
+    ).resolves.toBe(false);
+
+    storage.setItem(APP_LOCK_STORAGE_KEY, JSON.stringify({ ...config, autoLockMinutes: 121 }));
+    expect(readAppLockConfig(storage)).toBeNull();
+
+    storage.setItem(APP_LOCK_STORAGE_KEY, JSON.stringify({ ...config, salt: "invalid" }));
+    expect(readAppLockConfig(storage)).toBeNull();
+  });
 });

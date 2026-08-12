@@ -1,3 +1,22 @@
+import type { AttendanceEntry } from "../db/types";
+
+export type AttendanceScope = Pick<
+  AttendanceEntry,
+  "classId" | "subjectId" | "date" | "scheduleSlotId"
+>;
+
+export function matchesAttendanceScope(
+  entry: AttendanceEntry | undefined,
+  scope: AttendanceScope
+): entry is AttendanceEntry {
+  return (
+    entry?.classId === scope.classId &&
+    entry.subjectId === scope.subjectId &&
+    entry.date === scope.date &&
+    entry.scheduleSlotId === scope.scheduleSlotId
+  );
+}
+
 export function normalizeAttendanceNote(value: string | undefined): string | undefined {
   const note = value?.trim() ?? "";
   return note || undefined;

@@ -133,4 +133,32 @@ describe("student handoff packages", () => {
 
     expect(() => parseStudentHandoffPayload(payload)).toThrow(/curso de referencia/);
   });
+
+  it("rejects impossible dates and unsupported enum values", () => {
+    const payload = createStudentHandoffPayload(sourceTables(), ["student-a"], exportedAt);
+    payload.tables.studentFollowUps[0] = {
+      ...payload.tables.studentFollowUps[0],
+      date: "2026-99-99",
+      kind: "invalid" as "tutorial"
+    };
+
+    expect(() => parseStudentHandoffPayload(payload)).toThrow(/datos no válidos/);
+  });
+
+  it("rejects records scoped to a different course than their student", () => {
+    const payload = createStudentHandoffPayload(sourceTables(), ["student-a", "student-b"], exportedAt);
+    payload.tables.studentFollowUps[0] = {
+      ...payload.tables.studentFollowUps[0],
+      classId: "class-b"
+    };
+
+    expect(() => parseStudentHandoffPayload(payload)).toThrow(/curso distinto/);
+  });
+
+  it("rejects scope metadata that does not match the packaged rows", () => {
+    const payload = createStudentHandoffPayload(sourceTables(), ["student-a"], exportedAt);
+    payload.scope.studentIds = ["student-a", "student-b"];
+
+    expect(() => parseStudentHandoffPayload(payload)).toThrow(/alcance declarado/);
+  });
 });

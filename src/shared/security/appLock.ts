@@ -3,6 +3,10 @@ export const APP_LOCK_CHANGED_EVENT = "profeplus:app-lock-changed";
 export const APP_LOCK_NOW_EVENT = "profeplus:lock-now";
 
 const APP_LOCK_ITERATIONS = 210_000;
+const APP_LOCK_SALT_BYTES = 16;
+const APP_LOCK_VERIFIER_BYTES = 32;
+const MIN_AUTO_LOCK_MINUTES = 1;
+const MAX_AUTO_LOCK_MINUTES = 120;
 
 export type AppLockConfig = {
   version: 1;
@@ -11,6 +15,28 @@ export type AppLockConfig = {
   iterations: number;
   autoLockMinutes: number;
 };
+
+function hasEncodedByteLength(value: string, expectedLength: number): boolean {
+  try {
+    return base64ToBytes(value).length === expectedLength;
+  } catch {
+    return false;
+  }
+}
+
+function isValidAppLockConfig(value: Partial<AppLockConfig>): value is AppLockConfig {
+  return (
+    value.version === 1 &&
+    typeof value.salt === "string" &&
+    hasEncodedByteLength(value.salt, APP_LOCK_SALT_BYTES) &&
+    typeof value.verifier === "string" &&
+    hasEncodedByteLength(value.verifier, APP_LOCK_VERIFIER_BYTES) &&
+    value.iterations === APP_LOCK_ITERATIONS &&
+    Number.isInteger(value.autoLockMinutes) &&
+    (value.autoLockMinutes ?? 0) >= MIN_AUTO_LOCK_MINUTES &&
+    (value.autoLockMinutes ?? 0) <= MAX_AUTO_LOCK_MINUTES
+  );
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -50,7 +76,11 @@ export async function createAppLockConfig(
   autoLockMinutes: number
 ): Promise<AppLockConfig> {
   if (passphrase.length < 8) throw new Error("La clave debe tener al menos 8 caracteres.");
-  if (!Number.isInteger(autoLockMinutes) || autoLockMinutes < 1 || autoLockMinutes > 120) {
+  if (
+    !Number.isInteger(autoLockMinutes) ||
+    autoLockMinutes < MIN_AUTO_LOCK_MINUTES ||
+    autoLockMinutes > MAX_AUTO_LOCK_MINUTES
+  ) {
     throw new Error("El bloqueo automático debe estar entre 1 y 120 minutos.");
   }
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -67,6 +97,7 @@ export async function verifyAppLockPassphrase(
   config: AppLockConfig,
   passphrase: string
 ): Promise<boolean> {
+  if (!isValidAppLockConfig(config)) return false;
   const candidate = await deriveVerifier(passphrase, base64ToBytes(config.salt), config.iterations);
   if (candidate.length !== config.verifier.length) return false;
   let difference = 0;
@@ -81,16 +112,7 @@ export function readAppLockConfig(storage: Storage = window.localStorage): AppLo
   if (!rawValue) return null;
   try {
     const value = JSON.parse(rawValue) as Partial<AppLockConfig>;
-    if (
-      value.version !== 1 ||
-      typeof value.salt !== "string" ||
-      typeof value.verifier !== "string" ||
-      typeof value.iterations !== "number" ||
-      typeof value.autoLockMinutes !== "number"
-    ) {
-      return null;
-    }
-    return value as AppLockConfig;
+    return isValidAppLockConfig(value) ? value : null;
   } catch {
     return null;
   }

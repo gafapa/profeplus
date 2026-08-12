@@ -7,14 +7,28 @@ import {
   type AppLockConfig
 } from "../security/appLock";
 
+const MAX_FAILED_UNLOCK_ATTEMPTS = 5;
+const UNLOCK_COOLDOWN_MS = 30_000;
+const UNLOCK_COOLDOWN_STORAGE_KEY = "profeplus_app_lock_retry_after";
+
+function readRetryAfter(): number {
+  const stored = Number(window.sessionStorage.getItem(UNLOCK_COOLDOWN_STORAGE_KEY));
+  const now = Date.now();
+  return Number.isFinite(stored) && stored > now && stored <= now + UNLOCK_COOLDOWN_MS
+    ? stored
+    : 0;
+}
+
 export function AppLockGate({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppLockConfig | null>(() => readAppLockConfig());
   const [locked, setLocked] = useState(() => Boolean(readAppLockConfig()));
   const [passphrase, setPassphrase] = useState("");
   const [notice, setNotice] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+  const [retryAfter, setRetryAfter] = useState(readRetryAfter);
   const activityTimer = useRef<number | null>(null);
   const lastActivityAt = useRef(Date.now());
+  const failedAttempts = useRef(0);
 
   useEffect(() => {
     const handleConfigChange = () => {
@@ -62,14 +76,40 @@ export function AppLockGate({ children }: { children: ReactNode }) {
     };
   }, [config, locked]);
 
+  useEffect(() => {
+    if (retryAfter <= Date.now()) return;
+    const timeoutId = window.setTimeout(() => {
+      window.sessionStorage.removeItem(UNLOCK_COOLDOWN_STORAGE_KEY);
+      setRetryAfter(0);
+      setNotice("");
+    }, retryAfter - Date.now());
+    return () => window.clearTimeout(timeoutId);
+  }, [retryAfter]);
+
   const unlock = async (): Promise<void> => {
     if (!config) return;
+    if (retryAfter > Date.now()) {
+      setNotice("Demasiados intentos fallidos. Espera 30 segundos antes de volver a intentarlo.");
+      return;
+    }
     setIsVerifying(true);
     try {
       if (!(await verifyAppLockPassphrase(config, passphrase))) {
-        setNotice("La clave no es correcta.");
+        failedAttempts.current += 1;
+        if (failedAttempts.current >= MAX_FAILED_UNLOCK_ATTEMPTS) {
+          const nextRetryAfter = Date.now() + UNLOCK_COOLDOWN_MS;
+          failedAttempts.current = 0;
+          window.sessionStorage.setItem(UNLOCK_COOLDOWN_STORAGE_KEY, String(nextRetryAfter));
+          setRetryAfter(nextRetryAfter);
+          setNotice("Demasiados intentos fallidos. Espera 30 segundos antes de volver a intentarlo.");
+        } else {
+          setNotice("La clave no es correcta.");
+        }
         return;
       }
+      failedAttempts.current = 0;
+      window.sessionStorage.removeItem(UNLOCK_COOLDOWN_STORAGE_KEY);
+      setRetryAfter(0);
       setPassphrase("");
       setNotice("");
       setLocked(false);
@@ -104,8 +144,12 @@ export function AppLockGate({ children }: { children: ReactNode }) {
           />
         </label>
         {notice ? <p className="form-error" role="alert">{notice}</p> : null}
-        <button className="btn primary" type="submit" disabled={isVerifying || !passphrase}>
-          {isVerifying ? "Comprobando…" : "Desbloquear"}
+        <button
+          className="btn primary"
+          type="submit"
+          disabled={isVerifying || !passphrase || retryAfter > Date.now()}
+        >
+          {isVerifying ? "Comprobando…" : retryAfter > Date.now() ? "Espera para reintentar" : "Desbloquear"}
         </button>
       </form>
     </main>

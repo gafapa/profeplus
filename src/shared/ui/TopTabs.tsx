@@ -4,29 +4,15 @@ import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { setSelectedClass, setSelectedSubject } from "../../app/store";
 import { db } from "../db/database";
 import type { ClassGroup, Subject } from "../db/types";
+import {
+  findActiveNavigationArea,
+  matchesNavigationPath,
+  navigationAreas,
+  settingsNavigationItem,
+  type NavigationIcon
+} from "../navigation/mainNavigation";
 
-const allItems = [
-  { to: "/today",                   label: "Hoy",          description: "Impartir y registrar clases", icon: "today",      tone: "today" },
-  { to: "/planner",                 label: "Planificador", description: "Preparar y programar sesiones", icon: "planner",    tone: "planner" },
-  { to: "/journal/work",            label: "Evaluar",      description: "Calificar tareas y evidencias", icon: "tasks",      tone: "work" },
-  { to: "/journal/attendance",      label: "Asistencia",   description: "Revisar el historial de asistencia", icon: "journal",    tone: "attendance" },
-  { to: "/gradebook",               label: "Cuaderno",     description: "Organizar y calcular notas", icon: "gradebook",  tone: "gradebook" },
-  { to: "/management/courses",      label: "Cursos",       icon: "courses" },
-  { to: "/management/periods",      label: "Periodos",     icon: "gradebook" },
-  { to: "/management/students",     label: "Alumnos",      icon: "students" },
-  { to: "/management/tutor",        label: "Tutoría",      description: "Seguimientos, familias y apoyos", icon: "tutor" },
-  { to: "/management/subjects",     label: "Asignaturas",  icon: "subjects" },
-  { to: "/management/units",        label: "Unidades",     icon: "units" },
-  { to: "/management/tasks",        label: "Tareas",       icon: "tasks" },
-  { to: "/management/schedule",     label: "Horario",      icon: "schedule" },
-  { to: "/reports",                 label: "Informes",     icon: "reports",    tone: "reports" },
-];
-
-const rightItems = [
-  { to: "/config", label: "Configuración", icon: "config" }
-];
-
-function TopTabIcon({ icon }: { icon: string }) {
+function TopTabIcon({ icon }: { icon: NavigationIcon }) {
   switch (icon) {
     case "today":
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v3M18 4v3M4 8h16v12H4zM8 12h4M8 16h8" /><path d="m16 12 1.2 1.2 2.8-3" /></svg>;
@@ -70,6 +56,8 @@ export function TopTabs() {
   const isManagementRoute = location.pathname.startsWith("/management");
   const isJournalRoute = location.pathname.startsWith("/journal");
   const isConfigRoute = location.pathname.startsWith("/config");
+  const activeArea = findActiveNavigationArea(location.pathname);
+  const showSecondaryNavigation = Boolean(activeArea && activeArea.items.length > 1);
   // These pages manage context locally.
   const usesLocalContextSelector =
     isConfigRoute ||
@@ -132,83 +120,122 @@ export function TopTabs() {
   }, [dispatch, hasSelectedSubject, selectedSubjectId, showSelectors, subjects]);
 
   return (
-    <nav className="top-tabs" aria-label="Navegación principal">
-      <div className="main-module-tabs section-tabs" aria-label="Módulos">
-        {allItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            aria-label={item.description ? `${item.label}: ${item.description}` : item.label}
-            title={item.description}
-            className={({ isActive }) =>
-              `section-tab compact ${item.tone ? `featured ${item.tone}` : ""} ${isActive ? "active" : ""}`
-            }
-          >
-            <TopTabIcon icon={item.icon} />
-            <span>{item.label}</span>
-          </NavLink>
-        ))}
-      </div>
+    <div className="app-navigation">
+      <nav
+        className={`top-tabs${showSecondaryNavigation ? " has-secondary" : ""}`}
+        aria-label="Áreas principales"
+      >
+        <div className="main-module-tabs section-tabs">
+          {navigationAreas.map((area) => {
+            const isActive = activeArea?.id === area.id;
+            return (
+              <NavLink
+                key={area.id}
+                to={area.to}
+                aria-label={`${area.label}: ${area.description}`}
+                aria-current={isActive ? "location" : undefined}
+                title={area.description}
+                className={`section-tab compact featured ${area.tone} ${
+                  isActive ? "active" : ""
+                }`}
+              >
+                <TopTabIcon icon={area.icon} />
+                <span className="primary-navigation-label" data-short-label={area.shortLabel}>
+                  {area.label}
+                </span>
+              </NavLink>
+            );
+          })}
+        </div>
 
-      {/* Context selectors */}
-      {showSelectors && (
-        <div className="top-tabs-selectors" aria-label="Selección principal">
-          {classGroups.length > 0 ? (
-            <div className="top-context-tabs section-tabs" role="group" aria-label="Curso">
-              {classGroups.map((group) => (
-                <button
-                  key={group.id}
-                  type="button"
-                  aria-pressed={selectedClassId === group.id}
-                  className={`section-tab compact ${selectedClassId === group.id ? "active" : ""}`}
-                  onClick={() => dispatch(setSelectedClass(group.id))}
-                  title={group.name}
-                >
-                  <span>{group.name || "Curso sin nombre"}</span>
-                  <small>{group.schoolYear}</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <span className="top-context-empty">Sin cursos</span>
-          )}
-
-          {selectedClassId ? (
-            subjects.length > 0 ? (
-              <div className="top-context-tabs section-tabs" role="group" aria-label="Asignatura">
-                {subjects.map((subject) => (
+        {showSelectors && (
+          <div className="top-tabs-selectors" aria-label="Selección principal">
+            {classGroups.length > 0 ? (
+              <div className="top-context-tabs section-tabs" role="group" aria-label="Curso">
+                {classGroups.map((group) => (
                   <button
-                    key={subject.id}
+                    key={group.id}
                     type="button"
-                    aria-pressed={hasSelectedSubject && selectedSubjectId === subject.id}
+                    aria-pressed={selectedClassId === group.id}
                     className={`section-tab compact ${
-                      hasSelectedSubject && selectedSubjectId === subject.id ? "active" : ""
+                      selectedClassId === group.id ? "active" : ""
                     }`}
-                    onClick={() => dispatch(setSelectedSubject(subject.id))}
-                    title={subject.name}
+                    onClick={() => dispatch(setSelectedClass(group.id))}
+                    title={group.name}
                   >
-                    <span>{subject.name || "Asignatura sin nombre"}</span>
+                    <span>{group.name || "Curso sin nombre"}</span>
+                    <small>{group.schoolYear}</small>
                   </button>
                 ))}
               </div>
             ) : (
-              <span className="top-context-empty">Sin asignaturas</span>
-            )
-          ) : null}
-        </div>
-      )}
-      <div className="right-module-tabs section-tabs" aria-label="Configuración">
-        {rightItems.map((item) => (
+              <span className="top-context-empty">Sin cursos</span>
+            )}
+
+            {selectedClassId ? (
+              subjects.length > 0 ? (
+                <div className="top-context-tabs section-tabs" role="group" aria-label="Asignatura">
+                  {subjects.map((subject) => (
+                    <button
+                      key={subject.id}
+                      type="button"
+                      aria-pressed={hasSelectedSubject && selectedSubjectId === subject.id}
+                      className={`section-tab compact ${
+                        hasSelectedSubject && selectedSubjectId === subject.id ? "active" : ""
+                      }`}
+                      onClick={() => dispatch(setSelectedSubject(subject.id))}
+                      title={subject.name}
+                    >
+                      <span>{subject.name || "Asignatura sin nombre"}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <span className="top-context-empty">Sin asignaturas</span>
+              )
+            ) : null}
+          </div>
+        )}
+
+        <div className="right-module-tabs section-tabs">
           <NavLink
-            key={item.to}
-            to={item.to}
+            to={settingsNavigationItem.to}
+            aria-label={settingsNavigationItem.label}
+            title={settingsNavigationItem.label}
             className={({ isActive }) => `section-tab compact ${isActive ? "active" : ""}`}
           >
-            <TopTabIcon icon={item.icon} />
-            <span>{item.label}</span>
+            <TopTabIcon icon={settingsNavigationItem.icon} />
+            <span>{settingsNavigationItem.label}</span>
           </NavLink>
-        ))}
-      </div>
-    </nav>
+        </div>
+      </nav>
+
+      {activeArea && showSecondaryNavigation ? (
+        <nav
+          className="workflow-subnav"
+          aria-label={`Secciones de ${activeArea.label.toLocaleLowerCase("es")}`}
+        >
+          <span className="workflow-subnav-label" aria-hidden="true">
+            {activeArea.label}
+          </span>
+          <div className="workflow-subnav-list section-tabs">
+            {activeArea.items.map((item) => {
+              const isActive = matchesNavigationPath(location.pathname, item.to);
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  aria-current={isActive ? "page" : undefined}
+                  className={`section-tab compact ${isActive ? "active" : ""}`}
+                >
+                  <TopTabIcon icon={item.icon} />
+                  <span>{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </div>
+        </nav>
+      ) : null}
+    </div>
   );
 }

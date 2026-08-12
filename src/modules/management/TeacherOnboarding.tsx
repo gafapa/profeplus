@@ -33,12 +33,16 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
   const previousCompletedCountRef = useRef(0);
 
   const completedCount = items.filter((item) => item.complete).length;
+  const remainingCount = items.length - completedCount;
   const isComplete = completedCount === items.length;
   const completionPercent = Math.round((completedCount / items.length) * 100);
   const currentStep = useMemo(
     () => findCurrentOnboardingStep(items, persistedState?.currentStepId),
     [items, persistedState?.currentStepId]
   );
+  const currentStepNumber = currentStep
+    ? items.findIndex((item) => item.id === currentStep.id) + 1
+    : 1;
 
   const persist = (state: OnboardingState): void => {
     setPersistedState(state);
@@ -197,93 +201,151 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
         className={`onboarding-coach${compact ? " compact" : ""}`}
         aria-labelledby="onboarding-coach-title"
       >
-        <div className="onboarding-coach-heading">
-          <div>
-            <span className="onboarding-eyebrow">Puesta a punto</span>
-            <h2 id="onboarding-coach-title">
-              {compact ? "Termina de preparar tu espacio" : "Tu primera clase, paso a paso"}
-            </h2>
-          </div>
-          <span className="onboarding-count" aria-hidden="true">
-            {completedCount}/{items.length}
-          </span>
-        </div>
-
-        <div className="onboarding-progress-line">
-          <div
-            className="onboarding-progress-track"
-            role="progressbar"
-            aria-label="Progreso de la preparación inicial"
-            aria-valuemin={0}
-            aria-valuemax={items.length}
-            aria-valuenow={completedCount}
-            aria-valuetext={`${completedCount} de ${items.length} pasos completados`}
-          >
-            <span style={{ width: `${completionPercent}%` }} />
-          </div>
-          <span>{completionPercent}%</span>
-        </div>
-
-        <p className="sr-only" role="status" aria-live="polite">
-          {completedCount} de {items.length} pasos de preparación completados.
-        </p>
-
-        {!compact && currentStep ? (
+        {compact ? (
           <>
-            <div className="onboarding-current-step">
-              <span className="onboarding-step-number">
-                {items.findIndex((item) => item.id === currentStep.id) + 1}
-              </span>
+            <div className="onboarding-compact-main">
               <div>
-                <small>Siguiente paso</small>
-                <strong>{currentStep.label}</strong>
-                <p>{currentStep.description}</p>
+                <span className="onboarding-eyebrow">Configuración inicial</span>
+                <h2 id="onboarding-coach-title">
+                  {currentStep
+                    ? `${completedCount === 0 ? "Empieza por" : "Continúa con"} ${currentStep.shortLabel.toLocaleLowerCase("es")}`
+                    : "Revisa los pasos pendientes"}
+                </h2>
+                <p className="onboarding-compact-copy">
+                  {remainingCount} {remainingCount === 1 ? "paso pendiente" : "pasos pendientes"}
+                  .
+                </p>
               </div>
+            </div>
+
+            <div className="onboarding-compact-progress">
+              <div className="onboarding-progress-meta">
+                <span>Tu avance</span>
+                <strong>
+                  {completedCount} de {items.length}
+                </strong>
+              </div>
+              <div
+                className="onboarding-progress-track"
+                role="progressbar"
+                aria-label="Progreso de la configuración inicial"
+                aria-valuemin={0}
+                aria-valuemax={items.length}
+                aria-valuenow={completedCount}
+                aria-valuetext={`${completedCount} de ${items.length} pasos completados`}
+              >
+                <span style={{ width: `${completionPercent}%` }} />
+              </div>
+            </div>
+
+            <div className="onboarding-compact-actions">
+              <button type="button" className="onboarding-text-action" onClick={openCurrentStep}>
+                Ver los pasos
+              </button>
               <button
                 type="button"
-                className="btn onboarding-primary-action"
-                onClick={() => configureStep(currentStep)}
+                className="btn"
+                aria-label={
+                  currentStep
+                    ? `${completedCount === 0 ? "Configurar" : "Continuar"}: ${currentStep.label}`
+                    : "Abrir la guía de configuración"
+                }
+                onClick={() => {
+                  if (currentStep) {
+                    configureStep(currentStep);
+                  } else {
+                    openCurrentStep();
+                  }
+                }}
               >
-                Configurar ahora
+                {completedCount === 0 ? "Configurar" : "Continuar"}
               </button>
             </div>
-            <ol className="onboarding-step-rail" aria-label="Pasos de preparación">
-              {items.map((item, index) => (
-                <li key={item.id} className={item.complete ? "complete" : ""}>
-                  <span aria-hidden="true">{item.complete ? "✓" : index + 1}</span>
-                  <NavLink to={item.route}>
-                    {item.shortLabel}
-                    <small>{item.complete ? "Completado" : "Pendiente"}</small>
-                  </NavLink>
-                </li>
-              ))}
-            </ol>
+
+            <p className="sr-only" role="status" aria-live="polite">
+              {completedCount} de {items.length} pasos de configuración completados.
+            </p>
           </>
         ) : (
-          <p className="onboarding-compact-copy">
-            Quedan {items.length - completedCount} pasos para que Hoy pueda organizar tus
-            clases y registros.
-          </p>
-        )}
+          <>
+            <div className="onboarding-coach-heading">
+              <div>
+                <span className="onboarding-eyebrow">Configuración inicial</span>
+                <h2 id="onboarding-coach-title">Configuración inicial, paso a paso</h2>
+              </div>
+              <span className="onboarding-count" aria-label={`${completedCount} de ${items.length}`}>
+                {completedCount} de {items.length}
+              </span>
+            </div>
 
-        <div className="onboarding-coach-actions">
-          <button type="button" className="btn secondary" onClick={openCurrentStep}>
-            {compact ? "Retomar guía" : "Ver por qué"}
-          </button>
-          {!compact ? (
-            <button type="button" className="onboarding-text-action" onClick={dismissGuide}>
-              Ocultar por ahora
-            </button>
-          ) : null}
-        </div>
+            <div className="onboarding-progress-line">
+              <div
+                className="onboarding-progress-track"
+                role="progressbar"
+                aria-label="Progreso de la configuración inicial"
+                aria-valuemin={0}
+                aria-valuemax={items.length}
+                aria-valuenow={completedCount}
+                aria-valuetext={`${completedCount} de ${items.length} pasos completados`}
+              >
+                <span style={{ width: `${completionPercent}%` }} />
+              </div>
+              <span>{completionPercent}%</span>
+            </div>
+
+            <p className="sr-only" role="status" aria-live="polite">
+              {completedCount} de {items.length} pasos de configuración completados.
+            </p>
+
+            {currentStep ? (
+              <>
+                <div className="onboarding-current-step">
+                  <span className="onboarding-step-number">{currentStepNumber}</span>
+                  <div>
+                    <small>Siguiente paso</small>
+                    <strong>{currentStep.label}</strong>
+                    <p>{currentStep.description}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn onboarding-primary-action"
+                    onClick={() => configureStep(currentStep)}
+                  >
+                    Ir al paso
+                  </button>
+                </div>
+                <ol className="onboarding-step-rail" aria-label="Pasos de configuración">
+                  {items.map((item, index) => (
+                    <li key={item.id} className={item.complete ? "complete" : ""}>
+                      <span aria-hidden="true">{item.complete ? "✓" : index + 1}</span>
+                      <NavLink to={item.route}>
+                        {item.shortLabel}
+                        <small>{item.complete ? "Completado" : "Pendiente"}</small>
+                      </NavLink>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            ) : null}
+
+            <div className="onboarding-coach-actions">
+              <button type="button" className="btn secondary" onClick={openCurrentStep}>
+                Ver detalles
+              </button>
+              <button type="button" className="onboarding-text-action" onClick={dismissGuide}>
+                Ocultar por ahora
+              </button>
+            </div>
+          </>
+        )}
       </aside>
 
       <Modal
         open={isGuideOpen}
         title={
           guideView === "welcome"
-            ? "Tu aula, bien preparada desde el principio"
-            : currentStep?.label ?? "Preparación inicial"
+            ? "Configura tu espacio docente"
+            : currentStep?.label ?? "Configuración inicial"
         }
         subtitle={
           guideView === "welcome"
@@ -326,7 +388,7 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
                 Ahora no
               </button>
               <button type="button" className="btn" onClick={startGuide}>
-                Empezar preparación
+                Iniciar configuración
               </button>
             </div>
           </div>
