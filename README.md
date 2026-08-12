@@ -77,6 +77,7 @@ npm run build:production # Build the production deployment profile
 npm run preview    # Preview the production build
 npm run clean      # Remove generated builds, coverage, logs, and TypeScript caches
 npm run test       # Run Vitest
+npm run test:coverage # Run Vitest and write the full source coverage report
 npm run lint       # Run ESLint, including React hook checks
 npm run typecheck  # Run TypeScript project checks
 npm run audit      # Audit dependencies against the reviewed advisory policy
@@ -109,17 +110,17 @@ Database payloads are intentionally not backward compatible. Only payloads produ
 
 - Academic records remain local to the browser profile in IndexedDB; ProfePlus has no application backend.
 - Downloaded backups and automatic pre-operation safety backups are encrypted. ProfePlus never stores their passwords.
-- An optional local app lock uses a salted PBKDF2-SHA-256 verifier and automatically locks after the configured inactivity period. It protects the visible application from casual access but is not a substitute for operating-system disk and profile encryption.
+- An optional local app lock uses a salted PBKDF2-SHA-256 verifier, validates its stored work factor, pauses retries after repeated failures, and automatically locks after the configured inactivity period. It protects the visible application from casual access but is not a substitute for operating-system disk and profile encryption.
 - CSV exports neutralize spreadsheet formula prefixes before escaping cell values.
 - Backup imports enforce a size limit and validate metadata, structure, types, relationships, scopes, uniqueness, dates, and numeric ranges before changing the database.
-- The application includes a restrictive Content Security Policy, referrer policy, permission policy, clickjacking protection, and MIME-sniffing protection. `public/_headers` applies the full header set on compatible static hosts; other hosts must configure equivalent response headers.
+- The application includes a restrictive Content Security Policy, referrer policy, permission policy, cross-origin isolation headers, clickjacking protection, and MIME-sniffing protection. `public/_headers` applies the full header set on compatible static hosts. Nginx deployments can include `deploy/nginx-security-headers.conf` from the HTTPS server or location block.
 - Anyone with access to an unlocked browser profile can still inspect its IndexedDB data. Use an encrypted operating-system account and do not share the browser profile when handling real student data.
 
 ## AI Extension
 
 ProfePlus does not include an in-app AI settings page and does not import WebLLM directly.
 
-AI features use the AI Proxy Bridge Chrome extension:
+AI features use the AI Proxy Bridge Chrome extension through its versioned same-origin page bridge:
 
 - The extension injects its compact overlay into trusted pages.
 - Feature-level AI requests go through `src/shared/ai/extensionRuntime.ts`.
@@ -128,8 +129,8 @@ AI features use the AI Proxy Bridge Chrome extension:
 
 Configuration options:
 
-- `VITE_AI_RUNTIME_EXTENSION_ID`: optional default extension ID.
-- The app can also detect the extension through the content-script ready event on trusted origins.
+- `VITE_AI_RUNTIME_EXTENSION_ID`: optional extension-ID pin. Use it when the deployed extension has a stable ID.
+- Without a pin, the app discovers the installed bridge through a versioned `postMessage` availability exchange and keeps the discovered ID fixed for each request.
 - The extension must authorize the current hostname, such as `localhost`, `127.0.0.1`, or the deployed domain.
 
 The extension project is external to this app and should be managed separately.
@@ -181,14 +182,18 @@ Automated coverage includes focused Vitest suites for:
 - Printable reports.
 - Student follow-up helpers.
 - AI-generated instrument parsing and validation.
+- Versioned AI extension bridge envelopes.
+- Student handoff scope, reference, date, and enum validation.
 
-The latest full verification passed with:
+Run `npm run test:coverage` to generate the complete text and HTML coverage report for `src/`.
+
+Run the full verification with:
 
 ```bash
 npm run verify
 ```
 
-Expected result:
+The expected result is:
 
 - TypeScript project checks pass.
 - ESLint passes without errors or warnings.
@@ -223,7 +228,8 @@ provider must:
 - Serve `dist/` over HTTPS.
 - Rewrite unknown application routes to `index.html`.
 - Apply the security headers in `public/_headers`, or equivalent platform
-  configuration.
+  configuration. For Nginx, include `deploy/nginx-security-headers.conf` and
+  reload Nginx after validating the configuration.
 - Avoid sharing browser storage or service-worker state between the two
   domains. Their separate origins provide this isolation automatically.
 

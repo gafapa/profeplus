@@ -44,31 +44,35 @@ export type AiPageStatus = {
   availableProviderCount: number;
 };
 
-const EXTENSION_EVENT_TARGET = "ai-runtime-extension";
-const READY_EVENT = "ai-runtime-extension:ready";
-const PING_EVENT = "ai-runtime-extension:ping";
-const ACTIVATE_EVENT = "ai-runtime-extension:activate";
-const PROMPT_EVENT = "ai-runtime-extension:prompt";
-const PROMPT_RESULT_EVENT = "ai-runtime-extension:prompt-result";
-const DEFAULT_TIMEOUT_MS = 180000;
+const PAGE_SOURCE = "profeplus";
+const EXTENSION_SOURCE = "ai-runtime-extension";
+const PAGE_PROTOCOL = "ai-runtime-extension-bridge";
+const PAGE_PROTOCOL_VERSION = 1;
+const PAGE_PING_MESSAGE = "ai-runtime-ping";
+const PAGE_AVAILABLE_MESSAGE = "ai-runtime-available";
+const PAGE_REQUEST_MESSAGE = "ai-runtime-request";
+const PAGE_RESPONSE_MESSAGE = "ai-runtime-response";
+const DEFAULT_TIMEOUT_MS = 180_000;
 
-function configuredExtensionId(): string {
-  return import.meta.env.VITE_AI_RUNTIME_EXTENSION_ID?.trim() ?? "";
-}
-
-type ExtensionReadyDetail = {
-  target?: string;
-  extensionId?: string;
-  version?: string;
+type ExtensionAvailabilityMessage = {
+  source: typeof EXTENSION_SOURCE;
+  protocol: typeof PAGE_PROTOCOL;
+  version: typeof PAGE_PROTOCOL_VERSION;
+  type: typeof PAGE_AVAILABLE_MESSAGE;
+  extensionId: string;
+  extensionVersion?: string;
 };
 
-type PromptResultDetail = {
-  target?: string;
-  extensionId?: string;
-  ok?: boolean;
+type ExtensionResponseMessage = {
+  source: typeof EXTENSION_SOURCE;
+  protocol: typeof PAGE_PROTOCOL;
+  version: typeof PAGE_PROTOCOL_VERSION;
+  type: typeof PAGE_RESPONSE_MESSAGE;
+  extensionId: string;
   requestId?: string;
-  response?: unknown;
-  error?: string | null;
+  ok?: boolean;
+  result?: unknown;
+  error?: string | { message?: string } | null;
 };
 
 type RuntimeChatResponse = {
@@ -84,41 +88,49 @@ type RuntimeChatResponse = {
   };
 };
 
-function createRequestId(): string {
-  return crypto.randomUUID();
+function configuredExtensionId(): string {
+  return import.meta.env.VITE_AI_RUNTIME_EXTENSION_ID?.trim() ?? "";
 }
 
-function dispatchExtensionEvent(type: string, detail: Record<string, unknown> = {}): void {
-  window.dispatchEvent(
-    new CustomEvent(type, {
-      detail: {
-        target: EXTENSION_EVENT_TARGET,
-        ...detail
-      }
-    })
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isCompatibleAiExtensionMessage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.source === EXTENSION_SOURCE &&
+    value.protocol === PAGE_PROTOCOL &&
+    value.version === PAGE_PROTOCOL_VERSION &&
+    (value.type === PAGE_AVAILABLE_MESSAGE || value.type === PAGE_RESPONSE_MESSAGE) &&
+    typeof value.extensionId === "string" &&
+    value.extensionId.length > 0
   );
 }
 
-function dispatchPromptEvent(requestId: string, payload: Record<string, unknown>): void {
-  dispatchExtensionEvent(PROMPT_EVENT, {
-    payload: {
-      requestId,
-      ...payload
-    }
-  });
+function isTrustedWindowMessage(event: MessageEvent): boolean {
+  return (
+    (event.source === window || event.source === null) &&
+    event.origin === window.location.origin &&
+    isCompatibleAiExtensionMessage(event.data)
+  );
 }
 
-function messageListToPrompt(messages: AiMessage[]): string {
-  return messages
-    .map((message) => {
-      const content = message.content.trim();
-      if (!content) {
-        return "";
-      }
-      return `[${message.role.toUpperCase()}]\n${content}`;
-    })
-    .filter(Boolean)
-    .join("\n\n");
+function postPageMessage(type: string, payload: Record<string, unknown> = {}): void {
+  window.postMessage(
+    {
+      source: PAGE_SOURCE,
+      protocol: PAGE_PROTOCOL,
+      version: PAGE_PROTOCOL_VERSION,
+      type,
+      ...payload
+    },
+    window.location.origin
+  );
+}
+
+function createRequestId(): string {
+  return crypto.randomUUID();
 }
 
 function normalizeMessages(messages: AiMessage[]): AiMessage[] {
@@ -131,35 +143,33 @@ function normalizeMessages(messages: AiMessage[]): AiMessage[] {
 }
 
 export function activateAiExtensionModule(): void {
-  dispatchExtensionEvent(ACTIVATE_EVENT);
+  postPageMessage(PAGE_PING_MESSAGE);
 }
 
-export function detectAiExtension(timeoutMs = 1200): Promise<ExtensionReadyDetail | null> {
+export function detectAiExtension(timeoutMs = 1200): Promise<ExtensionAvailabilityMessage | null> {
   return new Promise((resolve) => {
     const expectedExtensionId = configuredExtensionId();
     let settled = false;
-    const finish = (detail: ExtensionReadyDetail | null) => {
-      if (settled) {
-        return;
-      }
+    const finish = (message: ExtensionAvailabilityMessage | null) => {
+      if (settled) return;
       settled = true;
-      window.removeEventListener(READY_EVENT, handleReady as EventListener);
-      clearTimeout(timeoutId);
-      resolve(detail);
+      window.removeEventListener("message", handleMessage);
+      window.clearTimeout(timeoutId);
+      resolve(message);
     };
-    const handleReady = (event: CustomEvent<ExtensionReadyDetail>) => {
-      const detail = event.detail;
+    const handleMessage = (event: MessageEvent) => {
+      if (!isTrustedWindowMessage(event)) return;
+      const message = event.data as ExtensionAvailabilityMessage;
       if (
-        detail?.target === EXTENSION_EVENT_TARGET &&
-        detail.extensionId &&
-        (!expectedExtensionId || detail.extensionId === expectedExtensionId)
+        message.type === PAGE_AVAILABLE_MESSAGE &&
+        (!expectedExtensionId || message.extensionId === expectedExtensionId)
       ) {
-        finish(detail);
+        finish(message);
       }
     };
     const timeoutId = window.setTimeout(() => finish(null), timeoutMs);
-    window.addEventListener(READY_EVENT, handleReady as EventListener);
-    dispatchExtensionEvent(PING_EVENT, expectedExtensionId ? { extensionId: expectedExtensionId } : {});
+    window.addEventListener("message", handleMessage);
+    postPageMessage(PAGE_PING_MESSAGE);
   });
 }
 
@@ -173,85 +183,77 @@ function extractChatResult(response: unknown): AiChatResult {
   }
   return {
     text: typed.text,
-    provider: typed.provider ?? "webllm",
+    provider: typed.provider ?? "unknown",
     model: typed.model ?? "unknown"
   };
 }
 
+function extensionErrorMessage(error: ExtensionResponseMessage["error"]): string {
+  if (typeof error === "string" && error) return error;
+  if (error && typeof error === "object" && typeof error.message === "string") return error.message;
+  return "AI runtime extension error.";
+}
+
 export async function generateAiText(messages: AiMessage[], options: AiChatOptions = {}): Promise<AiChatResult> {
   const normalizedMessages = normalizeMessages(messages);
-  const prompt = messageListToPrompt(normalizedMessages);
-  if (!prompt) {
+  if (normalizedMessages.length === 0) {
     throw new Error("AI prompt is empty.");
   }
 
   const detected = await detectAiExtension();
   if (!detected) {
-    throw new Error("AI Runtime extension is not active on this page. Reload the page after loading the extension.");
+    throw new Error("AI Runtime extension is not active or does not match the configured extension ID.");
   }
 
-  activateAiExtensionModule();
   const requestId = createRequestId();
-  const expectedExtensionId = configuredExtensionId();
+  const expectedExtensionId = configuredExtensionId() || detected.extensionId;
 
-  return await new Promise<AiChatResult>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out while waiting for the AI runtime extension."));
-    }, DEFAULT_TIMEOUT_MS);
-
+  return new Promise<AiChatResult>((resolve, reject) => {
     const cleanup = () => {
-      clearTimeout(timeoutId);
-      window.removeEventListener(PROMPT_RESULT_EVENT, handlePromptResult as EventListener);
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("message", handleMessage);
     };
-
-    const handlePromptResult = (event: CustomEvent<PromptResultDetail>) => {
-      const detail = event.detail;
-      if (detail?.target !== EXTENSION_EVENT_TARGET || detail.requestId !== requestId) {
-        return;
-      }
-      if (
-        (expectedExtensionId && detail.extensionId !== expectedExtensionId) ||
-        (!expectedExtensionId && detail.extensionId && detail.extensionId !== detected.extensionId)
-      ) {
+    const handleMessage = (event: MessageEvent) => {
+      if (!isTrustedWindowMessage(event)) return;
+      const message = event.data as ExtensionResponseMessage;
+      if (message.type !== PAGE_RESPONSE_MESSAGE || message.requestId !== requestId) return;
+      if (message.extensionId !== expectedExtensionId) {
         cleanup();
         reject(new Error("AI runtime extension identity could not be verified."));
         return;
       }
       cleanup();
-      if (!detail.ok) {
-        try {
-          if (detail.response) {
-            extractChatResult(detail.response);
-          }
-        } catch (error) {
-          reject(error);
-          return;
-        }
-        reject(new Error(detail.error || "AI runtime extension error."));
+      if (!message.ok) {
+        reject(new Error(extensionErrorMessage(message.error)));
         return;
       }
       try {
-        const result = extractChatResult(detail.response);
+        const result = extractChatResult(message.result);
         options.onDelta?.(result.text);
         resolve(result);
       } catch (error) {
         reject(error);
       }
     };
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while waiting for the AI runtime extension."));
+    }, DEFAULT_TIMEOUT_MS);
 
-    window.addEventListener(PROMPT_RESULT_EVENT, handlePromptResult as EventListener);
-    dispatchPromptEvent(requestId, {
-      extensionId: expectedExtensionId || detected.extensionId,
-      prompt,
-      messages: normalizedMessages,
-      ...(options.provider ? { provider: options.provider } : {}),
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.attachments ? { attachments: options.attachments } : {}),
-      options: {
-        ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
-        ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
-        ...(options.responseFormat ? { responseFormat: options.responseFormat } : {})
+    window.addEventListener("message", handleMessage);
+    postPageMessage(PAGE_REQUEST_MESSAGE, {
+      requestId,
+      payload: {
+        type: "runtime.chat",
+        messages: normalizedMessages,
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.attachments ? { attachments: options.attachments } : {}),
+        options: {
+          ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+          ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.responseFormat ? { responseFormat: options.responseFormat } : {})
+        }
       }
     });
   });

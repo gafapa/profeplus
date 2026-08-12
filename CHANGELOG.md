@@ -46,6 +46,16 @@
 
 ### Changed
 
+- Migrated the AI integration to the extension's current versioned `postMessage` bridge and added protocol-envelope tests.
+- Hardened student handoff imports with exact scope, real-date, enum, class relationship, and logical-duplicate validation.
+- Prevented stale attendance loads from overwriting the active selection or reusing an attendance ID from another session.
+- Hardened the local app lock against manipulated work factors and repeated unlock attempts.
+- Updated compatible development dependencies, restored full-source coverage reporting, and added reusable Nginx security-header configuration.
+- Standardized the first-run experience on the single term "initial setup" across global prompts, onboarding cards, dialogs, and actions.
+- Unified initial-setup prompts under the primary blue visual treatment while keeping amber reserved for actionable context warnings.
+- Separated the missing-group blocker from the onboarding progress coach, removing duplicated setup messaging and the redundant compact step badge.
+- Reorganized the fifteen-item top navigation into five workflow areas with route-aware secondary navigation and a non-scrolling mobile layout.
+- Redesigned the teacher setup prompt as a compact, responsive task card with clearer progress, next-step guidance, and accessible primary and secondary actions.
 - Reports now apply date ranges to manual assessments through their explicit assessment date and exclude undated legacy rows instead of silently mixing periods.
 - Attendance and reports now distinguish a measured zero percent from a course with no attendance observations.
 - ACS and reinforcement measures remain visible support context but no longer increase the automatic academic risk label.

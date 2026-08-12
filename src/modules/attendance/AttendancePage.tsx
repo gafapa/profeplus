@@ -24,7 +24,11 @@ import type {
   TaskSubjectLink,
   UnitBlock
 } from "../../shared/db/types";
-import { normalizeAttendanceNote, resolveAttendanceNoteForSave } from "../../shared/attendance/attendance";
+import {
+  matchesAttendanceScope,
+  normalizeAttendanceNote,
+  resolveAttendanceNoteForSave
+} from "../../shared/attendance/attendance";
 import { matchesTaskScope } from "../../shared/gradebook/calculations";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { toLocalIsoDate } from "../../shared/utils/date";
@@ -392,18 +396,22 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     setCalendarMonth(new Date(year, month - 1, 1));
   }, [selectedDate]);
 
-  const loadData = async () => {
+  const loadData = async (isCurrent: () => boolean = () => true) => {
     if (!selectedSubjectSlot) {
-      setStudents([]);
-      setAttendanceEntries([]);
+      if (isCurrent()) {
+        setStudents([]);
+        setAttendanceEntries([]);
+      }
       return;
     }
 
     const links = await db.subjectStudentLinks.where("subjectId").equals(selectedSubjectSlot.subjectId).toArray();
     const studentIds = links.map((link) => link.studentId);
     if (studentIds.length === 0) {
-      setStudents([]);
-      setAttendanceEntries([]);
+      if (isCurrent()) {
+        setStudents([]);
+        setAttendanceEntries([]);
+      }
       return;
     }
 
@@ -411,15 +419,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       db.students.where("id").anyOf(studentIds).toArray(),
       db.attendanceEntries.where("studentId").anyOf(studentIds).toArray()
     ]);
+    if (!isCurrent()) return;
 
     setStudents(studentsData.filter((student) => student.classId === selectedSubjectSlot.classId).sort(compareFn));
     setAttendanceEntries(
-      attendanceData.filter(
-        (entry) =>
-          entry.classId === selectedSubjectSlot.classId &&
-          entry.date === selectedDate &&
-          entry.scheduleSlotId === selectedSubjectSlot.slotId
-      )
+      attendanceData.filter((entry) => matchesAttendanceScope(entry, {
+        classId: selectedSubjectSlot.classId,
+        subjectId: selectedSubjectSlot.subjectId,
+        date: selectedDate,
+        scheduleSlotId: selectedSubjectSlot.slotId
+      }))
     );
   };
   const loadDataForEffect = useEffectEvent(loadData);
@@ -541,7 +550,15 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   }, [compareFn]);
 
   useEffect(() => {
-    void loadDataForEffect();
+    let active = true;
+    void loadDataForEffect(() => active).catch((error: unknown) => {
+      if (!active) return;
+      const message = error instanceof Error ? error.message : "Error desconocido";
+      setAttendanceNotice(`No se pudo cargar la asistencia: ${message}`);
+    });
+    return () => {
+      active = false;
+    };
   }, [selectedDate, selectedSubjectSlot?.slotId, selectedSubjectSlot?.subjectId]);
 
   useEffect(() => {

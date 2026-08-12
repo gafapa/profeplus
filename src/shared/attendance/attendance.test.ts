@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  matchesAttendanceScope,
   normalizeAttendanceDetails,
   normalizeAttendanceNote,
   resolveAttendanceNoteForSave
 } from "./attendance";
+import type { AttendanceEntry } from "../db/types";
 
 describe("attendance helpers", () => {
   it("trims attendance notes and removes empty values", () => {
@@ -45,5 +47,32 @@ describe("attendance helpers", () => {
         earlyDepartureMinutes: "900"
       })
     ).toEqual({ absenceJustified: undefined, lateMinutes: undefined, earlyDepartureMinutes: 720 });
+  });
+
+  it("does not reuse an attendance row from a different session scope", () => {
+    const entry: AttendanceEntry = {
+      id: "attendance-1",
+      classId: "class-a",
+      subjectId: "subject-a",
+      studentId: "student-a",
+      date: "2026-08-05",
+      scheduleSlotId: "slot-a",
+      status: "present",
+      createdAt: "2026-08-05T08:00:00.000Z",
+      updatedAt: "2026-08-05T08:00:00.000Z"
+    };
+
+    expect(matchesAttendanceScope(entry, {
+      classId: "class-a",
+      subjectId: "subject-a",
+      date: "2026-08-05",
+      scheduleSlotId: "slot-a"
+    })).toBe(true);
+    expect(matchesAttendanceScope(entry, {
+      classId: "class-a",
+      subjectId: "subject-a",
+      date: "2026-08-06",
+      scheduleSlotId: "slot-a"
+    })).toBe(false);
   });
 });
