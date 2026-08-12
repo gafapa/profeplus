@@ -221,7 +221,10 @@ export function TopTabs() {
           <span className="workflow-subnav-label" aria-hidden="true">
             {activeArea.label}
           </span>
-          <div className="workflow-subnav-list section-tabs">
+          <div
+            className="workflow-subnav-list section-tabs"
+            style={{ gridTemplateColumns: `repeat(${activeArea.items.length}, minmax(0, 1fr))` }}
+          >
             {activeArea.items.map((item) => {
               const isActive = matchesNavigationPath(location.pathname, item.to);
               return (

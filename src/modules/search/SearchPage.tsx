@@ -121,15 +121,15 @@ export function SearchPage() {
 
   return (
     <section className="search-page" aria-labelledby="search-page-title">
-      <header className="workflow-page-header">
+      <header className="search-header">
         <div>
-          <p className="eyebrow">Acceso rápido</p>
+          <span className="agenda-eyebrow">Acceso rápido</span>
           <h1 id="search-page-title">Buscar en ProfePlus</h1>
           <p>Encuentra alumnado, tareas, pruebas, seguimientos, contactos y recursos.</p>
         </div>
       </header>
 
-      <div className="search-controls card-panel">
+      <div className="search-controls">
         <label className="detail-field search-query-field">
           <span>Texto de búsqueda</span>
           <input
@@ -172,23 +172,27 @@ export function SearchPage() {
       ) : null}
 
       {filteredResults.length > 0 ? (
-        <div className="search-results" aria-label="Resultados de búsqueda">
-          {filteredResults.map((result) => (
-            <button
-              key={result.id}
-              type="button"
-              className="search-result-card"
-              onClick={() => openResult(result)}
-            >
-              <span className={`search-result-kind kind-${result.kind}`}>
-                {searchResultKindLabel(result.kind)}
-              </span>
-              <strong>{result.title}</strong>
-              <span className="search-result-context">{result.context}</span>
-              <span className="search-result-snippet">{result.snippet}</span>
-            </button>
-          ))}
-        </div>
+        <section aria-labelledby="search-results-title">
+          <h2 id="search-results-title" className="sr-only">Resultados de búsqueda</h2>
+          <ul className="search-results">
+            {filteredResults.map((result) => (
+              <li key={result.id}>
+                <button
+                  type="button"
+                  className="search-result-card"
+                  onClick={() => openResult(result)}
+                >
+                  <span className={`search-result-kind kind-${result.kind}`}>
+                    {searchResultKindLabel(result.kind)}
+                  </span>
+                  <strong>{result.title}</strong>
+                  <span className="search-result-context">{result.context}</span>
+                  <span className="search-result-snippet">{result.snippet}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
     </section>
   );

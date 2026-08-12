@@ -51,6 +51,7 @@
 
 ### Changed
 
+- Unified the new search workspace with the Agenda and Classroom visual language, added semantic result lists, enforced 44-pixel touch targets across new controls, balanced narrow workflow navigation, and prioritized the classroom plan on mobile.
 - Migrated the AI integration to the extension's current versioned `postMessage` bridge and added protocol-envelope tests.
 - Hardened student handoff imports with exact scope, real-date, enum, class relationship, and logical-duplicate validation.
 - Prevented stale attendance loads from overwriting the active selection or reusing an attendance ID from another session.
