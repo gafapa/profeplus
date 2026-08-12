@@ -4,6 +4,11 @@
 
 ### Added
 
+- Added an accessible local-first Agenda that combines actionable tutor follow-ups, family next steps, planned sessions, dated assessments, and academic-period endings with contextual navigation and ICS calendar export.
+- Added a persistent, accessible classroom layout with seat swapping, random distribution, non-repeating student selection, balanced group generation, and same-day absence exclusion.
+- Added a categorized reusable feedback bank with explicit insertion into Today attendance/work observations and manual gradebook comments.
+- Added accent-insensitive global search across students, tasks, assessments, follow-ups, family contacts, and resources, with contextual deep links to the owning workspace.
+- Added local resource attachments for student evidence and reusable task materials, with safe web links, common file formats, encrypted-backup inclusion, storage limits, and accessible management controls.
 - Added explicit root-domain build profiles for the test deployment at `test.profeplus.gallego.top` and production at `profeplus.gallego.top`.
 - Added non-destructive onboarding, ad-hoc classes, one-occurrence rescheduling, justified absences, late minutes, and early-departure tracking.
 - Added explicit graded, pending, not-submitted, and exempt grade states with a configurable not-submitted calculation policy.
@@ -76,7 +81,10 @@
 - Clarified ownership across Today, Planner, Evaluate, Attendance, and Gradebook, and made contextual shortcut labels state their destination and purpose.
 - Replaced ambiguous single-lesson wording with consistent class-focused save and warning messages.
 - Restricted each subject to exactly one course across management, student enrollment, demo data, and backup validation.
-- Added additive IndexedDB migrations through schema v3, preserving v1 academic data while introducing academic-period snapshots, stable person identities, and tutor-coordination tables.
+- Added additive IndexedDB migrations through schema v6, preserving v1 academic data while introducing academic-period snapshots, stable person identities, tutor coordination, local resource attachments, classroom layouts, and reusable feedback.
+- Added the schema v4 resource table and strict import validation for attachment ownership, protocols, MIME types, base64 integrity, and storage limits.
+- Added the schema v5 classroom-layout table with strict course, student, dimension, capacity, and unique-seat validation.
+- Added the schema v6 feedback-comment table with strict category, text normalization, logical-duplicate, and timestamp validation.
 - Removed backward-compatible backup imports; imports now require the exact current schema and every current table.
 - Made course, subject, date, schedule slot, session status, and attendance timestamps mandatory where required by the academic record model.
 - Added integrity validation for schedule weekday alignment, break blocks, timestamp chronology, scoped task records, and complete backup structure.

@@ -5,6 +5,7 @@ import { db } from "../../shared/db/database";
 import type {
   Assessment,
   ChecklistTemplate,
+  FeedbackComment,
   GradeEntry,
   GradebookGroup,
   RubricTemplate,
@@ -19,6 +20,7 @@ import type {
   TaskSession,
   UnitBlock
 } from "../../shared/db/types";
+import { appendFeedbackComment } from "../../shared/feedback/comments";
 import {
   calculateGradebookContributions,
   calculateTaskScoresByStudent,
@@ -269,6 +271,7 @@ export function GradebookPage() {
   const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
   const [gradebookGroups, setGradebookGroups] = useState<GradebookGroup[]>([]);
   const [gradebookRootName, setGradebookRootName] = useState("Asignatura");
+  const [feedbackComments, setFeedbackComments] = useState<FeedbackComment[]>([]);
 
   const [pendingTaskWeightKeys, setPendingTaskWeightKeys] = useState<Set<string>>(new Set());
   const [pendingGroupWeightKeys, setPendingGroupWeightKeys] = useState<Set<string>>(new Set());
@@ -320,6 +323,7 @@ export function GradebookPage() {
       setChecklistTemplates([]);
       setGradebookGroups([]);
       setGradebookRootName("Asignatura");
+      setFeedbackComments([]);
       setIncludedTasks([]);
       setPendingTaskWeightKeys(new Set());
       setPendingGroupWeightKeys(new Set());
@@ -341,10 +345,11 @@ export function GradebookPage() {
       return;
     }
 
-    const [studentsData, assessmentsData, gradeEntriesData] = await Promise.all([
+    const [studentsData, assessmentsData, gradeEntriesData, feedbackCommentsData] = await Promise.all([
       db.students.where("classId").equals(classId).toArray(),
       db.assessments.where("classId").equals(classId).toArray(),
-      db.gradeEntries.where("classId").equals(classId).toArray()
+      db.gradeEntries.where("classId").equals(classId).toArray(),
+      db.feedbackComments.toArray()
     ]);
 
     const [
@@ -496,6 +501,11 @@ export function GradebookPage() {
     setChecklistTemplates(checklistTemplatesData);
     setGradebookGroups(gradebookGroupsData);
     setGradebookRootName(selectedSubjectName);
+    setFeedbackComments(
+      feedbackCommentsData
+        .filter((comment) => comment.category === "general" || comment.category === "gradebook")
+        .sort((left, right) => left.text.localeCompare(right.text))
+    );
     setIncludedTasks(visibleTasks);
     setTaskWeightDrafts(
       Object.fromEntries(visibleTasks.map((task) => [task.configKey, formatWeightDraft(task.weight)]))
@@ -2533,6 +2543,23 @@ export function GradebookPage() {
                                     )
                                   }
                                 />
+                                {feedbackComments.length > 0 ? (
+                                  <select
+                                    className="input manual-grade-feedback"
+                                    value=""
+                                    aria-label={`Comentario guardado para ${formatName(student)} en ${assessment.title}`}
+                                    onChange={(event) => {
+                                      const selectedComment = feedbackComments.find((item) => item.id === event.target.value);
+                                      if (!selectedComment) return;
+                                      const nextComment = appendFeedbackComment(comment, selectedComment.text);
+                                      setGradeCommentDrafts((current) => ({ ...current, [key]: nextComment }));
+                                      void saveManualGradeCell(student.id, assessment.id, value, nextComment, status);
+                                    }}
+                                  >
+                                    <option value="">Insertar comentario…</option>
+                                    {feedbackComments.map((item) => <option key={item.id} value={item.id}>{item.text}</option>)}
+                                  </select>
+                                ) : null}
                               </div>
                             </td>
                           );

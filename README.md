@@ -6,8 +6,11 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 
 ## Current Scope
 
-- Top-level teacher workspace organized around Today, the weekly Planificador, advanced task evaluation, attendance history, gradebook, academic management, reports, and configuration.
+- Top-level teacher workspace organized around Today, an actionable Agenda, the weekly Planificador, advanced task evaluation, attendance history, gradebook, academic management, reports, and configuration.
+- A local-first action agenda combines overdue and upcoming tutor follow-ups, family next steps, planned task sessions, dated assessments, and open academic-period endings. It supports course, type, status, and time-horizon filters plus standards-based ICS calendar export.
+- A persistent classroom layout supports accessible seat reassignment and swapping, random seating, non-repeating student selection, balanced group generation, and optional exclusion of students marked absent today.
 - Course and student management, including student photos, email contacts, educational measures, tutorial follow-up records, CSV import, and pasted spreadsheet import.
+- Local resource attachments for student evidence and reusable task materials, supporting validated web links and common document, image, audio, and video formats.
 - A guided, resumable onboarding flow that derives progress from saved course, student, schedule, and subject data without creating sample content.
 - Mobile-first tutor coordination with due dates, ownership, priorities, structured family contacts, and cross-class support groups backed by stable person identities.
 - Subject, unit, task, and schedule management, with exactly one course per subject, one-action course enrollment, optional task units, validated weekly time blocks, guarded autosave, and task evaluation setup.
@@ -17,6 +20,8 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 - Weekly planner with contextual links from Today, quick two-step task assignment, immediate undo, touch- and keyboard-friendly session rescheduling, multi-session progress, and advanced session fields for status, objectives, competencies, materials, homework, and teacher notes.
 - Gradebook with persisted academic periods, manual assessments, weights, folders, competencies, per-student grades, observations, task scores, and immutable versioned closure snapshots.
 - Bulk grade entry with visible-student filtering, shared status/value actions, spreadsheet matrix paste, and keyboard cell navigation. Missing, exempt, and not-submitted work remain semantically distinct.
+- A categorized feedback bank inserts teacher-authored reusable comments into Today observations and manual gradebook evidence without applying or saving them automatically.
+- Accent-insensitive global search finds students, tasks, assessments, follow-ups, family contacts, and local resources, then opens the owning workspace with its academic context restored.
 - Reusable units, tasks, rubrics, and checklists, plus accessible `Move to…` controls wherever drag and drop is offered.
 - Reports module with date-range filtering, printable HTML reports, CSV exports, AI-ready datasets, and AI report generation through the extension runtime.
 - Local database operations for seeded test data, encrypted JSON backup export/import, integrity checks, and data reset. Destructive replacements create an encrypted safety backup and require explicit confirmation.
@@ -27,10 +32,14 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 Each academic record has one primary workspace. Cross-links preserve context and accelerate navigation without creating a second editor for the same data.
 
 - **Today** owns class delivery: attendance, attendance observations, the actual class record, and quick per-student work comments.
+- **Agenda** derives a read-only action list from existing academic records and links each item back to its owning workspace.
+- **Classroom** owns the persistent seating plan and temporary participation/grouping tools for the selected course.
+- **Search** provides cross-workflow discovery and deep links without duplicating record editors.
 - **Planificador** owns future preparation: assigning tasks to schedule slots, rescheduling sessions, and editing planned objectives, materials, homework, and notes.
 - **Evaluate** owns task evidence: rubric results, checklist results, and direct task grades.
 - **Attendance** owns review: monthly history, incident summaries, filtering, and contextual links to correct the original class in Today.
 - **Gradebook** owns grade consolidation: manual assessments, folders, weights, task-score inclusion, and final-grade calculations.
+- **Management** owns reusable task resources and student evidence files. Attachments remain local and travel only inside full database backups.
 
 ## Academic Periods And School-Year Rollover
 
@@ -100,9 +109,13 @@ Database tools are available under `Configuración > Base de datos`:
 
 Backups include `schemaVersion` and `exportedAt`. Unsupported or malformed backups are rejected before existing local tables are cleared. Imports and destructive demo/reset operations show a confirmation summary and require a separate password before downloading an encrypted safety backup.
 
-The IndexedDB database uses additive Dexie migrations under `profeplus-db`; schema v2 added academic periods and closure snapshots without deleting v1 data, and schema v3 added stable person identities and tutor-coordination tables. Student enrolment rows carry a stable `personId` so year rollover can create a new enrolment without losing longitudinal identity. Cross-class support groups reference those student enrolments without duplicating student profiles. Each subject belongs to exactly one course. Attendance and task evaluation rows always include their course, subject, date, schedule slot, and required scope fields. Attendance also stores creation and update timestamps. Free daily class records allow Today to document unplanned lessons without creating artificial tasks.
+The IndexedDB database uses additive Dexie migrations under `profeplus-db`; schema v2 added academic periods and closure snapshots without deleting v1 data, schema v3 added stable person identities and tutor-coordination tables, schema v4 added resource attachments, schema v5 added classroom layouts, and schema v6 added reusable feedback comments. Student enrolment rows carry a stable `personId` so year rollover can create a new enrolment without losing longitudinal identity. Cross-class support groups reference those student enrolments without duplicating student profiles. Each subject belongs to exactly one course. Attendance and task evaluation rows always include their course, subject, date, schedule slot, and required scope fields. Attendance also stores creation and update timestamps. Free daily class records allow Today to document unplanned lessons without creating artificial tasks.
 
-Selective handoff packages contain only the selected students, their course references, tutorial follow-ups, structured family contacts, and relevant support-group memberships. They never include attendance or gradebook data. Import first validates references and IDs, then shows creates, unchanged rows, and conflicts. Any conflicting ID blocks the complete merge; accepted merges use insert-only operations and never overwrite local rows.
+Resource files are stored as backup-safe base64 data with a 5 MB per-file limit and a 20 MB application-wide limit. Active web formats such as HTML and SVG are rejected; links must use HTTP or HTTPS. Deleting an otherwise unreferenced student or task also removes its attachments. Full encrypted backups include resources, while school-year rollover and selective student handoff packages deliberately exclude them to avoid silently duplicating or disclosing files.
+
+Classroom layouts are course-scoped and included in full encrypted backups. Deleting an otherwise empty course removes its layout, and deleting an otherwise unreferenced student removes that student's seat assignment. Temporary random-picker rounds and generated groups are intentionally not persisted.
+
+Selective handoff packages contain only the selected students, their course references, tutorial follow-ups, structured family contacts, and relevant support-group memberships. They never include attendance, gradebook data, or resource attachments. Import first validates references and IDs, then shows creates, unchanged rows, and conflicts. Any conflicting ID blocks the complete merge; accepted merges use insert-only operations and never overwrite local rows.
 
 Database payloads are intentionally not backward compatible. Only payloads produced by the current schema are accepted, and every current table must be present. This keeps import behavior deterministic and prevents inferred or partially scoped academic records.
 
@@ -113,6 +126,7 @@ Database payloads are intentionally not backward compatible. Only payloads produ
 - An optional local app lock uses a salted PBKDF2-SHA-256 verifier, validates its stored work factor, pauses retries after repeated failures, and automatically locks after the configured inactivity period. It protects the visible application from casual access but is not a substitute for operating-system disk and profile encryption.
 - CSV exports neutralize spreadsheet formula prefixes before escaping cell values.
 - Backup imports enforce a size limit and validate metadata, structure, types, relationships, scopes, uniqueness, dates, and numeric ranges before changing the database.
+- Resource imports additionally validate ownership, web protocols, MIME allowlists, exact base64 byte lengths, and per-file and total storage limits.
 - The application includes a restrictive Content Security Policy, referrer policy, permission policy, cross-origin isolation headers, clickjacking protection, and MIME-sniffing protection. `public/_headers` applies the full header set on compatible static hosts. Nginx deployments can include `deploy/nginx-security-headers.conf` from the HTTPS server or location block.
 - Anyone with access to an unlocked browser profile can still inspect its IndexedDB data. Use an encrypted operating-system account and do not share the browser profile when handling real student data.
 
@@ -141,24 +155,32 @@ The extension project is external to this app and should be managed separately.
 src/
   app/                  Redux store and typed hooks
   modules/
+    agenda/             Cross-workflow action agenda and calendar export
+    classroom/          Persistent seating plan and temporary classroom tools
     attendance/         Attendance journal and work diary
     gradebook/          Weighted gradebook and manual assessment entry
     management/         Courses, students, subjects, units, tasks, schedules, backups
     planner/            Weekly task-session planner
     reports/            Printable, CSV, and AI-assisted reports
+    search/             Cross-record search and contextual navigation
     today/              Daily classroom workspace
   shared/
+    agenda/             Agenda derivation and ICS serialization
     ai/                 AI extension runtime client
     attendance/         Attendance normalization helpers
     backup/             Password-based backup encryption
+    classroom/          Seating, random selection, and balanced grouping logic
     db/                 Dexie schema and shared types
     export/             Safe CSV serialization
+    feedback/           Reusable feedback validation and insertion controls
     gradebook/          Gradebook and scoring calculations
     handoff/            Selective student handoff validation and merge previews
     hooks/              Shared React hooks
     import/             Student import parsing
     planner/            Planner/session helpers and printable exports
+    resources/          Secure local resource validation and shared attachment UI
     reports/            Printable report generation
+    search/             Accent-insensitive cross-record search logic
     students/           Student follow-up helpers
     ui/                 Shared UI components
     utils/              General utilities
@@ -170,7 +192,12 @@ Rubrics and checklists are managed inside task management.
 
 Automated coverage includes focused Vitest suites for:
 
+- Agenda action derivation, filtering boundaries, contextual routes, and ICS calendar serialization.
+- Classroom dimensions, assignment cleanup, seat swapping, random layouts, balanced groups, and non-repeating picks.
 - Backup payload validation.
+- Resource URL, file-type, size, base64-integrity, and backup-reference validation.
+- Feedback normalization, duplicate prevention, explicit insertion, and backup validation.
+- Global search matching, accent normalization, result typing, and contextual routes.
 - Student import parsing.
 - Attendance note normalization.
 - Attendance historical subject context and free daily class record validation.

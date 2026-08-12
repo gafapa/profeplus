@@ -23,6 +23,7 @@ import {
   type AttendanceDetailsDraft
 } from "../../shared/attendance/attendance";
 import { matchesTaskScope } from "../../shared/gradebook/calculations";
+import { FeedbackCommentPicker } from "../../shared/feedback/FeedbackCommentPicker";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 import { Modal } from "../../shared/ui/Modal";
@@ -1293,6 +1294,11 @@ export function TodayPage() {
                 placeholder="Retraso justificado, sale antes, comentario breve..."
               />
             </label>
+            <FeedbackCommentPicker
+              category="attendance"
+              value={editingNoteValue}
+              onChange={(value) => setStudentNote(editingNoteStudent.id, value)}
+            />
             <div className="today-note-modal-meta">
               <span>{editingNoteValue.trim().length} caracteres</span>
               <span>Quedará pendiente hasta guardar la clase.</span>
@@ -1330,6 +1336,11 @@ export function TodayPage() {
                 placeholder="No termina, participa bien, necesita apoyo, entrega pendiente..."
               />
             </label>
+            <FeedbackCommentPicker
+              category="work"
+              value={editingWorkValue}
+              onChange={(value) => setStudentWorkComment(editingWorkStudent.id, value)}
+            />
             <div className="today-note-modal-meta">
               <span>{editingWorkValue.trim().length} caracteres</span>
               <span>Quedará pendiente hasta guardar la clase.</span>

@@ -8,6 +8,8 @@ import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { ResourceManager } from "../../shared/resources/ResourceManager";
+import { useSearchParams } from "react-router-dom";
 import {
   defaultChecklist,
   defaultRubric,
@@ -22,6 +24,7 @@ type InstrumentKind = "rubric" | "checklist" | "direct";
 const UNASSIGNED_UNIT_FILTER = "__unassigned__";
 
 export function ManagementTasksPage() {
+  const [searchParams] = useSearchParams();
   const selectedClassId = useAppSelector((s) => s.app.selectedClassId);
   const selectedSubjectId = useAppSelector((s) => s.app.selectedSubjectId);
 
@@ -103,6 +106,15 @@ export function ManagementTasksPage() {
       return selectedUnitFilterId === UNASSIGNED_UNIT_FILTER ? !unitId : unitId === selectedUnitFilterId;
     });
   }, [linkByTaskId, selectedUnitFilterId, tasksForSubject]);
+
+  useEffect(() => {
+    const targetTaskId = searchParams.get("taskId");
+    if (!targetTaskId || !selectedSubjectId) return;
+    const targetLink = linksForSubject.find((link) => link.taskId === targetTaskId);
+    if (!targetLink) return;
+    setSelectedUnitFilterId(targetLink.unitId ?? UNASSIGNED_UNIT_FILTER);
+    setSelectedTaskId(targetTaskId);
+  }, [linksForSubject, searchParams, selectedSubjectId]);
 
   useEffect(() => {
     if (!selectedSubjectId) {
@@ -1131,6 +1143,8 @@ export function ManagementTasksPage() {
 
                 </div>
               </section>
+
+              <ResourceManager ownerType="task" ownerId={selectedTask.id} heading="Materiales y recursos" />
 
               <section className="detail-section">
                 <div className="course-detail-header">

@@ -17,6 +17,12 @@ const AttendancePage = lazy(() =>
 const AttendanceHistoryPage = lazy(() =>
   import("./modules/attendance/AttendanceHistoryPage").then((module) => ({ default: module.AttendanceHistoryPage }))
 );
+const AgendaPage = lazy(() =>
+  import("./modules/agenda/AgendaPage").then((module) => ({ default: module.AgendaPage }))
+);
+const ClassroomPage = lazy(() =>
+  import("./modules/classroom/ClassroomPage").then((module) => ({ default: module.ClassroomPage }))
+);
 const ConfigLayout = lazy(() =>
   import("./modules/config/ConfigLayout").then((module) => ({ default: module.ConfigLayout }))
 );
@@ -65,6 +71,9 @@ const PlannerPage = lazy(() =>
 );
 const ReportsPage = lazy(() =>
   import("./modules/reports/ReportsPage").then((module) => ({ default: module.ReportsPage }))
+);
+const SearchPage = lazy(() =>
+  import("./modules/search/SearchPage").then((module) => ({ default: module.SearchPage }))
 );
 const TodayPage = lazy(() =>
   import("./modules/today/TodayPage").then((module) => ({ default: module.TodayPage }))
@@ -226,6 +235,9 @@ function App() {
           </Route>
 
           <Route path="/today" element={<TodayPage />} />
+          <Route path="/agenda" element={<AgendaPage />} />
+          <Route path="/classroom" element={<ClassroomPage />} />
+          <Route path="/search" element={<SearchPage />} />
           <Route path="/gradebook" element={<GradebookPage />} />
           <Route path="/journal" element={<Navigate replace to="/journal/attendance" />} />
           <Route path="/journal/attendance" element={<AttendanceHistoryPage />} />

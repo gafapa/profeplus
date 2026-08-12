@@ -11,6 +11,7 @@ export type NavigationIcon =
   | "schedule"
   | "planner"
   | "reports"
+  | "search"
   | "config";
 
 export type NavigationItem = {
@@ -39,7 +40,12 @@ export const navigationAreas: NavigationArea[] = [
     description: "Impartir y registrar las clases del día",
     icon: "today",
     tone: "today",
-    items: [{ to: "/today", label: "Jornada", icon: "today" }]
+    items: [
+      { to: "/today", label: "Jornada", icon: "today" },
+      { to: "/agenda", label: "Agenda", icon: "schedule" },
+      { to: "/classroom", label: "Aula", icon: "students" },
+      { to: "/search", label: "Buscar", icon: "search" }
+    ]
   },
   {
     id: "planning",

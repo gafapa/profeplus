@@ -6,8 +6,10 @@ import type {
   AttendanceEntry,
   ChecklistTemplate,
   ClassGroup,
+  ClassroomLayout,
   DailyClassRecord,
   FamilyContact,
+  FeedbackComment,
   GradebookGroup,
   GradebookPeriodSnapshot,
   GradeEntry,
@@ -21,6 +23,7 @@ import type {
   TaskGradebookConfig,
   TaskDirectGrade,
   RubricTemplate,
+  ResourceAttachment,
   ScheduleDay,
   ScheduleSettings,
   UnitBlock,
@@ -81,6 +84,9 @@ class ProfePlusDB extends Dexie {
   familyContacts!: Table<FamilyContact, string>;
   supportGroups!: Table<SupportGroup, string>;
   supportGroupMembers!: Table<SupportGroupMember, string>;
+  resourceAttachments!: Table<ResourceAttachment, string>;
+  classroomLayouts!: Table<ClassroomLayout, string>;
+  feedbackComments!: Table<FeedbackComment, string>;
 
   constructor() {
     super("profeplus-db");
@@ -239,6 +245,16 @@ class ProfePlusDB extends Dexie {
           personId: student.personId ?? student.id
         }))
       );
+    });
+    this.version(4).stores({
+      resourceAttachments:
+        "id,ownerType,ownerId,kind,createdAt,[ownerType+ownerId]"
+    });
+    this.version(5).stores({
+      classroomLayouts: "id,&classId,updatedAt"
+    });
+    this.version(6).stores({
+      feedbackComments: "id,category,updatedAt"
     });
   }
 }

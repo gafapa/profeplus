@@ -500,7 +500,10 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await db.classGroups.delete(courseId);
+    await db.transaction("rw", db.classGroups, db.classroomLayouts, async () => {
+      await db.classroomLayouts.where("classId").equals(courseId).delete();
+      await db.classGroups.delete(courseId);
+    });
     setNotice("Curso eliminado.");
     await loadAll();
   };
@@ -623,6 +626,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteStudent = async (studentId: string): Promise<void> => {
+    const student = students.find((item) => item.id === studentId);
+    if (!student) return;
     const recordedData = await countStudentRecordedData(studentId);
     const subjectAssignmentsCount = await db.subjectStudentLinks.where("studentId").equals(studentId).count();
     const dependencies = formatDependencies([
@@ -637,7 +642,16 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    await db.students.delete(studentId);
+    await db.transaction("rw", db.students, db.resourceAttachments, db.classroomLayouts, async () => {
+      await db.resourceAttachments.where("[ownerType+ownerId]").equals(["student", studentId]).delete();
+      const layout = await db.classroomLayouts.where("classId").equals(student.classId).first();
+      if (layout?.assignments[studentId] !== undefined) {
+        const assignments = { ...layout.assignments };
+        delete assignments[studentId];
+        await db.classroomLayouts.put({ ...layout, assignments, updatedAt: new Date().toISOString() });
+      }
+      await db.students.delete(studentId);
+    });
     setNotice("Alumno eliminado.");
     await loadAll();
   };
@@ -1246,10 +1260,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
 
     const emptyConfigIds = gradebookConfigs.filter((config) => !isMeaningfulTaskGradebookConfig(config)).map((config) => config.id);
-    await db.transaction("rw", db.tasks, db.taskGradebookConfigs, async () => {
+    await db.transaction("rw", db.tasks, db.taskGradebookConfigs, db.resourceAttachments, async () => {
       if (emptyConfigIds.length > 0) {
         await db.taskGradebookConfigs.bulkDelete(emptyConfigIds);
       }
+      await db.resourceAttachments.where("[ownerType+ownerId]").equals(["task", taskId]).delete();
       await db.tasks.delete(taskId);
     });
     setNotice("Tarea eliminada.");

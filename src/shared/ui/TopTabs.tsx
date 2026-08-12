@@ -38,6 +38,8 @@ function TopTabIcon({ icon }: { icon: NavigationIcon }) {
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v3M18 4v3M4 8h16v12H4zM8 12h3M13 12h3M8 16h8" /><path d="m15 5 2 2 4-4" /></svg>;
     case "reports":
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V5h14v14zM9 16V9M12 16v-4M15 16v-7" /></svg>;
+    case "search":
+      return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>;
     case "config":
       return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM4 12h3M17 12h3M12 4v3M12 17v3M6.6 6.6l2.1 2.1M15.3 15.3l2.1 2.1M17.4 6.6l-2.1 2.1M8.7 15.3l-2.1 2.1" /></svg>;
     default:
@@ -66,6 +68,7 @@ export function TopTabs() {
     location.pathname.startsWith("/today") ||
     location.pathname.startsWith("/planner") ||
     location.pathname.startsWith("/reports") ||
+    location.pathname.startsWith("/search") ||
     location.pathname.startsWith("/management/units") ||
     location.pathname.startsWith("/management/tasks");
   const showSelectors = !isManagementRoute && !usesLocalContextSelector;

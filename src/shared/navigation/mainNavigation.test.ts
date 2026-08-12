@@ -8,6 +8,9 @@ import {
 describe("main navigation", () => {
   it.each([
     ["/today", "today"],
+    ["/agenda", "today"],
+    ["/classroom", "today"],
+    ["/search", "today"],
     ["/planner", "planning"],
     ["/management/units", "planning"],
     ["/management/tasks", "planning"],

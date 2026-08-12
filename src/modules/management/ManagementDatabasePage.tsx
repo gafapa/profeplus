@@ -8,6 +8,22 @@ import {
   type EncryptedBackupEnvelope
 } from "../../shared/backup/encryption";
 import { db } from "../../shared/db/database";
+import { MAX_LAYOUT_DIMENSION, MIN_LAYOUT_DIMENSION } from "../../shared/classroom/layout";
+import {
+  FEEDBACK_COMMENT_CATEGORIES,
+  MAX_FEEDBACK_COMMENT_LENGTH,
+  normalizeFeedbackComment
+} from "../../shared/feedback/comments";
+import {
+  MAX_RESOURCE_FILE_BYTES,
+  MAX_RESOURCE_FILE_NAME_LENGTH,
+  MAX_RESOURCE_TITLE_LENGTH,
+  MAX_RESOURCE_URL_LENGTH,
+  MAX_TOTAL_RESOURCE_BYTES,
+  base64DecodedByteLength,
+  isAllowedResourceMimeType,
+  normalizeHttpUrl
+} from "../../shared/resources/resources";
 import { defaultScheduleDays } from "../../shared/schedule/weekDays";
 import { Modal } from "../../shared/ui/Modal";
 import { toLocalIsoDate } from "../../shared/utils/date";
@@ -203,8 +219,8 @@ type DatabaseExportPayload = {
   tables: Record<string, unknown[]>;
 };
 
-export const DATABASE_SCHEMA_VERSION = 3;
-const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
+export const DATABASE_SCHEMA_VERSION = 6;
+const MAX_IMPORT_FILE_BYTES = 75 * 1024 * 1024;
 const MAX_STUDENT_PHOTO_DATA_URL_CHARS = 1_500_000;
 
 function buildBackupFileName(label = "backup"): string {
@@ -583,6 +599,66 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
   const rubricTemplateIds = ids("rubricTemplates");
   const checklistTemplateIds = ids("checklistTemplates");
   const studentClassById = new Map(rows("students").map((row) => [row.id as string, row.classId as string]));
+
+  for (const row of rows("classroomLayouts")) {
+    const classId = requireString(row, "classroomLayouts", "classId");
+    requireReference(classId, classIds, "classroomLayouts", "classId");
+    if (row.id !== classId) {
+      throw new Error("La tabla 'classroomLayouts' contiene un id que no coincide con su curso.");
+    }
+    requireNumber(row, "classroomLayouts", "rows");
+    requireNumber(row, "classroomLayouts", "columns");
+    const layoutRows = row.rows as number;
+    const layoutColumns = row.columns as number;
+    if (
+      !Number.isInteger(layoutRows) ||
+      !Number.isInteger(layoutColumns) ||
+      layoutRows < MIN_LAYOUT_DIMENSION ||
+      layoutRows > MAX_LAYOUT_DIMENSION ||
+      layoutColumns < MIN_LAYOUT_DIMENSION ||
+      layoutColumns > MAX_LAYOUT_DIMENSION
+    ) {
+      throw new Error("La tabla 'classroomLayouts' contiene dimensiones no válidas.");
+    }
+    if (!isPlainObject(row.assignments)) {
+      throw new Error("La tabla 'classroomLayouts' contiene 'assignments' no válido.");
+    }
+    const occupiedSeats = new Set<number>();
+    for (const [studentId, seat] of Object.entries(row.assignments)) {
+      requireReference(studentId, studentIds, "classroomLayouts", "assignments");
+      if (studentClassById.get(studentId) !== classId) {
+        throw new Error("La tabla 'classroomLayouts' contiene un alumno de otro curso.");
+      }
+      if (!Number.isInteger(seat) || (seat as number) < 0 || (seat as number) >= layoutRows * layoutColumns) {
+        throw new Error("La tabla 'classroomLayouts' contiene un asiento fuera del plano.");
+      }
+      if (occupiedSeats.has(seat as number)) {
+        throw new Error("La tabla 'classroomLayouts' contiene asientos duplicados.");
+      }
+      occupiedSeats.add(seat as number);
+    }
+    requireIsoDateTimeString(row.createdAt, "classroomLayouts.createdAt");
+    requireIsoDateTimeString(row.updatedAt, "classroomLayouts.updatedAt");
+  }
+  requireUniqueLogicalRows(rows("classroomLayouts"), "classroomLayouts", "classId", (row) => row.classId as string);
+  for (const row of rows("feedbackComments")) {
+    const category = requireString(row, "feedbackComments", "category");
+    if (!FEEDBACK_COMMENT_CATEGORIES.includes(category as (typeof FEEDBACK_COMMENT_CATEGORIES)[number])) {
+      throw new Error("La tabla 'feedbackComments' contiene una categoría no válida.");
+    }
+    const feedbackText = requireString(row, "feedbackComments", "text");
+    if (feedbackText.length > MAX_FEEDBACK_COMMENT_LENGTH || normalizeFeedbackComment(feedbackText) !== feedbackText) {
+      throw new Error("La tabla 'feedbackComments' contiene texto no válido.");
+    }
+    requireIsoDateTimeString(row.createdAt, "feedbackComments.createdAt");
+    requireIsoDateTimeString(row.updatedAt, "feedbackComments.updatedAt");
+  }
+  requireUniqueLogicalRows(
+    rows("feedbackComments"),
+    "feedbackComments",
+    "category+text",
+    (row) => `${row.category as string}:${(row.text as string).toLocaleLowerCase("es")}`
+  );
   const assessmentById = new Map(rows("assessments").map((row) => [row.id as string, row]));
   const unitSubjectById = new Map(rows("unitBlocks").map((row) => [row.id as string, row.subjectId as string]));
   const subjectById = new Map(rows("subjects").map((row) => [row.id as string, row]));
@@ -1522,6 +1598,65 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     "supportGroupId+studentId",
     (row) => `${row.supportGroupId as string}:${row.studentId as string}`
   );
+  let totalResourceBytes = 0;
+  for (const row of rows("resourceAttachments")) {
+    const ownerType = requireString(row, "resourceAttachments", "ownerType");
+    const ownerId = requireString(row, "resourceAttachments", "ownerId");
+    if (ownerType === "student") {
+      requireReference(ownerId, studentIds, "resourceAttachments", "ownerId");
+    } else if (ownerType === "task") {
+      requireReference(ownerId, taskIds, "resourceAttachments", "ownerId");
+    } else {
+      throw new Error("La tabla 'resourceAttachments' contiene 'ownerType' no válido.");
+    }
+
+    const title = requireString(row, "resourceAttachments", "title");
+    if (title.length < 2 || title.length > MAX_RESOURCE_TITLE_LENGTH) {
+      throw new Error("La tabla 'resourceAttachments' contiene un título no válido.");
+    }
+    requireIsoDateTimeString(row.createdAt, "resourceAttachments.createdAt");
+    requireIsoDateTimeString(row.updatedAt, "resourceAttachments.updatedAt");
+
+    const kind = requireString(row, "resourceAttachments", "kind");
+    if (kind === "link") {
+      const url = requireString(row, "resourceAttachments", "url");
+      if (url.length > MAX_RESOURCE_URL_LENGTH) {
+        throw new Error("La tabla 'resourceAttachments' contiene una URL demasiado larga.");
+      }
+      normalizeHttpUrl(url);
+      if (row.fileName !== undefined || row.mimeType !== undefined || row.sizeBytes !== undefined || row.dataBase64 !== undefined) {
+        throw new Error("La tabla 'resourceAttachments' mezcla datos de enlace y archivo.");
+      }
+      continue;
+    }
+    if (kind !== "file") {
+      throw new Error("La tabla 'resourceAttachments' contiene 'kind' no válido.");
+    }
+    if (row.url !== undefined) {
+      throw new Error("La tabla 'resourceAttachments' mezcla datos de archivo y enlace.");
+    }
+    const fileName = requireString(row, "resourceAttachments", "fileName");
+    if (fileName.length > MAX_RESOURCE_FILE_NAME_LENGTH || /[\u0000-\u001f]/.test(fileName)) {
+      throw new Error("La tabla 'resourceAttachments' contiene un nombre de archivo no válido.");
+    }
+    const mimeType = requireString(row, "resourceAttachments", "mimeType");
+    if (!isAllowedResourceMimeType(mimeType)) {
+      throw new Error("La tabla 'resourceAttachments' contiene un tipo de archivo no permitido.");
+    }
+    requireNumber(row, "resourceAttachments", "sizeBytes");
+    const sizeBytes = row.sizeBytes as number;
+    if (!Number.isInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_RESOURCE_FILE_BYTES) {
+      throw new Error("La tabla 'resourceAttachments' contiene un tamaño de archivo no válido.");
+    }
+    const dataBase64 = requireString(row, "resourceAttachments", "dataBase64");
+    if (base64DecodedByteLength(dataBase64) !== sizeBytes) {
+      throw new Error("La tabla 'resourceAttachments' contiene datos de archivo dañados.");
+    }
+    totalResourceBytes += sizeBytes;
+  }
+  if (totalResourceBytes > MAX_TOTAL_RESOURCE_BYTES) {
+    throw new Error("La tabla 'resourceAttachments' supera el límite total de almacenamiento.");
+  }
   for (const row of rows("scheduleSettings")) {
     if (row.id !== "default") {
       throw new Error("La tabla 'scheduleSettings' contiene un id no válido.");

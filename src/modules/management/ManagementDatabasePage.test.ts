@@ -91,7 +91,7 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
 describe("database payload validation", () => {
   it("defines only the current clean database tables", () => {
     expect(db.name).toBe("profeplus-db");
-    expect(db.verno).toBe(3);
+    expect(db.verno).toBe(6);
     expect(db.tables.map((table) => table.name).sort()).toEqual([
       "academicPeriods",
       "appPreferences",
@@ -99,11 +99,14 @@ describe("database payload validation", () => {
       "attendanceEntries",
       "checklistTemplates",
       "classGroups",
+      "classroomLayouts",
       "dailyClassRecords",
       "familyContacts",
+      "feedbackComments",
       "gradeEntries",
       "gradebookGroups",
       "gradebookPeriodSnapshots",
+      "resourceAttachments",
       "rubricTemplates",
       "scheduleDays",
       "scheduleSettings",
@@ -284,6 +287,112 @@ describe("database payload validation", () => {
     });
 
     expect(() => validateDatabasePayload(payload)).not.toThrow();
+  });
+
+  it("accepts validated student evidence and task links", () => {
+    const timestamp = "2026-08-12T09:00:00.000Z";
+    const payload = validPayload({
+      resourceAttachments: [
+        {
+          id: "resource-file-1",
+          ownerType: "student",
+          ownerId: "student-1",
+          kind: "file",
+          title: "Project evidence",
+          fileName: "evidence.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 3,
+          dataBase64: "AQID",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        {
+          id: "resource-link-1",
+          ownerType: "task",
+          ownerId: "task-1",
+          kind: "link",
+          title: "Reference material",
+          url: "https://example.org/material",
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      ]
+    });
+
+    expect(validateDatabasePayload(payload).resourceAttachments).toHaveLength(2);
+  });
+
+  it("accepts a valid classroom layout and rejects cross-class or duplicate seats", () => {
+    const timestamp = "2026-08-12T09:00:00.000Z";
+    const validLayout = {
+      id: "class-1",
+      classId: "class-1",
+      rows: 2,
+      columns: 2,
+      assignments: { "student-1": 0 },
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    expect(validateDatabasePayload(validPayload({ classroomLayouts: [validLayout] })).classroomLayouts).toHaveLength(1);
+
+    const duplicatedSeats = validPayload({
+      students: [
+        { id: "student-1", classId: "class-1", firstName: "Ana", lastName: "Lopez", fullName: "Ana Lopez" },
+        { id: "student-2", classId: "class-1", firstName: "Luis", lastName: "Perez", fullName: "Luis Perez" }
+      ],
+      subjectStudentLinks: [{ id: "subject-student-1", subjectId: "subject-1", studentId: "student-1" }],
+      classroomLayouts: [{ ...validLayout, assignments: { "student-1": 0, "student-2": 0 } }]
+    });
+    expect(() => validateDatabasePayload(duplicatedSeats)).toThrow(/asientos duplicados/);
+  });
+
+  it("accepts normalized reusable feedback and rejects logical duplicates", () => {
+    const timestamp = "2026-08-12T09:00:00.000Z";
+    const comment = {
+      id: "feedback-1",
+      category: "work",
+      text: "Participa de forma activa.",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    expect(validateDatabasePayload(validPayload({ feedbackComments: [comment] })).feedbackComments).toHaveLength(1);
+    expect(() => validateDatabasePayload(validPayload({
+      feedbackComments: [comment, { ...comment, id: "feedback-2", text: "participa de forma activa." }]
+    }))).toThrow(/category\+text/);
+  });
+
+  it("rejects unsafe or corrupted resource attachments", () => {
+    const timestamp = "2026-08-12T09:00:00.000Z";
+    const unsafeLink = validPayload({
+      resourceAttachments: [{
+        id: "resource-1",
+        ownerType: "task",
+        ownerId: "task-1",
+        kind: "link",
+        title: "Unsafe link",
+        url: "javascript:alert(1)",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }]
+    });
+    const corruptedFile = validPayload({
+      resourceAttachments: [{
+        id: "resource-2",
+        ownerType: "student",
+        ownerId: "student-1",
+        kind: "file",
+        title: "Corrupted evidence",
+        fileName: "evidence.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+        dataBase64: "AQID",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }]
+    });
+
+    expect(() => validateDatabasePayload(unsafeLink)).toThrow(/https/);
+    expect(() => validateDatabasePayload(corruptedFile)).toThrow(/dañados/);
   });
 
   it("rejects duplicated support-group memberships", () => {

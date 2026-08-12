@@ -397,3 +397,44 @@ export type SupportGroupMember = {
   studentId: string;
   createdAt: string;
 };
+
+export type ResourceOwnerType = "student" | "task";
+export type ResourceKind = "file" | "link";
+
+/** A local file or web link attached to a student profile or reusable task. */
+export type ResourceAttachment = {
+  id: string;
+  ownerType: ResourceOwnerType;
+  ownerId: string;
+  kind: ResourceKind;
+  title: string;
+  url?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  dataBase64?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One persistent seating layout for a class group. */
+export type ClassroomLayout = {
+  id: string;
+  classId: string;
+  rows: number;
+  columns: number;
+  assignments: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FeedbackCommentCategory = "attendance" | "work" | "gradebook" | "general";
+
+/** Reusable teacher-authored feedback; never applied automatically. */
+export type FeedbackComment = {
+  id: string;
+  category: FeedbackCommentCategory;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+};

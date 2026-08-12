@@ -15,8 +15,11 @@ import { toLocalIsoDate } from "../../shared/utils/date";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { ResourceManager } from "../../shared/resources/ResourceManager";
+import { useSearchParams } from "react-router-dom";
 
 export function ManagementStudentsPage() {
+  const [searchParams] = useSearchParams();
   const { formatName } = useStudentDisplay();
   const { students, courses, createEmptyStudent, updateStudent, deleteStudent, setNotice, refreshAll } =
     useManagement();
@@ -40,6 +43,16 @@ export function ManagementStudentsPage() {
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const importCsvInputRef = useRef<HTMLInputElement | null>(null);
   const selectedCourseRef = useRef("");
+
+  useEffect(() => {
+    const targetStudentId = searchParams.get("studentId");
+    if (!targetStudentId) return;
+    const targetStudent = students.find((student) => student.id === targetStudentId);
+    if (!targetStudent) return;
+    setSelectedCourseId(targetStudent.classId);
+    setSelectedStudentId(targetStudent.id);
+    selectedCourseRef.current = targetStudent.classId;
+  }, [searchParams, students]);
 
   useEffect(() => {
     if (courses.length === 0) {
@@ -717,6 +730,8 @@ export function ManagementStudentsPage() {
                   ) : null}
                 </div>
               </section>
+
+              <ResourceManager ownerType="student" ownerId={selectedStudent.id} />
             </>
           ) : (
             <p className="empty-state">No hay alumnos para mostrar.</p>
