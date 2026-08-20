@@ -1,9 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-08-20
 
 ### Added
 
+- Added a public value-proposition landing page with a clearly labeled simulated classroom-day preview and direct workspace entry.
+- Added same-origin anonymous product analytics using fixed, bodyless event paths with no identifiers, cookies, free text, or academic data.
+- Added an in-app product feedback composer with browser sharing and clipboard fallback, plus an explicit preview before sharing.
+- Added backup freshness status, contextual reminders, recovery guidance, and non-destructive validation of encrypted or plaintext backup files.
+- Added a mobile Today shortcut, touch-sized classroom controls, horizontal session navigation, and a sticky class-save action for narrow screens.
 - Added an accessible local-first Agenda that combines actionable tutor follow-ups, family next steps, planned sessions, dated assessments, and academic-period endings with contextual navigation and ICS calendar export.
 - Added a persistent, accessible classroom layout with seat swapping, random distribution, non-repeating student selection, balanced group generation, and same-day absence exclusion.
 - Added a categorized reusable feedback bank with explicit insertion into Today attendance/work observations and manual gradebook comments.

@@ -10,6 +10,7 @@ import {
   type SearchResult,
   type SearchResultKind
 } from "../../shared/search/search";
+import { trackAnalyticsEventOncePerSession } from "../../shared/analytics/analytics";
 
 const ALL_KINDS = "all";
 
@@ -104,6 +105,12 @@ export function SearchPage() {
       setSearchParams(nextParams, { replace: true });
     }
   }, [query, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (query.trim().length >= 2) {
+      trackAnalyticsEventOncePerSession("search_used");
+    }
+  }, [query]);
 
   const results = useMemo(() => buildSearchResults(data, query), [data, query]);
   const filteredResults = useMemo(

@@ -29,6 +29,7 @@ import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuar
 import { Modal } from "../../shared/ui/Modal";
 import { useUnsavedChangesDialog } from "../../shared/ui/UnsavedChangesDialog";
 import { buildTodaySlots, type TodaySlot } from "./todaySlots";
+import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
 
 const STATUS_LABELS: Record<AttendanceEntry["status"], string> = {
   present: "Presente",
@@ -575,6 +576,7 @@ export function TodayPage() {
       setNoteDraft(new Map());
       setAttendanceDetailsDraft(new Map());
       setNotice("Clase guardada: asistencia y registro están al día.");
+      trackAnalyticsEvent("class_saved");
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo completar el guardado";
@@ -872,6 +874,9 @@ export function TodayPage() {
                   <p>{selectedTask?.title ?? selectedSlot.title ?? "Sin sesión planificada"}</p>
                 </div>
                 <div className="today-session-actions">
+                  <a className="btn primary today-mobile-primary" href="#today-students">
+                    Pasar lista
+                  </a>
                   <NavLink className="btn secondary" to={attendanceHistoryLink}>Ver asistencia</NavLink>
                   {selectedTask && selectedSession ? (
                     <NavLink className="btn secondary" to={evaluationLink}>Evaluar tarea</NavLink>
@@ -959,7 +964,7 @@ export function TodayPage() {
                   </div>
                 </div>
 
-                <div className="today-panel students-panel">
+                <div id="today-students" className="today-panel students-panel">
                   <div className="today-panel-heading">
                     <div>
                       <h2>Alumnos en clase</h2>

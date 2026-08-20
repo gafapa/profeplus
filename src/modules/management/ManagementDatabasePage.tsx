@@ -7,6 +7,8 @@ import {
   isEncryptedBackupEnvelope,
   type EncryptedBackupEnvelope
 } from "../../shared/backup/encryption";
+import { recordBackupCreated } from "../../shared/backup/status";
+import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
 import { db } from "../../shared/db/database";
 import { MAX_LAYOUT_DIMENSION, MIN_LAYOUT_DIMENSION } from "../../shared/classroom/layout";
 import {
@@ -26,6 +28,7 @@ import {
 } from "../../shared/resources/resources";
 import { defaultScheduleDays } from "../../shared/schedule/weekDays";
 import { Modal } from "../../shared/ui/Modal";
+import { BackupTrustPanel } from "../../shared/ui/BackupStatus";
 import { toLocalIsoDate } from "../../shared/utils/date";
 import { useManagement } from "./ManagementContext";
 
@@ -1707,6 +1710,7 @@ export function ManagementDatabasePage() {
   const [encryptedImport, setEncryptedImport] = useState<{
     fileName: string;
     envelope: EncryptedBackupEnvelope;
+    mode: "import" | "verify";
   } | null>(null);
   const [importPassword, setImportPassword] = useState("");
   const [safetyPassword, setSafetyPassword] = useState("");
@@ -1718,6 +1722,7 @@ export function ManagementDatabasePage() {
     tablesData: Record<string, unknown[]>;
   } | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const verificationInputRef = useRef<HTMLInputElement | null>(null);
 
   const runDatabaseAction = async (action: () => Promise<void>): Promise<void> => {
     setIsBusy(true);
@@ -1770,6 +1775,8 @@ export function ManagementDatabasePage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      recordBackupCreated();
+      trackAnalyticsEvent("backup_exported");
     } finally {
       URL.revokeObjectURL(downloadUrl);
     }
@@ -1808,7 +1815,7 @@ export function ManagementDatabasePage() {
     setSafetyPassword("");
   };
 
-  const prepareDatabaseImport = async (file: File): Promise<void> => {
+  const prepareDatabaseFile = async (file: File, mode: "import" | "verify"): Promise<void> => {
     await runDatabaseAction(async () => {
       if (file.size > MAX_IMPORT_FILE_BYTES) {
         throw new Error("El archivo es demasiado grande para importarlo de forma segura.");
@@ -1822,11 +1829,18 @@ export function ManagementDatabasePage() {
       }
 
       if (isEncryptedBackupEnvelope(parsed)) {
-        setEncryptedImport({ fileName: file.name, envelope: parsed });
+        setEncryptedImport({ fileName: file.name, envelope: parsed, mode });
         setImportPassword("");
         return;
       }
-      prepareValidatedImport(parsed, file.name);
+      if (mode === "verify") {
+        const tablesData = validateDatabasePayload(parsed);
+        const totalRows = Object.values(tablesData).reduce((sum, rows) => sum + rows.length, 0);
+        setNotice(`Copia válida: ${totalRows} registros comprobados sin modificar tus datos.`);
+        trackAnalyticsEvent("backup_verified");
+      } else {
+        prepareValidatedImport(parsed, file.name);
+      }
     });
   };
 
@@ -1834,7 +1848,14 @@ export function ManagementDatabasePage() {
     if (!encryptedImport) return;
     await runDatabaseAction(async () => {
       const parsed = await decryptBackupPayload(encryptedImport.envelope, importPassword);
-      prepareValidatedImport(parsed, encryptedImport.fileName);
+      if (encryptedImport.mode === "verify") {
+        const tablesData = validateDatabasePayload(parsed);
+        const totalRows = Object.values(tablesData).reduce((sum, rows) => sum + rows.length, 0);
+        setNotice(`Copia cifrada válida: ${totalRows} registros comprobados sin modificar tus datos.`);
+        trackAnalyticsEvent("backup_verified");
+      } else {
+        prepareValidatedImport(parsed, encryptedImport.fileName);
+      }
       setEncryptedImport(null);
       setImportPassword("");
     });
@@ -1862,6 +1883,7 @@ export function ManagementDatabasePage() {
         dispatch(hydrateAppPreferences(preferences));
       }
       setNotice("Base de datos importada.");
+      trackAnalyticsEvent("backup_imported");
       setPendingImport(null);
       setSafetyPassword("");
     });
@@ -1911,9 +1933,12 @@ export function ManagementDatabasePage() {
 
   return (
     <>
+      <BackupTrustPanel />
       <article className="management-card">
-        <h1 className="sr-only">Base de datos</h1>
-        <p className="hint">Exporta, importa o borra todos los datos de la app.</p>
+        <h2>Acciones de copia</h2>
+        <p className="hint">
+          Exporta una copia cifrada, compruébala sin modificar tus datos o restaura una copia anterior.
+        </p>
 
         {import.meta.env.DEV && (
           <div className="inline-form">
@@ -1946,7 +1971,15 @@ export function ManagementDatabasePage() {
             disabled={isBusy}
             onClick={() => importInputRef.current?.click()}
           >
-            Importar
+            Restaurar copia
+          </button>
+          <button
+            type="button"
+            className="btn secondary"
+            disabled={isBusy}
+            onClick={() => verificationInputRef.current?.click()}
+          >
+            Comprobar una copia
           </button>
           <button
             type="button"
@@ -1954,7 +1987,7 @@ export function ManagementDatabasePage() {
             disabled={isBusy}
             onClick={() => void verifyDatabaseIntegrity()}
           >
-            Verificar integridad
+            Verificar datos actuales
           </button>
           <button
             type="button"
@@ -1982,7 +2015,24 @@ export function ManagementDatabasePage() {
             if (!file) {
               return;
             }
-            void prepareDatabaseImport(file);
+            void prepareDatabaseFile(file, "import");
+          }}
+        />
+
+        <input
+          ref={verificationInputRef}
+          className="student-photo-input-hidden"
+          type="file"
+          aria-label="Seleccionar copia JSON para comprobar"
+          accept="application/json,.json"
+          disabled={isBusy}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.currentTarget.value = "";
+            if (!file) {
+              return;
+            }
+            void prepareDatabaseFile(file, "verify");
           }}
         />
 
@@ -2049,8 +2099,12 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={encryptedImport !== null}
-        title="Descifrar copia de seguridad"
-        subtitle={encryptedImport?.fileName}
+        title={encryptedImport?.mode === "verify" ? "Comprobar copia cifrada" : "Descifrar copia de seguridad"}
+        subtitle={
+          encryptedImport?.mode === "verify"
+            ? `${encryptedImport.fileName} · La comprobación no modificará tus datos.`
+            : encryptedImport?.fileName
+        }
         onClose={() => {
           if (isBusy) return;
           setEncryptedImport(null);
@@ -2082,7 +2136,7 @@ export function ManagementDatabasePage() {
             disabled={isBusy || importPassword.length === 0}
             onClick={() => void decryptPendingImport()}
           >
-            Descifrar y revisar
+            {encryptedImport?.mode === "verify" ? "Descifrar y comprobar" : "Descifrar y revisar"}
           </button>
         </div>
       </Modal>

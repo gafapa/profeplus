@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import { ManagementProvider, useManagement } from "./ManagementContext";
 import { buildOnboardingChecklist } from "../../shared/onboarding/checklist";
 import { TeacherOnboarding } from "./TeacherOnboarding";
+import { trackAnalyticsEventOnce } from "../../shared/analytics/analytics";
 
 function ManagementShell() {
   const {
@@ -34,6 +35,13 @@ function ManagementShell() {
     subjects,
     subjectCourseLinks
   });
+  const onboardingComplete = onboardingItems.length > 0 && onboardingItems.every((item) => item.complete);
+
+  useEffect(() => {
+    if (isReady && onboardingComplete) {
+      trackAnalyticsEventOnce("onboarding_completed");
+    }
+  }, [isReady, onboardingComplete]);
   return (
     <section className="module-card">
       {isBusy ? (

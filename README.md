@@ -6,6 +6,7 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 
 ## Current Scope
 
+- A public landing page explains the local-first value proposition before opening the private teacher workspace. It uses a clearly labeled simulated day view and does not require account creation.
 - Top-level teacher workspace organized around Today, an actionable Agenda, the weekly Planificador, advanced task evaluation, attendance history, gradebook, academic management, reports, and configuration.
 - A local-first action agenda combines overdue and upcoming tutor follow-ups, family next steps, planned task sessions, dated assessments, and open academic-period endings. It supports course, type, status, and time-horizon filters plus standards-based ICS calendar export.
 - A persistent classroom layout supports accessible seat reassignment and swapping, random seating, non-repeating student selection, balanced group generation, and optional exclusion of students marked absent today.
@@ -26,6 +27,9 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 - Reports module with date-range filtering, printable HTML reports, CSV exports, AI-ready datasets, and AI report generation through the extension runtime.
 - Local database operations for seeded test data, encrypted JSON backup export/import, integrity checks, and data reset. Destructive replacements create an encrypted safety backup and require explicit confirmation.
 - Selective encrypted handoff packages for chosen students and support groups, with conflict preview and non-destructive merge semantics.
+- Privacy-preserving product analytics record only fixed event names through same-origin, bodyless requests. No academic content, search text, record IDs, cookies, or persistent user identifiers are collected.
+- An in-app feedback composer lets teachers review and share a suggestion, problem, or question through the browser share sheet or clipboard without sending academic data automatically.
+- Backup freshness reminders, a visible recovery status, and non-destructive backup-file verification make the local-only storage model explicit and easier to recover.
 
 ## Teacher Workflow
 
@@ -104,7 +108,7 @@ Database tools are available under `Configuración > Base de datos`:
 - Load seeded demo data for local testing.
 - Export an AES-256-GCM encrypted JSON backup with app metadata, schema version, export timestamp, and table data. Keys are derived from a password of at least 12 characters using PBKDF2-SHA-256 with 210,000 iterations.
 - Import an encrypted backup, or a legacy plaintext JSON backup, after validating the exact current schema, export timestamp, complete table set, row IDs, references, duplicates, dates, schedule-day alignment, schedule overlaps, task scopes, and assessment shapes.
-- Verify database integrity.
+- Verify the current database integrity or validate an existing backup file without replacing local data.
 - Delete all local app data.
 
 Backups include `schemaVersion` and `exportedAt`. Unsupported or malformed backups are rejected before existing local tables are cleared. Imports and destructive demo/reset operations show a confirmation summary and require a separate password before downloading an encrypted safety backup.
@@ -129,6 +133,14 @@ Database payloads are intentionally not backward compatible. Only payloads produ
 - Resource imports additionally validate ownership, web protocols, MIME allowlists, exact base64 byte lengths, and per-file and total storage limits.
 - The application includes a restrictive Content Security Policy, referrer policy, permission policy, cross-origin isolation headers, clickjacking protection, and MIME-sniffing protection. `public/_headers` applies the full header set on compatible static hosts. Nginx deployments can include `deploy/nginx-security-headers.conf` from the HTTPS server or location block.
 - Anyone with access to an unlocked browser profile can still inspect its IndexedDB data. Use an encrypted operating-system account and do not share the browser profile when handling real student data.
+
+## Anonymous Product Analytics
+
+Production builds can emit a deliberately small set of anonymous product events to the same origin. Events are encoded only in an allowlisted URL path and sent as `POST` requests with no request body, query string, cookies, referrer, student data, free text, record IDs, or generated user ID. Browser Do Not Track and Global Privacy Control are respected. Test and local builds leave analytics disabled by default.
+
+The supported events cover application and coarse workspace opens, initial setup completion, class saves, calendar exports, search use, backup export/verification/import, and feedback opening/sharing. They measure whether major workflows are reached; they do not reconstruct teacher behavior or individual sessions.
+
+For Nginx, include `deploy/nginx-analytics-log-format.conf` once inside the global `http` block and `deploy/nginx-analytics-endpoint.conf` inside the production HTTPS `server` block before publishing. The endpoint returns `204` and writes a dedicated-format line to the container log containing only an ISO timestamp and the fixed event path; IP addresses, user agents, referrers, cookies, request bodies, and query strings are excluded from that line. Set `VITE_ANALYTICS_ENDPOINT` to an empty value to disable collection.
 
 ## AI Extension
 
@@ -172,7 +184,7 @@ src/
     classroom/          Seating, random selection, and balanced grouping logic
     db/                 Dexie schema and shared types
     export/             Safe CSV serialization
-    feedback/           Reusable feedback validation and insertion controls
+    feedback/           Reusable teaching feedback and product feedback controls
     gradebook/          Gradebook and scoring calculations
     handoff/            Selective student handoff validation and merge previews
     hooks/              Shared React hooks
@@ -195,6 +207,8 @@ Automated coverage includes focused Vitest suites for:
 - Agenda action derivation, filtering boundaries, contextual routes, and ICS calendar serialization.
 - Classroom dimensions, assignment cleanup, seat swapping, random layouts, balanced groups, and non-repeating picks.
 - Backup payload validation.
+- Anonymous analytics event allowlisting and route mapping.
+- Backup freshness classification and status copy.
 - Resource URL, file-type, size, base64-integrity, and backup-reference validation.
 - Feedback normalization, duplicate prevention, explicit insertion, and backup validation.
 - Global search matching, accent normalization, result typing, and contextual routes.
@@ -257,6 +271,9 @@ provider must:
 - Apply the security headers in `public/_headers`, or equivalent platform
   configuration. For Nginx, include `deploy/nginx-security-headers.conf` and
   reload Nginx after validating the configuration.
+- For production analytics, include `deploy/nginx-analytics-log-format.conf`
+  in the global `http` block and `deploy/nginx-analytics-endpoint.conf` in the
+  HTTPS server block. Test analytics remain disabled unless explicitly enabled.
 - Avoid sharing browser storage or service-worker state between the two
   domains. Their separate origins provide this isolation automatically.
 

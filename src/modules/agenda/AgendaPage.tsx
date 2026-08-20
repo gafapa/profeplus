@@ -22,6 +22,7 @@ import type {
   TaskSession
 } from "../../shared/db/types";
 import { toLocalIsoDate } from "../../shared/utils/date";
+import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
 
 type AgendaData = {
   classGroups: ClassGroup[];
@@ -181,6 +182,7 @@ export function AgendaPage() {
   const exportVisibleItems = (): void => {
     if (visibleItems.length === 0) return;
     downloadCalendar(visibleItems, today);
+    trackAnalyticsEvent("calendar_exported");
     setNotice(
       `Calendario descargado con ${visibleItems.length} ${visibleItems.length === 1 ? "elemento" : "elementos"}.`
     );
@@ -324,4 +326,3 @@ export function AgendaPage() {
     </section>
   );
 }
-

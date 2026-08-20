@@ -2,4 +2,5 @@
 
 interface ImportMetaEnv {
   readonly VITE_AI_RUNTIME_EXTENSION_ID?: string;
+  readonly VITE_ANALYTICS_ENDPOINT?: string;
 }

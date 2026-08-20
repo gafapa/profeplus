@@ -10,6 +10,13 @@ import { TopTabs } from "./shared/ui/TopTabs";
 import { ConnectionStatus } from "./shared/ui/ConnectionStatus";
 import { AppLockButton, AppLockGate } from "./shared/ui/AppLockGate";
 import packageJson from "../package.json";
+import { LandingPage } from "./modules/landing/LandingPage";
+import {
+  analyticsEventForPath,
+  trackAnalyticsEventOncePerSession
+} from "./shared/analytics/analytics";
+import { ProductFeedback } from "./shared/feedback/ProductFeedback";
+import { BackupReminder, BackupStatusLink } from "./shared/ui/BackupStatus";
 
 const AttendancePage = lazy(() =>
   import("./modules/attendance/AttendancePage").then((module) => ({ default: module.AttendancePage }))
@@ -79,7 +86,7 @@ const TodayPage = lazy(() =>
   import("./modules/today/TodayPage").then((module) => ({ default: module.TodayPage }))
 );
 
-function App() {
+function WorkspaceApp() {
   const location = useLocation();
   const dispatch = useAppDispatch();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
@@ -189,6 +196,8 @@ function App() {
 
       <TopTabs />
 
+      <BackupReminder />
+
       {runtimeError ? (
         <div className="runtime-error" role="alert">
           <span>{runtimeError}</span>
@@ -250,13 +259,34 @@ function App() {
       </main>
       <footer className="status-bar" aria-label="Estado de la aplicación">
         <ConnectionStatus />
+        <BackupStatusLink />
+        <ProductFeedback placement="status" />
         <AppLockButton />
-        <span>ProfePlus</span>
-        <span>v{packageJson.version}</span>
+        <span className="status-bar-brand">ProfePlus</span>
+        <span className="status-bar-version">v{packageJson.version}</span>
       </footer>
     </div>
     </AppLockGate>
   );
+}
+
+function App() {
+  const location = useLocation();
+
+  useEffect(() => {
+    trackAnalyticsEventOncePerSession("app_open");
+  }, []);
+
+  useEffect(() => {
+    const event = analyticsEventForPath(location.pathname);
+    if (event) trackAnalyticsEventOncePerSession(event);
+  }, [location.pathname]);
+
+  if (location.pathname === "/") {
+    return <LandingPage />;
+  }
+
+  return <WorkspaceApp />;
 }
 
 export default App;
