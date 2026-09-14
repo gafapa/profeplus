@@ -152,3 +152,49 @@ test("creating a scope for an existing group only adds a subject, never a duplic
   });
   expect(newSubjectEnrollment).toBe(false);
 });
+
+test("suggests an exact accent-insensitive name match but never links it automatically", async ({ page }) => {
+  await installMoodleFixture(page);
+  await page.goto("/config/moodle");
+  await seedMoodleLocalRecords(page);
+  // A second local student whose name exactly matches the remote "Moodle Pupil" once
+  // accents are ignored - "Local Pupil" (from the shared fixture) must not suggest a match.
+  await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    await db.students.put({ id: "exact-match-student", personId: "exact-match-person", classId: "moodle-local-class", firstName: "Moodle", lastName: "Púpil", fullName: "Moodle Púpil" });
+  });
+  await page.reload();
+  await connectMoodleToken(page, TOKEN);
+  await page.getByRole("combobox", { name: "Curso Moodle", exact: true }).selectOption("4");
+  await page.getByRole("combobox", { name: "Grupo de Edunoza", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("combobox", { name: "Grupo de Edunoza", exact: true }).selectOption("moodle-local-class");
+  await page.getByRole("combobox", { name: "Materia de Edunoza", exact: true }).selectOption("__create__");
+  await page.getByLabel("Nombre de la materia", { exact: true }).fill("Suggestion test subject");
+  await page.getByRole("button", { name: "Continuar a revisión", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Alumnado y actividades" })).toBeVisible();
+
+  // No decision has been made yet: nothing is linked, only a suggestion is offered.
+  expect(await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    return await db.moodleBindings.where("kind").equals("student").count();
+  })).toBe(0);
+
+  const row = page.locator(".moodle-mapping-row", { hasText: "Moodle Pupil" });
+  await expect(row.getByText("Coincidencia exacta: Moodle Púpil", { exact: false })).toBeVisible();
+  await row.getByRole("button", { name: "Usar esta coincidencia" }).click();
+  await expect(row.getByRole("combobox").nth(1)).toHaveValue("exact-match-student");
+
+  // Reset the manual choice, then confirm the bulk shortcut reaches the same result.
+  await row.getByRole("combobox").first().selectOption("ignore");
+  await page.getByRole("button", { name: "Vincular coincidencias exactas", exact: true }).click();
+  await expect(row.getByRole("combobox").nth(1)).toHaveValue("exact-match-student");
+
+  await page.getByRole("button", { name: "Comprobar asociaciones", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Vista previa de asociaciones", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Guardar/ }).click();
+  await expect.poll(async () => page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    const binding = await db.moodleBindings.where("kind").equals("student").and((item) => item.remoteId === 11).first();
+    return binding?.localId;
+  })).toBe("exact-match-student");
+});

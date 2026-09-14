@@ -67,6 +67,19 @@ function mappingKey(kind: "student" | "activity", remoteId: number): string {
   return `${kind}:${remoteId}`;
 }
 
+/** Exact-match only (accents/case/whitespace-insensitive): a suggestion the teacher must
+ * still confirm explicitly, never an automatic link — "similar" names are not enough. */
+function normalizeNameForMatch(name: string): string {
+  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function findExactNameMatch(label: string, candidates: Array<{ id: string; label: string }>): { id: string; label: string } | undefined {
+  const normalized = normalizeNameForMatch(label);
+  if (!normalized) return undefined;
+  const matches = candidates.filter((candidate) => normalizeNameForMatch(candidate.label) === normalized);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function capabilityLabel(name: string): string {
   const labels: Record<string, string> = {
     core_enrol_get_enrolled_users: "Participantes",
@@ -645,6 +658,26 @@ export function MoodleSettingsPage() {
     setMappingDrafts(next);
   };
 
+  const linkExactMatches = (): void => {
+    setMappingPreview(null);
+    const next: Record<string, MappingDraft> = { ...mappingDrafts };
+    const studentCandidates = localStudents.map((item) => ({ id: item.id, label: item.fullName }));
+    const taskCandidates = localTasks.map((item) => ({ id: item.id, label: item.title }));
+    for (const student of scopedRemoteStudents) {
+      const existing = scopedBindings.find((item) => item.kind === "student" && item.remoteId === student.id);
+      if (existing) continue;
+      const match = findExactNameMatch(student.fullName, studentCandidates);
+      if (match) next[mappingKey("student", student.id)] = { action: "link", localId: match.id };
+    }
+    for (const activity of snapshot?.activities ?? []) {
+      const existing = scopedBindings.find((item) => item.kind === "activity" && item.remoteId === activity.id);
+      if (existing) continue;
+      const match = findExactNameMatch(activity.title, taskCandidates);
+      if (match) next[mappingKey("activity", activity.id)] = { action: "link", localId: match.id };
+    }
+    setMappingDrafts(next);
+  };
+
   const bulkSetResolutions = (resolution: MoodleResolution): void => {
     if (updatePreview) setUpdateResolutions(Object.fromEntries(updatePreview.rows.map((row) => [row.id, resolution])));
     if (gradePreview) setGradeResolutions(Object.fromEntries(gradePreview.rows.map((row) => [row.id, resolution])));
@@ -763,6 +796,7 @@ export function MoodleSettingsPage() {
           <section className="detail-section moodle-section" aria-labelledby="moodle-mapping-title">
             <div className="moodle-section-heading"><div><h2 id="moodle-mapping-title">Alumnado y actividades</h2><p>Los nombres son solo sugerencias visuales: ninguna coincidencia se aplica automáticamente.</p></div></div>
             <div className="moodle-actions">
+              <button type="button" className="btn secondary" disabled={Boolean(busy)} onClick={linkExactMatches}>Vincular coincidencias exactas</button>
               <button type="button" className="btn secondary" disabled={Boolean(busy)} onClick={() => bulkSetMappings("create-pending")}>Crear todo lo pendiente</button>
               <button type="button" className="btn secondary" disabled={Boolean(busy)} onClick={() => bulkSetMappings("ignore-pending")}>Ignorar todo lo pendiente</button>
               {hasScopedLinks ? <button type="button" className="btn secondary" disabled={Boolean(busy)} onClick={() => bulkSetMappings("unlink-existing")}>Quitar todas las asociaciones</button> : null}
@@ -811,7 +845,8 @@ function MappingRow({ kind, remoteId, label, candidates, binding, draft, onChang
   const action = draft?.action ?? (binding ? "link" : "ignore");
   const localId = draft?.localId ?? binding?.localId ?? "";
   const linkedLabel = candidates.find((candidate) => candidate.id === binding?.localId)?.label;
-  return <div className="moodle-mapping-row"><div><strong>{label}</strong><span>{binding ? `Vinculado a ${linkedLabel ?? "un registro local no disponible"}` : "Sin asociación"}</span></div><label><span className="sr-only">Decisión para {label}</span><select value={action} onChange={(event) => { const nextAction = event.target.value as MoodleMappingChoice["action"]; onChange(kind, remoteId, nextAction, nextAction === "link" ? localId : undefined); }}><option value="ignore">Ignorar</option><option value="link">{binding ? "Mantener o cambiar vínculo" : "Vincular existente"}</option><option value="create">Crear nuevo en Edunoza</option>{binding ? <option value="unlink">Quitar asociación</option> : null}</select></label>{action === "link" ? <label><span className="sr-only">Registro local para {label}</span><select required value={localId} onChange={(event) => onChange(kind, remoteId, "link", event.target.value)}><option value="">Seleccionar registro local</option>{candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}</select></label> : <span className="moodle-mapping-note">{action === "create" ? "Se creará al guardar" : action === "unlink" ? "El registro local se conserva" : "No se importará"}</span>}</div>;
+  const suggestion = !binding ? findExactNameMatch(label, candidates) : undefined;
+  return <div className="moodle-mapping-row"><div><strong>{label}</strong><span>{binding ? `Vinculado a ${linkedLabel ?? "un registro local no disponible"}` : "Sin asociación"}</span></div><label><span className="sr-only">Decisión para {label}</span><select value={action} onChange={(event) => { const nextAction = event.target.value as MoodleMappingChoice["action"]; onChange(kind, remoteId, nextAction, nextAction === "link" ? localId : undefined); }}><option value="ignore">Ignorar</option><option value="link">{binding ? "Mantener o cambiar vínculo" : "Vincular existente"}</option><option value="create">Crear nuevo en Edunoza</option>{binding ? <option value="unlink">Quitar asociación</option> : null}</select></label>{action === "link" ? <label><span className="sr-only">Registro local para {label}</span><select required value={localId} onChange={(event) => onChange(kind, remoteId, "link", event.target.value)}><option value="">Seleccionar registro local</option>{candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}</select></label> : <span className="moodle-mapping-note">{action === "create" ? "Se creará al guardar" : action === "unlink" ? "El registro local se conserva" : "No se importará"}</span>}{action === "ignore" && suggestion ? <span className="moodle-mapping-suggestion">Coincidencia exacta: {suggestion.label}. <button type="button" className="moodle-text-button" onClick={() => onChange(kind, remoteId, "link", suggestion.id)}>Usar esta coincidencia</button></span> : null}</div>;
 }
 
 function SubmissionSummary({ snapshot }: { snapshot: MoodleCourseSnapshot }) {

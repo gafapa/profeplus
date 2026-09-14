@@ -389,6 +389,16 @@
   padding: 7px 9px;
 }
 
+.moodle-mapping-suggestion {
+  grid-column: 1 / -1;
+  color: #17643c;
+  font-size: 0.85rem;
+}
+
+.moodle-mapping-suggestion .moodle-text-button {
+  font-size: 0.85rem;
+}
+
 .moodle-resolution-list fieldset,
 .moodle-grade-list fieldset {
   display: flex;
