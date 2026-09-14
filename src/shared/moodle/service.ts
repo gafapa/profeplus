@@ -91,6 +91,8 @@ export type MoodleGradePreview = {
 export type CreateLocalScopeInput = {
   courseId: number;
   remoteGroupId?: number;
+  /** Reuse this existing class instead of creating a new one; only a new subject is created. */
+  existingClassId?: string;
   className: string;
   level: string;
   schoolYear: string;
@@ -367,24 +369,33 @@ export async function getOperations(connectionId?: string, limit = 50): Promise<
 }
 
 export async function createLocalScope(input: CreateLocalScopeInput, signal?: AbortSignal): Promise<MoodleScope> {
-  const className = input.className.trim();
   const subjectName = input.subjectName.trim();
-  if (!className || !input.level.trim() || !input.schoolYear.trim() || !subjectName) {
-    throw new Error("Completa el nombre, nivel, curso escolar y materia antes de crear el ámbito local.");
+  const existingClassId = input.existingClassId?.trim() || undefined;
+  if (!subjectName) {
+    throw new Error("Completa el nombre de la materia antes de crear el ámbito local.");
+  }
+  const className = input.className.trim();
+  if (!existingClassId && (!className || !input.level.trim() || !input.schoolYear.trim())) {
+    throw new Error("Completa el nombre, nivel y curso escolar del grupo antes de crear el ámbito local.");
   }
   if (!Number.isSafeInteger(input.courseId) || input.courseId <= 0 ||
       (input.remoteGroupId !== undefined && (!Number.isSafeInteger(input.remoteGroupId) || input.remoteGroupId <= 0))) {
     throw new Error("El curso o grupo remoto no tiene un identificador válido.");
   }
-  const scope: MoodleScope = { courseId: input.courseId, remoteGroupId: input.remoteGroupId, classId: newId(), subjectId: newId() };
+  const scope: MoodleScope = { courseId: input.courseId, remoteGroupId: input.remoteGroupId, classId: existingClassId ?? newId(), subjectId: newId() };
   signal?.throwIfAborted();
   await db.transaction("rw", db.classGroups, db.subjects, db.subjectCourseLinks, async (transaction) => {
     const abort = () => transaction.abort();
     signal?.addEventListener("abort", abort, { once: true });
     try {
-      const classGroup: ClassGroup = { id: scope.classId, name: className, level: input.level.trim(), schoolYear: input.schoolYear.trim() };
+      if (existingClassId) {
+        const existingClass = await db.classGroups.get(existingClassId);
+        if (!existingClass) throw new Error("El grupo seleccionado ya no existe.");
+      } else {
+        const classGroup: ClassGroup = { id: scope.classId, name: className, level: input.level.trim(), schoolYear: input.schoolYear.trim() };
+        await db.classGroups.add(classGroup);
+      }
       const subject: Subject = { id: scope.subjectId, name: subjectName, scheduleSlotIds: [] };
-      await db.classGroups.add(classGroup);
       await db.subjects.add(subject);
       await db.subjectCourseLinks.add({ id: newId(), classId: scope.classId, subjectId: scope.subjectId });
       signal?.throwIfAborted();

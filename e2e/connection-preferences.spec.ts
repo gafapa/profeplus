@@ -31,5 +31,6 @@ test("previously saved Moodle connections survive removal of the default site", 
   await page.addInitScript(() => localStorage.removeItem("edunoza.connection.moodle.server"));
   await page.reload();
   await expect(page.getByLabel("Dirección HTTPS", { exact: true })).toHaveValue("https://previous.example.invalid/aula");
+  await page.getByRole("button", { name: /Ya conectaste antes/ }).click();
   await expect(page.getByText("Previous school", { exact: true })).toBeVisible();
 });

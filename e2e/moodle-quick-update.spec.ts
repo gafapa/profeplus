@@ -22,10 +22,9 @@ async function prepareLinkedAccount(page: import("@playwright/test").Page) {
   });
   await page.reload();
   await connectMoodleToken(page, "syntheticToken123");
-  await page.getByRole("navigation", { name: "Apartados de Moodle" }).getByRole("link", { name: "Conexión entre datos" }).click();
+  // A course with exactly one saved destination restores it and jumps straight to review.
   await page.getByRole("combobox", { name: "Curso Moodle", exact: true }).selectOption("4");
-  await page.getByRole("button", { name: "Cargar curso", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "Grupo de Edunoza", exact: true })).toHaveValue("moodle-local-class");
+  await expect(page.getByRole("heading", { name: "Alumnado y actividades" })).toBeVisible();
 }
 
 test("quick update reviews fresh changes without repeating associations", async ({ page }) => {
@@ -36,23 +35,25 @@ test("quick update reviews fresh changes without repeating associations", async 
     fixture.modifiedAt = 200;
     fixture.grade = 80;
   });
-  await page.getByRole("button", { name: "Buscar cambios", exact: true }).click();
+  // Refresh from "Elegir clase" (equivalent to the old "Buscar cambios" shortcut); it returns straight to review.
+  await page.getByRole("navigation", { name: "Pasos para importar datos de Moodle" }).getByRole("button", { name: /Elegir clase/ }).click();
+  await page.getByRole("button", { name: "Actualizar curso", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Alumnado y actividades" })).toBeVisible();
+  // The refresh auto-triggers the changes/grades review; wait for the fresh title directly.
+  const titleField = page.locator("fieldset").filter({ has: page.locator("legend").filter({ hasText: "Título" }) });
+  await expect(titleField.getByRole("radio", { name: "Usar Moodle Updated Moodle title", exact: true })).toBeVisible();
   // Preparing a review never writes the user's records.
   expect(await page.evaluate(async () => {
     const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
     return [(await db.tasks.get("moodle-local-task"))?.title, (await db.taskDirectGrades.get("moodle-local-grade"))?.score];
   })).toEqual(["My existing task", 6]);
-  const titleField = page.locator("fieldset").filter({ has: page.locator("legend").filter({ hasText: "Título" }) });
-  await expect(titleField.getByRole("radio", { name: "Usar Moodle Updated Moodle title", exact: true })).toBeVisible();
   await titleField.getByRole("radio", { name: /Usar Moodle/ }).check();
-  await page.getByRole("button", { name: "Aplicar decisiones y continuar", exact: true }).click();
+  await page.getByRole("radio", { name: "Importar Moodle", exact: true }).check();
+  await page.getByRole("button", { name: "Aplicar cambios y notas", exact: true }).click();
   await expect.poll(async () => page.evaluate(async () => {
     const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
     return (await db.tasks.get("moodle-local-task"))?.title;
   })).toBe("Updated Moodle title");
-  await page.getByRole("button", { name: "Revisar notas entrantes", exact: true }).click();
-  await page.getByRole("radio", { name: "Importar Moodle", exact: true }).check();
-  await page.getByRole("button", { name: "Importar selección", exact: true }).click();
   await expect.poll(async () => page.evaluate(async () => {
     const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
     return (await db.taskDirectGrades.get("moodle-local-grade"))?.score;
@@ -65,13 +66,9 @@ test("quick update reviews fresh changes without repeating associations", async 
 
 test("failed refresh cannot leave an old update actionable", async ({ page }) => {
   await prepareLinkedAccount(page);
-  await page.getByRole("button", { name: "Buscar cambios", exact: true }).click();
-  const review = page.getByRole("button", { name: "Revisar cambios", exact: true });
-  if (await review.isVisible()) await review.click();
   await page.evaluate(() => { (window as unknown as { moodleFixture: { failFunction: string } }).moodleFixture.failFunction = "core_course_get_contents"; });
-  await page.getByRole("navigation", { name: "Pasos para revisar datos de Moodle" }).getByRole("button", { name: /Curso y destino/ }).click();
-  await page.getByRole("button", { name: "Buscar cambios", exact: true }).click();
+  await page.getByRole("navigation", { name: "Pasos para importar datos de Moodle" }).getByRole("button", { name: /Elegir clase/ }).click();
+  await page.getByRole("button", { name: "Actualizar curso", exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Aplicar decisiones y continuar", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Importar selección", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Aplicar cambios y notas", exact: true })).toHaveCount(0);
 });

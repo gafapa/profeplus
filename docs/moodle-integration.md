@@ -14,15 +14,11 @@ The user-designated test URL is `https://centros.edu.xunta.gal/iesmontevila/aula
 
 ## Workflow
 
-The Moodle screen has two URL-addressable subsections: **Configuración** (`/config/moodle?section=config`) for authentication, saved connections and token management, and **Conexión entre datos** (`/config/moodle?section=data`) for scopes, associations, reviewed updates, grades and operation history. Switching subsections (including browser Back/Forward) does not unmount the integration or discard the active session, selections or mapping previews. The data subsection explains how to connect when there is no active session. Leaving Moodle still disconnects the live client.
+The Moodle screen (`/config/moodle`) is a single linear flow with three steps. Leaving the page disconnects the live client, but in-progress selections, mapping drafts and previews survive navigating between steps.
 
-1. Open **Configuración > Moodle**, enter the base URL and choose manual token or username/password authentication. There is no preselected school. The base URL, service shortname and access mode are remembered. Existing saved connection records remain available; the latest server is recovered when migrating an existing installation without a remembered URL.
-2. Select a Moodle course and, if relevant, a Moodle subgroup. Choose the matching existing Edunoza group and subject, or explicitly create a local scope.
-3. Associate Moodle participants and activities with existing local students and tasks. Choose creation only for genuinely new records. Leave unrelated participants or activities ignored.
-4. Review and apply the association preview. Linking records preserves their local IDs and academic content.
-5. Review basic information updates separately. Each proposed field can retain Edunoza's value or accept Moodle's value. Concurrent local edits invalidate an older preview.
-6. Review submission status, activity links, deadlines and available numerical assignment grades. Importing a compatible grade is a local operation with an explicit 0–10 conversion. Unsupported grade representations are not silently converted.
-7. Refresh when new Moodle information is needed. There is no background synchronization.
+1. **Conectar**: enter the base HTTPS URL, then choose manual token or username/password authentication — the auth fields appear inline once the URL is valid, and the web-service shortname defaults to `moodle_mobile_app` behind an "Opciones avanzadas" disclosure. There is no preselected school. The base URL, service shortname and access mode are remembered. Previously saved connections are reachable behind a "¿Ya conectaste antes?" toggle to reconnect or forget an account.
+2. **Elegir clase**: select a Moodle course — its snapshot loads automatically — and, if relevant, a Moodle subgroup. Choose an existing Edunoza group and subject, or create either inline; a new subject can be added to an *existing* group without also creating a new group. A course that already has exactly one saved destination restores it and continues straight to review; multiple saved destinations still require an explicit choice.
+3. **Revisar y aplicar**: associate Moodle participants and activities with existing local students and tasks (bulk "Crear todo lo pendiente", "Ignorar todo lo pendiente" and "Quitar todas las asociaciones" actions are available; no automatic name-matching ever links a record on its own). Comprobar and guardar the associations, then review basic information changes and available grades together — each proposed field or grade can retain Edunoza's value or accept Moodle's, with bulk "Mantener todo Edunoza" / "Usar todo Moodle" shortcuts — and apply them in one action. Linking records preserves their local IDs and academic content; importing a compatible grade applies an explicit 0–10 conversion, and unsupported representations are never silently converted. A read-only submission summary (status, activity links, deadlines) stays visible throughout. Refresh from "Elegir clase" when new Moodle information is needed; there is no background synchronization.
 
 ## Reassignment and preservation
 
@@ -52,15 +48,15 @@ Non-secret connection metadata and associations are included in encrypted Edunoz
 
 The adapter uses an explicit read-only allowlist. Site identity and accessible courses come from `core_webservice_get_site_info` and `core_enrol_get_users_courses`. Course information comes from enrolled-user, group and course-content functions. Assignment metadata, grades and submissions use `mod_assign_get_*` functions where permitted. Optional grading-definition metadata may be used to distinguish representations. No `save`, `update`, `create`, `delete`, or upload operation is exposed by the adapter.
 
-## Guided connection and returning updates
+## Single-flow redesign and returning updates
 
-Configuration now progresses through HTTPS address, access method and connected-account confirmation. The data subsection has four steps: course/destination, associations, metadata changes and grades. Only the active step is visible; navigating backwards preserves mapping drafts but does not apply them.
+The connector was redesigned from an earlier two-subsection, seven-step wizard into the single three-step flow described above, without dropping any capability: every preview-before-apply step, conflict-detection rule and safety guard documented in this file is unchanged — only its exposure to the teacher is simpler.
 
-For subsequent updates, load a course and choose **Buscar cambios**. Edunoza fetches a fresh snapshot, recovers the valid current or uniquely saved destination and prepares metadata review directly. Multiple saved destinations require choosing the intended scope. New remote records remain pending associations. The shortcut never imports automatically: each metadata or grade decision is explicit, and skipping metadata changes is available before reviewing grades.
+For subsequent updates, reselecting the same course from **Elegir clase** (or its "Actualizar curso" refresh) is the only refresh path; it doubles as the old "Buscar cambios" shortcut. Edunoza fetches a fresh snapshot, recovers the valid current or uniquely saved destination and, when found, returns straight to **Revisar y aplicar** with fresh basic-information and grade previews. Multiple saved destinations still require choosing the intended one. New remote records remain pending associations; the refresh never imports automatically.
 
-Refreshing, changing scope or applying associations invalidates older previews. Applying metadata also invalidates grade previews so that incoming grades are reviewed against fresh local state. A failed refresh leaves no old snapshot actionable.
+Refreshing, changing scope or applying associations invalidates older previews. Applying basic-information changes also invalidates the grade preview for the same scope, so Edunoza automatically re-issues it before applying any selected grade. A failed refresh leaves no old snapshot actionable.
 
-See [the guided workflow plan](moodle-guided-workflow-plan.md). This refinement was published to `https://edunoza.com` on 2026-09-13. Production verification confirmed 68 byte-identical build files, the configured security headers, and 14 routes—including Moodle password login and Proxy settings—without uncaught JavaScript errors. No live Moodle login was attempted.
+See [the guided workflow plan](moodle-guided-workflow-plan.md) for the design history of the original guided flow this redesign replaced.
 
 ## Verification scope
 

@@ -4,13 +4,6 @@
   color: #233f68;
 }
 
-.moodle-subsection {
-  display: grid;
-  gap: 14px;
-  min-width: 0;
-}
-
-.moodle-subsection[hidden],
 .moodle-section[hidden] {
   display: none;
 }
