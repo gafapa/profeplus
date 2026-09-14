@@ -136,7 +136,6 @@ export function MoodleSettingsPage() {
   const [students, setStudents] = useState<Student[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [subjectCourseKeys, setSubjectCourseKeys] = useState<Set<string>>(new Set());
-  const [subjectStudentKeys, setSubjectStudentKeys] = useState<Set<string>>(new Set());
   const [taskSubjectKeys, setTaskSubjectKeys] = useState<Set<string>>(new Set());
 
   const [mappingDrafts, setMappingDrafts] = useState<Record<string, MappingDraft>>({});
@@ -179,13 +178,12 @@ export function MoodleSettingsPage() {
   };
 
   const reloadLocalCandidates = async (): Promise<void> => {
-    const [localClasses, localSubjects, localStudents, localTasks, courseLinks, studentLinks, taskLinks] = await Promise.all([
+    const [localClasses, localSubjects, localStudents, localTasks, courseLinks, taskLinks] = await Promise.all([
       db.classGroups.orderBy("name").toArray(),
       db.subjects.orderBy("name").toArray(),
       db.students.toArray(),
       db.tasks.toArray(),
       db.subjectCourseLinks.toArray(),
-      db.subjectStudentLinks.toArray(),
       db.taskSubjectLinks.toArray()
     ]);
     setClasses(localClasses);
@@ -193,7 +191,6 @@ export function MoodleSettingsPage() {
     setStudents(localStudents);
     setTasks(localTasks);
     setSubjectCourseKeys(new Set(courseLinks.map((link) => `${link.classId}:${link.subjectId}`)));
-    setSubjectStudentKeys(new Set(studentLinks.map((link) => `${link.subjectId}:${link.studentId}`)));
     setTaskSubjectKeys(new Set(taskLinks.map((link) => `${link.taskId}:${link.subjectId}`)));
   };
 
@@ -207,9 +204,8 @@ export function MoodleSettingsPage() {
       db.students.toArray(),
       db.tasks.toArray(),
       db.subjectCourseLinks.toArray(),
-      db.subjectStudentLinks.toArray(),
       db.taskSubjectLinks.toArray()
-    ]).then(([savedConnections, recentOperations, localClasses, localSubjects, localStudents, localTasks, courseLinks, studentLinks, taskLinks]) => {
+    ]).then(([savedConnections, recentOperations, localClasses, localSubjects, localStudents, localTasks, courseLinks, taskLinks]) => {
       if (!active) return;
       if (restorePreviousServer.current && savedConnections.length) {
         const previous = [...savedConnections].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -225,7 +221,6 @@ export function MoodleSettingsPage() {
       setStudents(localStudents);
       setTasks(localTasks);
       setSubjectCourseKeys(new Set(courseLinks.map((link) => `${link.classId}:${link.subjectId}`)));
-      setSubjectStudentKeys(new Set(studentLinks.map((link) => `${link.subjectId}:${link.studentId}`)));
       setTaskSubjectKeys(new Set(taskLinks.map((link) => `${link.taskId}:${link.subjectId}`)));
     }).catch((error) => {
       if (active) setNotice({ tone: "error", text: errorMessage(error) });
@@ -250,7 +245,10 @@ export function MoodleSettingsPage() {
     subjectId: selectedSubjectId
   };
   const availableSubjects = classIsNew ? [] : subjects.filter((subject) => !selectedClassId || subjectCourseKeys.has(`${selectedClassId}:${subject.id}`));
-  const localStudents = scope ? students.filter((student) => student.classId === scope.classId && subjectStudentKeys.has(`${scope.subjectId}:${student.id}`)) : [];
+  // Any student in the class is a valid link target, not just ones already enrolled in
+  // this subject: linking enrolls them (see applyMappingPreview), matching what the
+  // engine actually validates (classId only) rather than gating on prior enrollment.
+  const localStudents = scope ? students.filter((student) => student.classId === scope.classId) : [];
   const localTasks = scope ? tasks.filter((task) => taskSubjectKeys.has(`${task.id}:${scope.subjectId}`)) : [];
   const scopedRemoteStudents = (() => {
     if (!snapshot) return [];

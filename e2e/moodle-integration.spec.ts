@@ -126,4 +126,29 @@ test("creating a scope for an existing group only adds a subject, never a duplic
   expect(state.classCount).toBe(1);
   expect(state.subjectNames).toEqual(["Biología de Moodle", "My existing subject"]);
   expect(state.linkedSubjectIds).toHaveLength(2);
+
+  // moodle-local-student exists in the class but isn't enrolled in this brand-new
+  // subject yet: linking must still offer them as a candidate (regression coverage for
+  // a teacher who couldn't complete any student associations at all because the
+  // candidate list only offered students already enrolled in the subject).
+  await page.getByRole("combobox", { name: "Decisión para Moodle Pupil", exact: true }).selectOption("link");
+  const localCandidates = await page.getByRole("combobox", { name: "Registro local para Moodle Pupil", exact: true }).locator("option").allTextContents();
+  expect(localCandidates).toContain("Local Pupil");
+  await page.getByRole("combobox", { name: "Registro local para Moodle Pupil", exact: true }).selectOption({ label: "Local Pupil" });
+  await page.getByRole("button", { name: "Comprobar asociaciones", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Vista previa de asociaciones", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Guardar/ }).click();
+  // Linking must bind the student without silently touching academic data (no
+  // auto-enrollment): only a moodleBindings row appears, subjectStudentLinks is untouched.
+  await expect.poll(async () => page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    return (await db.moodleBindings.where("kind").equals("student").and((binding) => binding.remoteId === 11).toArray()).length;
+  })).toBe(1);
+  const newSubjectEnrollment = await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    const newSubject = (await db.subjects.toArray()).find((subject) => subject.name === "Biología de Moodle");
+    if (!newSubject) return null;
+    return Boolean(await db.subjectStudentLinks.where("[subjectId+studentId]").equals([newSubject.id, "moodle-local-student"]).first());
+  });
+  expect(newSubjectEnrollment).toBe(false);
 });
