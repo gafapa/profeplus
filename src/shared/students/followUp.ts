@@ -1,4 +1,16 @@
-import type { StudentFollowUpKind } from "../db/types";
+import type { StudentFollowUp, StudentFollowUpKind } from "../db/types";
+
+export function updateFollowUpDetails(original: StudentFollowUp, draft: StudentFollowUpDraft, now = new Date().toISOString()): StudentFollowUp | null {
+  const normalized = normalizeFollowUpDraft(draft);
+  if (!normalized) return null;
+  return {
+    ...original,
+    ...normalized,
+    status: normalized.resolved ? "done" : original.status === "done" ? "open" : original.status ?? "open",
+    createdAt: original.createdAt ?? now,
+    updatedAt: now
+  };
+}
 
 export const FOLLOW_UP_KINDS: StudentFollowUpKind[] = [
   "incident",

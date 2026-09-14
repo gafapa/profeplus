@@ -79,4 +79,11 @@ describe("teacher onboarding state", () => {
       findCurrentOnboardingStep(items.map((item) => ({ ...item, complete: true })))
     ).toBeNull();
   });
+
+  it("resumes the new first-lesson step", () => {
+    const storage = createStorage();
+    writeOnboardingState({ version: 1, status: "active", currentStepId: "lesson" }, storage);
+    expect(readOnboardingState(storage)?.currentStepId).toBe("lesson");
+    expect(findCurrentOnboardingStep([createItem("subjects", true), createItem("lesson", false)])?.id).toBe("lesson");
+  });
 });

@@ -3,11 +3,12 @@ import type {
   ScheduleDay,
   Student,
   Subject,
-  SubjectCourseLink
+  SubjectCourseLink,
+  TaskSession
 } from "../db/types";
 
 export type OnboardingChecklistItem = {
-  id: "course" | "students" | "schedule" | "subjects";
+  id: "course" | "students" | "schedule" | "subjects" | "lesson";
   label: string;
   shortLabel: string;
   description: string;
@@ -23,6 +24,7 @@ type BuildOnboardingChecklistInput = {
   scheduleDays: ScheduleDay[];
   subjects: Subject[];
   subjectCourseLinks: SubjectCourseLink[];
+  taskSessions?: TaskSession[];
 };
 
 export function buildOnboardingChecklist({
@@ -30,7 +32,8 @@ export function buildOnboardingChecklist({
   students,
   scheduleDays,
   subjects,
-  subjectCourseLinks
+  subjectCourseLinks,
+  taskSessions = []
 }: BuildOnboardingChecklistInput): OnboardingChecklistItem[] {
   const activeSlotIds = new Set(
     scheduleDays.flatMap((day) =>
@@ -70,7 +73,7 @@ export function buildOnboardingChecklist({
       label: "Dibujar tu horario",
       shortLabel: "Horario",
       description: "Activa al menos una franja lectiva de tu semana.",
-      benefit: "ProfePlus sabrá qué clase toca y cuándo debe mostrarla en Hoy.",
+      benefit: "Edunoza sabrá qué clase toca y cuándo debe mostrarla en Hoy.",
       completionHint: "El paso se completa al guardar una franja lectiva activa.",
       route: "/management/schedule",
       complete: activeSlotIds.size > 0
@@ -84,6 +87,18 @@ export function buildOnboardingChecklist({
       completionHint: "El paso se completa al vincular grupo, asignatura y horario.",
       route: "/management/subjects",
       complete: configuredSubjectExists
+    },
+    {
+      id: "lesson",
+      label: "Preparar tu primera clase",
+      shortLabel: "Primera clase",
+      description: "Elige una franja en Semana y crea la tarea que vas a trabajar.",
+      benefit: "El plan aparecerá en Hoy junto al alumnado y la asistencia.",
+      completionHint: "El paso se completa al guardar una sesión planificada.",
+      route: "/planner",
+      complete: taskSessions.some((session) => session.status !== "cancelled" &&
+        courses.some((course) => course.id === session.classId) &&
+        subjects.some((subject) => subject.id === session.subjectId))
     }
   ];
 }

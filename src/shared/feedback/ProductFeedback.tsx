@@ -39,7 +39,7 @@ export function ProductFeedback({ placement = "floating" }: { placement?: Produc
 
   const feedbackText = useMemo(() => {
     const lines = [
-      `ProfePlus · ${FEEDBACK_KIND_LABELS[kind]}`,
+      `Edunoza · ${FEEDBACK_KIND_LABELS[kind]}`,
       "",
       message.trim()
     ];
@@ -78,7 +78,7 @@ export function ProductFeedback({ placement = "floating" }: { placement?: Produc
     }
     try {
       await navigator.share({
-        title: `ProfePlus · ${FEEDBACK_KIND_LABELS[kind]}`,
+        title: `Edunoza · ${FEEDBACK_KIND_LABELS[kind]}`,
         text: feedbackText
       });
       setNotice("Mensaje preparado en la aplicación que has elegido.");
@@ -115,7 +115,7 @@ export function ProductFeedback({ placement = "floating" }: { placement?: Produc
 
       <Modal
         open={open}
-        title="Ayúdanos a mejorar ProfePlus"
+        title="Ayúdanos a mejorar Edunoza"
         subtitle="Tú decides qué compartes. No se adjuntan alumnado, notas ni contenido académico."
         panelClassName="product-feedback-modal"
         onClose={closeFeedback}
@@ -127,7 +127,7 @@ export function ProductFeedback({ placement = "floating" }: { placement?: Produc
             void shareFeedback();
           }}
         >
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Tipo de mensaje</span>
             <select
               className="input"

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+test-results/
+playwright-report/
 .DS_Store
 *.log
 *.local
@@ -12,3 +14,9 @@ coverage/
 .codex/
 .metagallego/
 nul
+
+# Local QA/review tool scratch output (screenshots, browser snapshots,
+# persona-review scripts and exports) - not application source.
+.impeccable/
+.playwright-mcp/
+artifacts/

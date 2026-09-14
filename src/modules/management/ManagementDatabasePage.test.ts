@@ -6,6 +6,84 @@ function emptyTables(): Record<string, unknown[]> {
   return Object.fromEntries(db.tables.map((table) => [table.name, []]));
 }
 
+it("accepts older backups without the optional AI history table", () => {
+  const payload = validPayload();
+  delete (payload.tables as Record<string, unknown[]>).aiReports;
+  expect(() => validateDatabasePayload(payload)).not.toThrow();
+});
+
+it("rejects malformed archived AI reports", () => {
+  expect(() => validateDatabasePayload(validPayload({ aiReports: [{ id: "broken", text: 42 }] }))).toThrow(/aiReports/);
+});
+
+it("accepts schema 6 backups without Moodle metadata", () => {
+  const payload = validPayload();
+  payload.schemaVersion = 6;
+  const tables = payload.tables as Record<string, unknown[]>;
+  delete tables.moodleConnections;
+  delete tables.moodleBindings;
+  delete tables.moodleOperations;
+  expect(validateDatabasePayload(payload).moodleBindings).toEqual([]);
+});
+
+it("accepts secret-free and internally consistent Moodle metadata", () => {
+  const connection = {
+    id: "moodle-connection-1", server: "https://moodle.example.org", userId: 42,
+    siteName: "School Moodle", userName: "Teacher", functions: ["core_webservice_get_site_info"],
+    createdAt: "2026-05-22T00:00:00.000Z", updatedAt: "2026-05-22T00:00:00.000Z"
+  };
+  const common = {
+    connectionId: connection.id, courseId: 12, classId: "class-1", subjectId: "subject-1",
+    updatedAt: "2026-05-22T00:00:00.000Z"
+  };
+  const payload = validPayload({
+    moodleConnections: [connection],
+    moodleBindings: [
+      { id: "course-binding", ...common, kind: "course", remoteId: 12, localId: "class-1", remoteLabel: "Maths",
+        localBaseline: {}, remoteBaseline: { fullName: "Maths", shortName: "MATH" } },
+      { id: "student-binding", ...common, kind: "student", remoteId: 88, localId: "student-1", remoteLabel: "Ana Lopez",
+        localBaseline: { fullName: "Ana Lopez" }, remoteBaseline: { fullName: "Ana Lopez" } },
+      { id: "activity-binding", ...common, kind: "activity", remoteId: 99, localId: "task-1", remoteLabel: "Quiz",
+        localBaseline: { title: "Tarea" }, remoteBaseline: { title: "Quiz", url: "https://moodle.example.org/mod/assign/view.php?id=99", dueDate: 1770000000 } }
+    ],
+    moodleOperations: [{ id: "operation-1", connectionId: connection.id, createdAt: "2026-05-22T00:00:00.000Z", kind: "grades", summary: "Imported", count: 1 }]
+  });
+  expect(() => validateDatabasePayload(payload)).not.toThrow();
+});
+
+it.each([
+  { table: "moodleConnections", field: "token" },
+  { table: "moodleConnections", field: "password" }
+])("rejects $field in persisted Moodle metadata", ({ table, field }) => {
+  const payload = validPayload({
+    [table]: [{ id: "connection-1", server: "https://moodle.example.org", userId: 42, siteName: "School",
+      userName: "Teacher", functions: [], createdAt: "2026-05-22T00:00:00.000Z", updatedAt: "2026-05-22T00:00:00.000Z", [field]: "secret" }]
+  });
+  expect(() => validateDatabasePayload(payload)).toThrow(/campos no permitidos/);
+});
+
+it("rejects outbound Moodle operation metadata", () => {
+  const payload = validPayload({
+    moodleConnections: [{ id: "connection-1", server: "https://moodle.example.org", userId: 42, siteName: "School",
+      userName: "Teacher", functions: [], createdAt: "2026-05-22T00:00:00.000Z", updatedAt: "2026-05-22T00:00:00.000Z" }],
+    moodleOperations: [{ id: "operation-1", connectionId: "connection-1", createdAt: "2026-05-22T00:00:00.000Z", kind: "publish", summary: "Sent", count: 1 }]
+  });
+  expect(() => validateDatabasePayload(payload)).toThrow(/tipo de operación/);
+});
+
+it("rejects credentials hidden in Moodle activity-link metadata", () => {
+  const connection = { id: "connection-1", server: "https://moodle.example.org", userId: 42, siteName: "School",
+    userName: "Teacher", functions: [], createdAt: "2026-05-22T00:00:00.000Z", updatedAt: "2026-05-22T00:00:00.000Z" };
+  const payload = validPayload({
+    moodleConnections: [connection],
+    moodleBindings: [{ id: "binding-1", connectionId: connection.id, courseId: 12, classId: "class-1", subjectId: "subject-1",
+      kind: "activity", remoteId: 99, localId: "task-1", remoteLabel: "Quiz", localBaseline: { title: "Tarea" },
+      remoteBaseline: { title: "Quiz", url: "https://moodle.example.org/mod/assign/view.php?id=99&wstoken=secret", dueDate: null },
+      updatedAt: "2026-05-22T00:00:00.000Z" }]
+  });
+  expect(() => validateDatabasePayload(payload)).toThrow(/sensibles/);
+});
+
 function validPayload(overrides: Record<string, unknown[]> = {}) {
   const classId = "class-1";
   const studentId = "student-1";
@@ -16,7 +94,7 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
   const checklistTemplateId = "checklist-1";
 
   return {
-    app: "ProfePlus",
+    app: "Edunoza",
     schemaVersion: DATABASE_SCHEMA_VERSION,
     exportedAt: "2026-05-22T00:00:00.000Z",
     tables: {
@@ -89,11 +167,36 @@ function validPayload(overrides: Record<string, unknown[]> = {}) {
 }
 
 describe("database payload validation", () => {
+  it.each(["direct", "rubric", "checklist", "none"])("accepts the %s grading method without requiring other instruments", (method) => {
+    const payload = validPayload({
+      taskGradebookConfigs: [{
+        id: "config-1", classId: "class-1", subjectId: "subject-1", taskId: "task-1", gradebookWeight: 100,
+        directGradeEnabled: method === "direct",
+        ...(method === "rubric" ? { rubricTemplateId: "rubric-1" } : {}),
+        ...(method === "checklist" ? { checklistTemplateId: "checklist-1" } : {})
+      }]
+    });
+    expect(() => validateDatabasePayload(payload)).not.toThrow();
+  });
+
+  it("still rejects an instrument owned by another task", () => {
+    const payload = validPayload({
+      tasks: [
+        { id: "task-1", title: "Task", description: "", sessionCount: 1, sendToGradebook: true },
+        { id: "other-task", title: "Other", description: "", sessionCount: 1, sendToGradebook: true }
+      ],
+      taskGradebookConfigs: [{ id: "config-1", classId: "class-1", subjectId: "subject-1", taskId: "task-1", gradebookWeight: 100, rubricTemplateId: "rubric-1" }]
+    });
+    payload.tables.rubricTemplates[0].taskId = "other-task";
+    expect(() => validateDatabasePayload(payload)).toThrow(/rubrica incompatible/);
+  });
+
   it("defines only the current clean database tables", () => {
     expect(db.name).toBe("profeplus-db");
-    expect(db.verno).toBe(6);
+    expect(db.verno).toBe(8);
     expect(db.tables.map((table) => table.name).sort()).toEqual([
       "academicPeriods",
+      "aiReports",
       "appPreferences",
       "assessments",
       "attendanceEntries",
@@ -106,6 +209,9 @@ describe("database payload validation", () => {
       "gradeEntries",
       "gradebookGroups",
       "gradebookPeriodSnapshots",
+      "moodleBindings",
+      "moodleConnections",
+      "moodleOperations",
       "resourceAttachments",
       "rubricTemplates",
       "scheduleDays",
@@ -427,6 +533,15 @@ describe("database payload validation", () => {
   });
 
   it("accepts a completely empty current database", () => {
+    expect(() => validateDatabasePayload({
+      app: "Edunoza",
+      schemaVersion: DATABASE_SCHEMA_VERSION,
+      exportedAt: "2026-07-13T00:00:00.000Z",
+      tables: emptyTables()
+    })).not.toThrow();
+  });
+
+  it("accepts a legacy ProfePlus backup", () => {
     expect(() => validateDatabasePayload({
       app: "ProfePlus",
       schemaVersion: DATABASE_SCHEMA_VERSION,

@@ -1,5 +1,5 @@
-const CACHE_NAME = "__PROFEPLUS_CACHE_NAME__";
-const PRECACHE_ASSETS = /* __PROFEPLUS_PRECACHE_ASSETS__ */ [];
+const CACHE_NAME = "__EDUNOZA_CACHE_NAME__";
+const PRECACHE_ASSETS = /* __EDUNOZA_PRECACHE_ASSETS__ */ [];
 
 async function cacheAppShell() {
   const cache = await caches.open(CACHE_NAME);
@@ -22,7 +22,15 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((key) => key.startsWith("profeplus-") && key !== CACHE_NAME).map((key) => caches.delete(key)))
+        Promise.all(
+          keys
+            .filter(
+              (key) =>
+                (key.startsWith("edunoza-") || key.startsWith("profeplus-")) &&
+                key !== CACHE_NAME
+            )
+            .map((key) => caches.delete(key))
+        )
       )
       .then(() => self.clients.claim())
   );
@@ -41,18 +49,24 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === "navigate") {
+    const rootUrl = new URL("./", self.registration.scope);
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          if (response.ok && url.pathname === rootUrl.pathname) {
+            const copy = response.clone();
+            void caches
+              .open(CACHE_NAME)
+              .then((cache) => cache.put(rootUrl, copy))
+              .catch(() => {});
+          }
           return response;
         })
         .catch(async () => {
           const cache = await caches.open(CACHE_NAME);
           return (
-            (await cache.match(request)) ??
-            (await cache.match(new URL("./", self.registration.scope)))
+            (await cache.match(rootUrl)) ??
+            (await cache.match(request, { ignoreSearch: true }))
           );
         })
     );
@@ -66,7 +80,7 @@ self.addEventListener("fetch", (event) => {
       const response = await fetch(request);
       if (response.ok) {
         const copy = response.clone();
-        void cache.put(request, copy);
+        void cache.put(request, copy).catch(() => {});
       }
       return response;
     })

@@ -6,7 +6,7 @@ function ConfigShell() {
 
   return (
     <section className="module-card">
-      {notice ? <p className="notice">{notice}</p> : null}
+      {notice ? <p className="notice" role="status" aria-live="polite">{notice}</p> : null}
       {isBusy ? (
         <div className="management-progress" role="status" aria-label="Procesando">
           <div className="management-progress-bar" />
@@ -23,10 +23,40 @@ function ConfigShell() {
               <span>Preferencias</span>
             </NavLink>
             <NavLink
+              to="/config/comments"
+              className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
+            >
+              <span>Banco de comentarios</span>
+            </NavLink>
+            <NavLink
               to="/config/database"
               className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
             >
-              <span>Base de datos</span>
+              <span>Datos y copias de seguridad</span>
+            </NavLink>
+            <NavLink
+              to="/config/student-import"
+              className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
+            >
+              <span>Importar alumnado</span>
+            </NavLink>
+            <NavLink
+              to="/config/ai"
+              className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
+            >
+              <span>Inteligencia artificial</span>
+            </NavLink>
+            <NavLink
+              to="/config/moodle"
+              className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
+            >
+              <span>Moodle</span>
+            </NavLink>
+            <NavLink
+              to="/config/proxy"
+              className={({ isActive }) => `section-tab ${isActive ? "active" : ""}`}
+            >
+              <span>Extensión Proxy</span>
             </NavLink>
           </nav>
         </aside>

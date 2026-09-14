@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { setSelectedClass } from "../../app/store";
 import { useManagement } from "./ManagementContext";
 import { Modal } from "../../shared/ui/Modal";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { IconButton } from "../../shared/ui/IconButton";
+import { ClassGroupSelect } from "../../shared/ui/ClassGroupSelect";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 
 export function ManagementSubjectsPage() {
+  const dispatch = useAppDispatch();
+  const selectedCourseId = useAppSelector((state) => state.app.selectedClassId) ?? "";
+  const setSelectedCourseId = useCallback(
+    (courseId: string) => dispatch(setSelectedClass(courseId || null)),
+    [dispatch]
+  );
   const { formatName } = useStudentDisplay();
   const {
     subjects,
     courses,
+    isReady,
     scheduleDays,
     subjectCourseLinks,
     createEmptySubject,
@@ -17,33 +27,20 @@ export function ManagementSubjectsPage() {
     deleteSubject,
     getEnrollmentRows,
     setStudentEnrollment,
-    bulkAssignCourseStudentsToSubject,
+    bulkAssignGroupStudentsToSubject,
     setNotice
   } = useManagement();
 
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [detailName, setDetailName] = useState("");
   const [detailTeachingHours, setDetailTeachingHours] = useState("");
-  const [detailCourseId, setDetailCourseId] = useState("");
   const [detailScheduleSlotIds, setDetailScheduleSlotIds] = useState<string[]>([]);
   const [subjectDirty, setSubjectDirty] = useState(false);
-  useUnsavedChangesGuard(subjectDirty, "Hay cambios de la asignatura sin guardar.");
 
   const [isAddStudentsModalOpen, setIsAddStudentsModalOpen] = useState(false);
   const [addSearchTerm, setAddSearchTerm] = useState("");
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!selectedSubjectId && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-    const exists = subjects.some((subject) => subject.id === selectedSubjectId);
-    if (!exists && subjects.length > 0) {
-      setSelectedSubjectId(subjects[0].id);
-    }
-  }, [selectedSubjectId, subjects]);
-
-  const courseMap = useMemo(() => new Map(courses.map((item) => [item.id, item])), [courses]);
   const courseIdsBySubject = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const subject of subjects) {
@@ -57,9 +54,35 @@ export function ManagementSubjectsPage() {
     return map;
   }, [subjectCourseLinks, subjects]);
 
+  const filteredSubjects = useMemo(
+    () => subjects.filter((subject) => courseIdsBySubject.get(subject.id)?.includes(selectedCourseId)),
+    [courseIdsBySubject, selectedCourseId, subjects]
+  );
+
+  useEffect(() => {
+    if (!isReady) return;
+    if (courses.length === 0) {
+      setSelectedCourseId("");
+      return;
+    }
+    if (!courses.some((course) => course.id === selectedCourseId)) {
+      setSelectedCourseId(courses[0].id);
+    }
+  }, [courses, isReady, selectedCourseId, setSelectedCourseId]);
+
+  useEffect(() => {
+    if (filteredSubjects.length === 0) {
+      setSelectedSubjectId("");
+      return;
+    }
+    if (!filteredSubjects.some((subject) => subject.id === selectedSubjectId)) {
+      setSelectedSubjectId(filteredSubjects[0].id);
+    }
+  }, [filteredSubjects, selectedSubjectId]);
+
   const selectedSubject = useMemo(
-    () => subjects.find((subject) => subject.id === selectedSubjectId) ?? null,
-    [selectedSubjectId, subjects]
+    () => filteredSubjects.find((subject) => subject.id === selectedSubjectId) ?? null,
+    [filteredSubjects, selectedSubjectId]
   );
   const allScheduleSlotIds = useMemo(() => {
     const ids = new Set<string>();
@@ -98,17 +121,15 @@ export function ManagementSubjectsPage() {
     if (!selectedSubject) {
       setDetailName("");
       setDetailTeachingHours("");
-      setDetailCourseId("");
       setDetailScheduleSlotIds([]);
       setSubjectDirty(false);
       return;
     }
     setDetailName(selectedSubject.name);
     setDetailTeachingHours(selectedSubject.teachingHours ?? "");
-    setDetailCourseId(courseIdsBySubject.get(selectedSubject.id)?.[0] ?? "");
     setDetailScheduleSlotIds(selectedSubject.scheduleSlotIds ?? []);
     setSubjectDirty(false);
-  }, [courseIdsBySubject, selectedSubject]);
+  }, [selectedSubject]);
 
   // Debounced autosave. Context actions are intentionally omitted because their references are unstable.
   useEffect(() => {
@@ -120,15 +141,14 @@ export function ManagementSubjectsPage() {
     if (hasConflicts) return;
     const id = selectedSubject.id;
     const hours = detailTeachingHours;
-    const courseId = detailCourseId;
     const timer = setTimeout(() => {
-      void updateSubject(id, name, hours, normalizedSlotIds, courseId).then((saved) => {
+      void updateSubject(id, name, hours, normalizedSlotIds, selectedCourseId).then((saved) => {
         if (saved) setSubjectDirty(false);
       });
     }, 700);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, detailCourseId, selectedSubject?.id]);
+  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, selectedCourseId, selectedSubject?.id]);
 
   const saveIfDirty = useCallback(async (): Promise<boolean> => {
     if (!subjectDirty || !selectedSubject) return true;
@@ -136,23 +156,33 @@ export function ManagementSubjectsPage() {
     const normalizedSlotIds = detailScheduleSlotIds.filter((id) => allScheduleSlotIds.has(id));
     const hasConflicts = normalizedSlotIds.some((id) => occupiedSlotsByOtherSubjects.has(id));
     if (hasConflicts) return false;
-    const saved = await updateSubject(selectedSubject.id, name, detailTeachingHours, normalizedSlotIds, detailCourseId);
+    const saved = await updateSubject(selectedSubject.id, name, detailTeachingHours, normalizedSlotIds, selectedCourseId);
     if (saved) setSubjectDirty(false);
     return saved;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, detailCourseId, selectedSubject?.id, allScheduleSlotIds, occupiedSlotsByOtherSubjects]);
+  }, [subjectDirty, detailName, detailTeachingHours, detailScheduleSlotIds, selectedCourseId, selectedSubject?.id, allScheduleSlotIds, occupiedSlotsByOtherSubjects]);
+
+  useUnsavedChangesGuard(subjectDirty, "Hay cambios de la asignatura sin guardar.", saveIfDirty);
+
+  const changeSelectedCourse = useCallback(async (courseId: string): Promise<void> => {
+    if (!(await saveIfDirty())) return;
+    setSelectedCourseId(courseId);
+  }, [saveIfDirty, setSelectedCourseId]);
 
   const rows = useMemo(() => getEnrollmentRows(selectedSubjectId), [getEnrollmentRows, selectedSubjectId]);
-  const assignedRows = useMemo(() => rows.filter((row) => row.effectiveIncluded), [rows]);
+  const groupRows = useMemo(
+    () => rows.filter((row) => row.student.classId === selectedCourseId),
+    [rows, selectedCourseId]
+  );
+  const assignedRows = useMemo(() => groupRows.filter((row) => row.effectiveIncluded), [groupRows]);
   const candidateRows = useMemo(() => {
     const search = addSearchTerm.trim().toLowerCase();
-    return rows.filter((row) => {
+    return groupRows.filter((row) => {
       if (row.effectiveIncluded) return false;
-      const byCourse = row.student.classId === detailCourseId;
       const bySearch = search.length === 0 ? true : formatName(row.student).toLowerCase().includes(search);
-      return byCourse && bySearch;
+      return bySearch;
     });
-  }, [addSearchTerm, detailCourseId, formatName, rows]);
+  }, [addSearchTerm, formatName, groupRows]);
 
   useEffect(() => {
     if (!isAddStudentsModalOpen) {
@@ -217,21 +247,29 @@ export function ManagementSubjectsPage() {
       <h1 className="sr-only">Asignaturas</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
+          <div className="context-sidebar-tabs">
+            <ClassGroupSelect
+              groups={courses}
+              value={selectedCourseId}
+              onChange={changeSelectedCourse}
+            />
+          </div>
           <div className="courses-list-header">
             <strong>Listado</strong>
             <IconButton
               icon="add"
               label="Crear asignatura"
+              showLabel
               onClick={async () => {
                 if (!(await saveIfDirty())) return;
-                const createdId = await createEmptySubject(detailCourseId);
+                const createdId = await createEmptySubject(selectedCourseId);
                 if (createdId) setSelectedSubjectId(createdId);
               }}
+              disabled={!selectedCourseId}
             />
           </div>
           <div className="courses-list section-tabs" role="group" aria-label="Secciones de asignaturas">
-            {subjects.map((subject) => {
-              const ids = courseIdsBySubject.get(subject.id) ?? [];
+            {filteredSubjects.map((subject) => {
               const validSlotCount = (subject.scheduleSlotIds ?? []).filter((slotId) =>
                 allScheduleSlotIds.has(slotId)
               ).length;
@@ -247,8 +285,7 @@ export function ManagementSubjectsPage() {
                     }}
                   >
                     <span>{subject.name}</span>
-                    <small>{courseMap.get(ids[0])?.name ?? "Sin curso"}</small>
-                    <small>{validSlotCount} bloques marcados</small>
+                    <small>{validSlotCount} {validSlotCount === 1 ? "bloque marcado" : "bloques marcados"}</small>
                   </button>
                   <IconButton
                     icon="delete"
@@ -261,6 +298,9 @@ export function ManagementSubjectsPage() {
                 </div>
               );
             })}
+            {selectedCourseId && filteredSubjects.length === 0 ? (
+              <p className="empty-state">No hay asignaturas en este grupo.</p>
+            ) : null}
           </div>
         </aside>
 
@@ -270,20 +310,22 @@ export function ManagementSubjectsPage() {
               <div className="course-detail-header">
                 <div>
                   <h2>Detalle de asignatura</h2>
+                  <span role="status" className="hint">{subjectDirty ? "Cambios pendientes de guardar" : "Guardado"}</span>
                 </div>
               </div>
 
               <div className="detail-summary">
-                <span className="pill">{assignedRows.length} alumnos</span>
-                <span className="pill">{detailScheduleSlotIds.length} horas marcadas</span>
+                <span className="pill">{assignedRows.length} {assignedRows.length === 1 ? "alumno" : "alumnos"}</span>
+                <span className="pill">{detailScheduleSlotIds.length} {detailScheduleSlotIds.length === 1 ? "franja marcada" : "franjas marcadas"}</span>
               </div>
 
               <section className="detail-section">
                 <h3>Datos de asignatura</h3>
                 <div className="detail-grid">
-                  <div className="detail-field full">
-                    <label>Nombre</label>
+                  <div className="detail-field full compact-field">
+                    <label htmlFor="subject-detail-name">Nombre</label>
                     <input
+                      id="subject-detail-name"
                       className="input"
                       placeholder="Nombre de asignatura"
                       value={detailName}
@@ -293,28 +335,6 @@ export function ManagementSubjectsPage() {
                       }}
                     />
                   </div>
-                </div>
-              </section>
-
-              <section className="detail-section">
-                <h3>Curso</h3>
-                <div className="detail-field full">
-                  <label htmlFor="subject-course">Curso de la asignatura</label>
-                  <select
-                    id="subject-course"
-                    className="input"
-                    value={detailCourseId}
-                    required
-                    onChange={(event) => {
-                      setDetailCourseId(event.target.value);
-                      setSubjectDirty(true);
-                    }}
-                  >
-                    <option value="">Selecciona un curso</option>
-                    {courses.map((course) => (
-                      <option key={course.id} value={course.id}>{course.name}</option>
-                    ))}
-                  </select>
                 </div>
               </section>
 
@@ -377,22 +397,23 @@ export function ManagementSubjectsPage() {
 
               <section className="detail-section">
                 <div className="course-detail-header">
-                  <h3>Alumnos de la asignatura</h3>
+                  <h3>Alumnado de la asignatura</h3>
                   <div className="inline-form flush">
                     <button
                       type="button"
                       className="btn secondary compact-link"
-                      disabled={!detailCourseId || assignedRows.length >= rows.filter((row) => row.student.classId === detailCourseId).length}
+                      disabled={!selectedCourseId || assignedRows.length >= groupRows.length}
                       onClick={async () => {
-                        if (!(await saveIfDirty()) || !detailCourseId) return;
-                        await bulkAssignCourseStudentsToSubject(detailCourseId, selectedSubject.id);
+                        if (!(await saveIfDirty()) || !selectedCourseId) return;
+                        await bulkAssignGroupStudentsToSubject(selectedCourseId, selectedSubject.id);
                       }}
                     >
-                      Asignar todo el curso
+                      Asignar todo el grupo
                     </button>
                     <IconButton
                       icon="add"
                       label="Añadir alumnos"
+                      showLabel
                       onClick={async () => {
                         if (!(await saveIfDirty())) return;
                         setIsAddStudentsModalOpen(true);
@@ -405,7 +426,6 @@ export function ManagementSubjectsPage() {
                     <thead>
                       <tr>
                         <th>Alumno</th>
-                        <th>Curso</th>
                         <th>Acción</th>
                       </tr>
                     </thead>
@@ -413,7 +433,6 @@ export function ManagementSubjectsPage() {
                       {assignedRows.map((row) => (
                         <tr key={row.student.id}>
                           <td>{formatName(row.student)}</td>
-                          <td>{row.courseName}</td>
                           <td className="actions-cell">
                             <IconButton
                               icon="remove"
@@ -428,7 +447,7 @@ export function ManagementSubjectsPage() {
                       ))}
                       {assignedRows.length === 0 ? (
                         <tr>
-                          <td colSpan={3}>No hay alumnos asignados.</td>
+                          <td colSpan={2}>No hay alumnos asignados.</td>
                         </tr>
                       ) : null}
                     </tbody>
@@ -487,7 +506,6 @@ export function ManagementSubjectsPage() {
               <tr>
                 <th></th>
                 <th>Alumno</th>
-                <th>Curso</th>
               </tr>
             </thead>
             <tbody>
@@ -502,12 +520,11 @@ export function ManagementSubjectsPage() {
                     />
                   </td>
                   <td>{formatName(row.student)}</td>
-                  <td>{row.courseName}</td>
                 </tr>
               ))}
               {candidateRows.length === 0 ? (
                 <tr>
-                  <td colSpan={3}>No hay alumnos disponibles con esos filtros.</td>
+                  <td colSpan={2}>No hay alumnos disponibles con esos filtros.</td>
                 </tr>
               ) : null}
             </tbody>

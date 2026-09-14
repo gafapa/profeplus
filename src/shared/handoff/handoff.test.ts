@@ -87,6 +87,7 @@ describe("student handoff packages", () => {
   it("exports only selected students and their required references", () => {
     const payload = createStudentHandoffPayload(sourceTables(), ["student-a"], exportedAt);
 
+    expect(payload.app).toBe("Edunoza");
     expect(payload.scope.studentIds).toEqual(["student-a"]);
     expect(payload.tables.classGroups.map((row) => row.id)).toEqual(["class-a"]);
     expect(payload.tables.students.map((row) => row.id)).toEqual(["student-a"]);
@@ -95,6 +96,13 @@ describe("student handoff packages", () => {
     expect(payload.tables.supportGroups.map((row) => row.id)).toEqual(["support-a"]);
     expect(payload.tables.supportGroupMembers.map((row) => row.id)).toEqual(["member-a"]);
     expect(parseStudentHandoffPayload(payload)).toEqual(payload);
+  });
+
+  it("keeps legacy ProfePlus handoff packages readable", () => {
+    const payload = createStudentHandoffPayload(sourceTables(), ["student-a"], exportedAt);
+    const legacyPayload = { ...payload, app: "ProfePlus" as const };
+
+    expect(parseStudentHandoffPayload(legacyPayload)).toEqual(legacyPayload);
   });
 
   it("previews creates, identical rows, and blocking conflicts without overwriting", () => {

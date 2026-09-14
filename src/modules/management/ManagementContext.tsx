@@ -76,7 +76,7 @@ type ManagementContextValue = {
   ) => Promise<boolean>;
   deleteSubject: (subjectId: string) => Promise<void>;
   setStudentEnrollment: (subjectId: string, studentId: string, included: boolean) => Promise<void>;
-  bulkAssignCourseStudentsToSubject: (courseId: string, subjectId: string) => Promise<void>;
+  bulkAssignGroupStudentsToSubject: (courseId: string, subjectId: string) => Promise<void>;
   getEnrollmentRows: (subjectId: string) => EnrollmentRow[];
   updateScheduleDay: (day: ScheduleDay) => Promise<boolean>;
   updateScheduleSettings: (settings: ScheduleSettings) => Promise<boolean>;
@@ -659,7 +659,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
   const createEmptySubject = async (courseId?: string): Promise<string | null> => {
     const effectiveCourseId = courseId || courses[0]?.id || "";
     if (!effectiveCourseId) {
-      setNotice("Crea al menos un curso antes de añadir asignaturas.");
+      setNotice("Crea al menos un grupo antes de añadir asignaturas.");
       return null;
     }
 
@@ -706,7 +706,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       return false;
     }
     if (!courseId || !courses.some((course) => course.id === courseId)) {
-      setNotice("Selecciona el curso de la asignatura.");
+      setNotice("Selecciona el grupo de la asignatura.");
       return false;
     }
     const currentSubject = await db.subjects.get(subjectId);
@@ -728,47 +728,11 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       }
     }
     const currentSubjectLinks = await db.subjectCourseLinks.where("subjectId").equals(subjectId).toArray();
-    const removedCourseIds = currentSubjectLinks
-      .filter((link) => link.classId !== courseId)
-      .map((link) => link.classId);
-    const removalDependencies: string[] = [];
-    for (const classId of removedCourseIds) {
-      const [assessmentsCount, gradebookGroupsCount, taskConfigs, taskSessionsCount, directGradesCount, attendanceCount, dailyRecordsCount] = await Promise.all([
-        db.assessments.where("[classId+subjectId]").equals([classId, subjectId]).count(),
-        db.gradebookGroups.where("[classId+subjectId]").equals([classId, subjectId]).count(),
-        db.taskGradebookConfigs.where("[classId+subjectId]").equals([classId, subjectId]).toArray(),
-        db.taskSessions.where("[subjectId+classId]").equals([subjectId, classId]).count(),
-        db.taskDirectGrades.where("subjectId").equals(subjectId).filter((grade) => grade.classId === classId).count(),
-        db.attendanceEntries.where("subjectId").equals(subjectId).filter((entry) => entry.classId === classId).count(),
-        db.dailyClassRecords.where("subjectId").equals(subjectId).filter((record) => record.classId === classId).count()
-      ]);
-      const taskConfigsCount = taskConfigs.filter(isMeaningfulTaskGradebookConfig).length;
-      const courseName = courses.find((course) => course.id === classId)?.name ?? classId;
-      const dependencies = formatDependencies([
-        ["evaluaciones", assessmentsCount],
-        ["carpetas_cuaderno", gradebookGroupsCount],
-        ["config_tareas_cuaderno", taskConfigsCount],
-        ["sesiones_tareas", taskSessionsCount],
-        ["notas_directas_tareas", directGradesCount],
-        ["asistencia", attendanceCount],
-        ["registros_diarios", dailyRecordsCount]
-      ]);
-      if (dependencies.length > 0) {
-        removalDependencies.push(`${courseName} (${dependencies.join(", ")})`);
-      }
-    }
-    if (removalDependencies.length > 0) {
-      setNotice(`No se puede quitar la asignatura de esos cursos porque tiene datos: ${removalDependencies.join("; ")}.`);
-      return false;
-    }
 
     await db.transaction(
       "rw",
       db.subjects,
       db.subjectCourseLinks,
-      db.subjectStudentLinks,
-      db.students,
-      db.taskGradebookConfigs,
       async () => {
       const subject = await db.subjects.get(subjectId);
       if (!subject) {
@@ -781,33 +745,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
         scheduleSlotIds
       });
 
-      for (const link of currentSubjectLinks) {
-        if (link.classId !== courseId) {
-          await db.subjectCourseLinks.delete(link.id);
-          const emptyConfigs = await db.taskGradebookConfigs
-            .where("[classId+subjectId]")
-            .equals([link.classId, subjectId])
-            .filter((config) => !isMeaningfulTaskGradebookConfig(config))
-            .toArray();
-          if (emptyConfigs.length > 0) {
-            await db.taskGradebookConfigs.bulkDelete(emptyConfigs.map((config) => config.id));
-          }
-          // Clean up student subject links for students in the removed course
-          const studentsInCourse = await db.students.where("classId").equals(link.classId).toArray();
-          if (studentsInCourse.length > 0) {
-            const studentIds = new Set(studentsInCourse.map((s) => s.id));
-            const linksToDelete = await db.subjectStudentLinks
-              .where("subjectId")
-              .equals(subjectId)
-              .filter((sl) => studentIds.has(sl.studentId))
-              .toArray();
-            if (linksToDelete.length > 0) {
-              await db.subjectStudentLinks.bulkDelete(linksToDelete.map((sl) => sl.id));
-            }
-          }
-        }
-      }
-
+      // This save path only edits the subject's own fields; it must never drop
+      // links to other courses the subject is also taught in.
       if (!currentSubjectLinks.some((link) => link.classId === courseId)) {
         await db.subjectCourseLinks.add({
           id: crypto.randomUUID(),
@@ -880,7 +819,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
       const student = students.find((item) => item.id === studentId);
       const subjectCourseId = subjectCourseLinks.find((item) => item.subjectId === subjectId)?.classId;
       if (!student || !subjectCourseId || student.classId !== subjectCourseId) {
-        setNotice("El alumno debe pertenecer al curso de la asignatura.");
+        setNotice("El alumno debe pertenecer al grupo de la asignatura.");
         return;
       }
       if (!existing) {
@@ -902,17 +841,17 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     await loadAll();
   };
 
-  const bulkAssignCourseStudentsToSubject = async (
+  const bulkAssignGroupStudentsToSubject = async (
     courseId: string,
     subjectId: string
   ): Promise<void> => {
     if (!courseId || !subjectId) {
-      setNotice("Selecciona curso y asignatura.");
+      setNotice("Selecciona grupo y asignatura.");
       return;
     }
     const subjectCourseId = subjectCourseLinks.find((item) => item.subjectId === subjectId)?.classId;
     if (subjectCourseId !== courseId) {
-      setNotice("La asignatura solo puede recibir alumnos de su curso.");
+      setNotice("La asignatura solo puede recibir alumnos de su grupo.");
       return;
     }
 
@@ -937,7 +876,7 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     }
     setNotice(
       itemsToAdd.length > 0
-        ? `Se asignaron ${itemsToAdd.length} alumnos del curso a la asignatura.`
+        ? `Se asignaron ${itemsToAdd.length} fichas del grupo a la asignatura.`
         : "No había alumnos nuevos para asignar."
     );
     await loadAll();
@@ -1363,8 +1302,8 @@ export function ManagementProvider({ children }: { children: ReactNode }) {
     updateSubject: (...args) => runSaveWithProgress(() => updateSubject(...args)),
     deleteSubject: (...args) => runWithProgress(() => deleteSubject(...args)),
     setStudentEnrollment: (...args) => runWithProgress(() => setStudentEnrollment(...args)),
-    bulkAssignCourseStudentsToSubject: (...args) =>
-      runWithProgress(() => bulkAssignCourseStudentsToSubject(...args)),
+    bulkAssignGroupStudentsToSubject: (...args) =>
+      runWithProgress(() => bulkAssignGroupStudentsToSubject(...args)),
     getEnrollmentRows,
     updateScheduleDay: (...args) => runSaveWithProgress(() => updateScheduleDay(...args)),
     updateScheduleSettings: (...args) => runSaveWithProgress(() => updateScheduleSettings(...args)),

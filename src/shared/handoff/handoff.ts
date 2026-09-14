@@ -6,6 +6,11 @@ import type {
   SupportGroup,
   SupportGroupMember
 } from "../db/types";
+import {
+  PRODUCT_NAME,
+  isCompatibleProductName,
+  type CompatibleProductName
+} from "../brand";
 
 export const HANDOFF_TABLE_NAMES = [
   "classGroups",
@@ -28,7 +33,7 @@ export type HandoffTables = {
 };
 
 export type StudentHandoffPayload = {
-  app: "ProfePlus";
+  app: CompatibleProductName;
   format: "student-handoff";
   version: 1;
   exportedAt: string;
@@ -276,7 +281,7 @@ export function createStudentHandoffPayload(
   const supportGroupIds = new Set(supportGroupMembers.map((member) => member.supportGroupId));
 
   return {
-    app: "ProfePlus",
+    app: PRODUCT_NAME,
     format: "student-handoff",
     version: 1,
     exportedAt,
@@ -298,7 +303,7 @@ export function createStudentHandoffPayload(
 export function parseStudentHandoffPayload(value: unknown): StudentHandoffPayload {
   if (
     !isRecord(value) ||
-    value.app !== "ProfePlus" ||
+    !isCompatibleProductName(value.app) ||
     value.format !== "student-handoff" ||
     value.version !== 1 ||
     !isIsoDateTime(value.exportedAt) ||

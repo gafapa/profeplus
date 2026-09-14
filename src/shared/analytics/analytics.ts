@@ -27,8 +27,8 @@ export const ANALYTICS_EVENTS = [
 export type AnalyticsEvent = (typeof ANALYTICS_EVENTS)[number];
 
 const ANALYTICS_EVENT_SET = new Set<string>(ANALYTICS_EVENTS);
-const SESSION_EVENT_PREFIX = "profeplus_analytics_";
-const LOCAL_EVENT_PREFIX = "profeplus_analytics_completed_";
+const runtimeSessionEvents = new Set<AnalyticsEvent>();
+const runtimeCompletedEvents = new Set<AnalyticsEvent>();
 
 export function isAnalyticsEvent(value: string): value is AnalyticsEvent {
   return ANALYTICS_EVENT_SET.has(value);
@@ -82,24 +82,14 @@ export function trackAnalyticsEvent(event: AnalyticsEvent): void {
 
 export function trackAnalyticsEventOncePerSession(event: AnalyticsEvent): void {
   if (typeof window === "undefined") return;
-  const key = `${SESSION_EVENT_PREFIX}${event}`;
-  try {
-    if (window.sessionStorage.getItem(key) === "1") return;
-    window.sessionStorage.setItem(key, "1");
-  } catch {
-    // Storage restrictions must not interrupt the product or analytics call.
-  }
+  if (runtimeSessionEvents.has(event)) return;
+  runtimeSessionEvents.add(event);
   trackAnalyticsEvent(event);
 }
 
 export function trackAnalyticsEventOnce(event: AnalyticsEvent): void {
   if (typeof window === "undefined") return;
-  const key = `${LOCAL_EVENT_PREFIX}${event}`;
-  try {
-    if (window.localStorage.getItem(key) === "1") return;
-    window.localStorage.setItem(key, "1");
-  } catch {
-    // Storage restrictions must not interrupt the product or analytics call.
-  }
+  if (runtimeCompletedEvents.has(event)) return;
+  runtimeCompletedEvents.add(event);
   trackAnalyticsEvent(event);
 }

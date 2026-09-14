@@ -1,4 +1,6 @@
 import Dexie, { type Table } from "dexie";
+import type { SavedAiReport } from "../reports/aiReportArchive";
+import type { MoodleBinding, MoodleConnection, MoodleOperation } from "../moodle/types";
 import type {
   AcademicPeriod,
   Assessment,
@@ -52,7 +54,11 @@ function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-class ProfePlusDB extends Dexie {
+class EdunozaDB extends Dexie {
+  aiReports!: Table<SavedAiReport, string>;
+  moodleConnections!: Table<MoodleConnection, string>;
+  moodleBindings!: Table<MoodleBinding, string>;
+  moodleOperations!: Table<MoodleOperation, string>;
   subjects!: Table<Subject, string>;
   classGroups!: Table<ClassGroup, string>;
   students!: Table<Student, string>;
@@ -89,6 +95,7 @@ class ProfePlusDB extends Dexie {
   feedbackComments!: Table<FeedbackComment, string>;
 
   constructor() {
+    // Keep the legacy database name so same-origin upgrades retain existing records.
     super("profeplus-db");
     this.version(1).stores({
       subjects: "id,name",
@@ -256,7 +263,14 @@ class ProfePlusDB extends Dexie {
     this.version(6).stores({
       feedbackComments: "id,category,updatedAt"
     });
+    this.version(7).stores({ aiReports: "id,reportId,classId,createdAt" });
+    this.version(8).stores({
+      moodleConnections: "id,&[server+userId],updatedAt",
+      moodleBindings:
+        "id,connectionId,courseId,remoteGroupId,classId,subjectId,kind,remoteId,localId,[connectionId+courseId],[connectionId+courseId+kind+remoteId],[connectionId+courseId+classId+subjectId]",
+      moodleOperations: "id,connectionId,createdAt,kind,[connectionId+createdAt]"
+    });
   }
 }
 
-export const db = new ProfePlusDB();
+export const db = new EdunozaDB();

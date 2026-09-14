@@ -8,7 +8,7 @@ import {
   formatAttendanceRate,
   isAssessmentInReportRange,
   joinUnique,
-  riskLabel,
+  resolveReportViewState,
   taskStudentKey,
   taskSubjectKey,
   type ReportTaskRow
@@ -34,6 +34,14 @@ describe("report helpers", () => {
     studentId,
     date,
     status
+  });
+
+  it("gates report controls until a matching group with alumnado is loaded", () => {
+    expect(resolveReportViewState(null, undefined, undefined)).toBe("no-group");
+    expect(resolveReportViewState("class-1", undefined, undefined)).toBe("loading");
+    expect(resolveReportViewState("class-1", "class-2", 12)).toBe("loading");
+    expect(resolveReportViewState("class-1", "class-1", 0)).toBe("no-students");
+    expect(resolveReportViewState("class-1", "class-1", 1)).toBe("ready");
   });
 
   it("filters manual assessments by their explicit date and excludes undated legacy rows", () => {
@@ -149,8 +157,6 @@ describe("report helpers", () => {
     expect(summary).toEqual({ present: 0, late: 0, absent: 0, total: 0, rate: null });
     expect(formatAttendanceRate(summary.rate)).toBe("Sin datos");
     expect(attendanceRiskLabel(summary.rate)).toBe("Sin datos");
-    expect(riskLabel(8, summary.rate, 0)).toBe("Bajo");
-    expect(riskLabel(null, summary.rate, 0)).toBe("Bajo");
   });
 
   it("reports complete attendance as 100 percent", () => {
@@ -164,10 +170,9 @@ describe("report helpers", () => {
 
     expect(summary.rate).toBe(100);
     expect(formatAttendanceRate(summary.rate)).toBe("100%");
-    expect(riskLabel(8, summary.rate, 0)).toBe("Bajo");
   });
 
-  it("reports an observed all-absent sample as zero percent and high risk", () => {
+  it("reports an observed all-absent sample with its observed rate", () => {
     const summary = calculateAttendanceSummary(
       [
         attendanceEntry("1", "absent", "2026-05-20"),
@@ -178,8 +183,7 @@ describe("report helpers", () => {
 
     expect(summary.rate).toBe(0);
     expect(formatAttendanceRate(summary.rate)).toBe("0%");
-    expect(attendanceRiskLabel(summary.rate)).toBe("Alto");
-    expect(riskLabel(8, summary.rate, 0)).toBe("Alto");
+    expect(attendanceRiskLabel(summary.rate)).toBe("Revisar asistencia: 0% registrado");
   });
 
   it("counts an observed all-late sample as valid attendance", () => {
@@ -192,26 +196,11 @@ describe("report helpers", () => {
     );
 
     expect(summary.rate).toBe(100);
-    expect(riskLabel(8, summary.rate, 0)).toBe("Bajo");
   });
 
   it("keeps report key formats stable", () => {
     expect(taskSubjectKey("task-1", "subject-1")).toBe("task-1:subject-1");
     expect(taskStudentKey("task-1", "subject-1", "student-1")).toBe("task-1:subject-1:student-1");
-  });
-
-  it("labels risk from grades, observed attendance and pending work", () => {
-    expect(riskLabel(4.9, 100, 0)).toBe("Alto");
-    expect(riskLabel(8, 70, 0)).toBe("Alto");
-    expect(riskLabel(8, 100, 40)).toBe("Alto");
-    expect(riskLabel(8, 100, 0)).toBe("Bajo");
-  });
-
-  it("keeps ACS and reinforcement as support signals without raising academic risk", () => {
-    const supportSignals = { hasAcs: true, hasReinforcement: true };
-
-    expect(supportSignals).toEqual({ hasAcs: true, hasReinforcement: true });
-    expect(riskLabel(8, 100, 0)).toBe("Bajo");
   });
 
   it("normalizes CSV previews and deduplicates observations", () => {

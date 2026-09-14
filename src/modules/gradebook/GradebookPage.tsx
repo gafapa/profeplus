@@ -1356,7 +1356,7 @@ export function GradebookPage() {
     requestedStatus?: GradeEntryStatus
   ): Promise<void> => {
     if (!selectedClassId) {
-      setGradebookNotice("Selecciona un curso para guardar notas.");
+      setGradebookNotice("Selecciona un grupo para guardar notas.");
       return;
     }
     const assessment = filteredAssessments.find((item) => item.id === assessmentId);
@@ -2198,7 +2198,10 @@ export function GradebookPage() {
     pendingGroupWeightKeys.size > 0 ||
     groupDraftDirty;
 
-  useUnsavedChangesGuard(hasUnsavedChanges);
+  useUnsavedChangesGuard(hasUnsavedChanges, "Hay cambios del cuaderno sin guardar.", async () => {
+    if (groupDraftDirty) return false;
+    return savePendingGradebookWeights();
+  });
 
   return (
     <section className="module-card">
@@ -2206,7 +2209,11 @@ export function GradebookPage() {
         <aside className="courses-list-panel">
           <ContextSidebarTabs
             beforeChange={async () => {
-              await savePendingGradebookWeights("Cambios del arbol guardados.");
+              if (groupDraftDirty) {
+                setGradebookNotice("Crea la carpeta pendiente o borra su nombre antes de cambiar de grupo o asignatura.");
+                return false;
+              }
+              return await savePendingGradebookWeights("Cambios del arbol guardados.");
             }}
           />
         </aside>
@@ -2327,7 +2334,7 @@ export function GradebookPage() {
           <section className="detail-section">
             <h5>Arbol de notas por alumno</h5>
             <div className="gradebook-student-toolbar">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Alumno</span>
                 <select
                   className="input"
@@ -2368,7 +2375,7 @@ export function GradebookPage() {
               </button>
             </div>
             <div className="gradebook-bulk-toolbar" aria-label="Herramientas de calificación masiva">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Filtrar alumnos</span>
                 <input
                   className="input"
@@ -2378,7 +2385,7 @@ export function GradebookPage() {
                   placeholder="Nombre o apellidos"
                 />
               </label>
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Prueba</span>
                 <select
                   className="input"
@@ -2392,7 +2399,7 @@ export function GradebookPage() {
                   ))}
                 </select>
               </label>
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Estado común</span>
                 <select
                   className="input"
@@ -2405,7 +2412,7 @@ export function GradebookPage() {
                   <option value="exempt">Exento</option>
                 </select>
               </label>
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Nota común</span>
                 <input
                   className="input grade-input"

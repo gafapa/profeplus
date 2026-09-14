@@ -7,9 +7,12 @@ import {
   isEncryptedBackupEnvelope,
   type EncryptedBackupEnvelope
 } from "../../shared/backup/encryption";
-import { recordBackupCreated } from "../../shared/backup/status";
+import { recordBackupCreated, recordBackupVerified } from "../../shared/backup/status";
+import { clearLocalDrafts } from "../../shared/drafts/localDrafts";
 import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
+import { PRODUCT_NAME, isCompatibleProductName } from "../../shared/brand";
 import { db } from "../../shared/db/database";
+import { isSavedAiReport } from "../../shared/reports/aiReportArchive";
 import { MAX_LAYOUT_DIMENSION, MIN_LAYOUT_DIMENSION } from "../../shared/classroom/layout";
 import {
   FEEDBACK_COMMENT_CATEGORIES,
@@ -92,9 +95,16 @@ async function seedDatabase(): Promise<void> {
   await db.scheduleDays.bulkPut(scheduleDaysData);
   await db.scheduleSettings.put({ id: "default", defaultBlockDurationMinutes: 55 });
 
-  const matSlots = [slotMap[1][0], slotMap[2][0], slotMap[3][1], slotMap[4][0]];
-  const lenSlots = [slotMap[1][1], slotMap[2][1], slotMap[4][1], slotMap[5][0]];
-  const ingSlots = [slotMap[1][2], slotMap[3][2], slotMap[5][1]];
+  const pickSeedSlot = (dayOfWeek: number, slotIndex: number): string => {
+    const slotId = slotMap[dayOfWeek]?.[slotIndex];
+    if (!slotId) {
+      throw new Error(`Dev seed: schedule slot missing for day ${dayOfWeek} at index ${slotIndex}.`);
+    }
+    return slotId;
+  };
+  const matSlots = [pickSeedSlot(1, 0), pickSeedSlot(2, 0), pickSeedSlot(3, 1), pickSeedSlot(4, 0)];
+  const lenSlots = [pickSeedSlot(1, 1), pickSeedSlot(2, 1), pickSeedSlot(4, 1), pickSeedSlot(5, 0)];
+  const ingSlots = [pickSeedSlot(1, 2), pickSeedSlot(3, 2), pickSeedSlot(5, 1)];
 
   const matId = uid();
   const lenId = uid();
@@ -222,13 +232,14 @@ type DatabaseExportPayload = {
   tables: Record<string, unknown[]>;
 };
 
-export const DATABASE_SCHEMA_VERSION = 6;
+export const DATABASE_SCHEMA_VERSION = 7;
+const LEGACY_DATABASE_SCHEMA_VERSIONS = new Set([6]);
 const MAX_IMPORT_FILE_BYTES = 75 * 1024 * 1024;
 const MAX_STUDENT_PHOTO_DATA_URL_CHARS = 1_500_000;
 
 function buildBackupFileName(label = "backup"): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `profeplus-${label}-${stamp}.json`;
+  return `edunoza-${label}-${stamp}.json`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -349,6 +360,36 @@ function optionalString(row: Record<string, unknown>, tableName: string, fieldNa
     throw new Error(`La tabla '${tableName}' contiene '${fieldName}' no válido.`);
   }
   return value;
+}
+
+function requireOnlyFields(row: Record<string, unknown>, tableName: string, allowedFields: readonly string[]): void {
+  const allowed = new Set(allowedFields);
+  const unexpected = Object.keys(row).filter((field) => !allowed.has(field));
+  if (unexpected.length > 0) {
+    throw new Error(`La tabla '${tableName}' contiene campos no permitidos: ${unexpected.join(", ")}.`);
+  }
+}
+
+function requireBaseline(row: Record<string, unknown>, tableName: string, fieldName: string): void {
+  const baseline = row[fieldName];
+  if (!isPlainObject(baseline) || Object.values(baseline).some((value) =>
+    value !== null && typeof value !== "string" && (typeof value !== "number" || !Number.isFinite(value)))) {
+    throw new Error(`La tabla '${tableName}' contiene '${fieldName}' no válido.`);
+  }
+}
+
+function requireSecretFreeMoodleUrl(value: unknown): void {
+  if (typeof value !== "string") throw new Error("La tabla 'moodleBindings' contiene un enlace remoto no válido.");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("La tabla 'moodleBindings' contiene un enlace remoto no válido.");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash ||
+      [...url.searchParams.keys()].some((key) => /token|secret|password|key/i.test(key))) {
+    throw new Error("La tabla 'moodleBindings' contiene un enlace remoto con datos sensibles o no seguros.");
+  }
 }
 
 function requireReference(
@@ -546,11 +587,12 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
   if (!isPlainObject(parsed)) {
     throw new Error("El archivo no contiene una copia de seguridad valida.");
   }
-  if (parsed.app !== "ProfePlus") {
-    throw new Error("El archivo no pertenece a ProfePlus.");
+  if (!isCompatibleProductName(parsed.app)) {
+    throw new Error("El archivo no pertenece a Edunoza.");
   }
   const schemaVersion = parsed.schemaVersion;
-  if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion) || schemaVersion !== DATABASE_SCHEMA_VERSION) {
+  if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion) ||
+      (schemaVersion !== DATABASE_SCHEMA_VERSION && !LEGACY_DATABASE_SCHEMA_VERSIONS.has(schemaVersion))) {
     throw new Error("La copia de seguridad no pertenece al esquema actual.");
   }
   requireIsoDateTimeString(parsed.exportedAt, "exportedAt");
@@ -566,7 +608,9 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
 
   const validatedTables: Record<string, unknown[]> = {};
   for (const table of db.tables) {
-    const rows = parsed.tables[table.name];
+    const optionalLegacyTable = table.name === "aiReports" ||
+      (schemaVersion < DATABASE_SCHEMA_VERSION && ["moodleConnections", "moodleBindings", "moodleOperations"].includes(table.name));
+    const rows = parsed.tables[table.name] ?? (optionalLegacyTable ? [] : undefined);
     if (rows === undefined) {
       throw new Error(`El archivo no contiene la tabla '${table.name}'.`);
     }
@@ -591,6 +635,9 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
   const ids = (tableName: string): Set<string> => new Set(rows(tableName).map((row) => row.id as string));
 
   const classIds = ids("classGroups");
+  for (const row of rows("aiReports")) {
+    if (!isSavedAiReport(row)) throw new Error("La tabla 'aiReports' contiene un informe no válido.");
+  }
   const subjectIds = ids("subjects");
   const studentIds = ids("students");
   const unitIds = ids("unitBlocks");
@@ -928,10 +975,10 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     }
     const rubricTemplate = rubricTemplateId ? rubricTemplateById.get(rubricTemplateId) : null;
     const checklistTemplate = checklistTemplateId ? checklistTemplateById.get(checklistTemplateId) : null;
-    if (rubricTemplate?.classId !== classId || (rubricTemplate?.taskId && rubricTemplate.taskId !== taskId)) {
+    if (rubricTemplate && (rubricTemplate.classId !== classId || (rubricTemplate.taskId && rubricTemplate.taskId !== taskId))) {
       throw new Error("La tabla 'taskGradebookConfigs' usa una rubrica incompatible con la tarea.");
     }
-    if (checklistTemplate?.classId !== classId || (checklistTemplate?.taskId && checklistTemplate.taskId !== taskId)) {
+    if (checklistTemplate && (checklistTemplate.classId !== classId || (checklistTemplate.taskId && checklistTemplate.taskId !== taskId))) {
       throw new Error("La tabla 'taskGradebookConfigs' usa una lista de cotejo incompatible con la tarea.");
     }
     if (row.directGradeEnabled !== undefined && typeof row.directGradeEnabled !== "boolean") {
@@ -1660,6 +1707,92 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
   if (totalResourceBytes > MAX_TOTAL_RESOURCE_BYTES) {
     throw new Error("La tabla 'resourceAttachments' supera el límite total de almacenamiento.");
   }
+  const moodleConnectionIds = ids("moodleConnections");
+  for (const row of rows("moodleConnections")) {
+    requireOnlyFields(row, "moodleConnections", ["id", "server", "userId", "siteName", "userName", "functions", "createdAt", "updatedAt"]);
+    const server = requireString(row, "moodleConnections", "server");
+    let serverUrl: URL;
+    try {
+      serverUrl = new URL(server);
+    } catch {
+      throw new Error("La tabla 'moodleConnections' contiene una dirección no válida.");
+    }
+    const normalizedServer = serverUrl.toString().replace(/\/$/, "");
+    if (serverUrl.protocol !== "https:" || serverUrl.username || serverUrl.password || serverUrl.search || serverUrl.hash ||
+        server !== normalizedServer) {
+      throw new Error("La tabla 'moodleConnections' contiene una dirección no segura o no normalizada.");
+    }
+    requireNumber(row, "moodleConnections", "userId");
+    if (!Number.isSafeInteger(row.userId) || (row.userId as number) <= 0) {
+      throw new Error("La tabla 'moodleConnections' contiene un userId no válido.");
+    }
+    requireString(row, "moodleConnections", "siteName");
+    requireString(row, "moodleConnections", "userName");
+    if (!Array.isArray(row.functions) || row.functions.some((value) => typeof value !== "string" || !value.trim())) {
+      throw new Error("La tabla 'moodleConnections' contiene capacidades no válidas.");
+    }
+    requireIsoDateTimeString(row.createdAt, "moodleConnections.createdAt");
+    requireIsoDateTimeString(row.updatedAt, "moodleConnections.updatedAt");
+  }
+  requireUniqueLogicalRows(rows("moodleConnections"), "moodleConnections", "server+userId", (row) => `${row.server}:${row.userId}`);
+
+  for (const row of rows("moodleBindings")) {
+    requireOnlyFields(row, "moodleBindings", ["id", "connectionId", "courseId", "remoteGroupId", "classId", "subjectId", "kind", "remoteId", "localId", "remoteLabel", "localBaseline", "remoteBaseline", "updatedAt"]);
+    const connectionId = requireString(row, "moodleBindings", "connectionId");
+    requireReference(connectionId, moodleConnectionIds, "moodleBindings", "connectionId");
+    requireNumber(row, "moodleBindings", "courseId");
+    requireNumber(row, "moodleBindings", "remoteId");
+    if (!Number.isSafeInteger(row.courseId) || (row.courseId as number) <= 0 ||
+        !Number.isSafeInteger(row.remoteId) || (row.remoteId as number) <= 0) {
+      throw new Error("La tabla 'moodleBindings' contiene identificadores remotos no válidos.");
+    }
+    if (row.remoteGroupId !== undefined) {
+      requireNumber(row, "moodleBindings", "remoteGroupId");
+      if (!Number.isSafeInteger(row.remoteGroupId) || (row.remoteGroupId as number) <= 0) {
+        throw new Error("La tabla 'moodleBindings' contiene un remoteGroupId no válido.");
+      }
+    }
+    requireString(row, "moodleBindings", "classId");
+    requireString(row, "moodleBindings", "subjectId");
+    requireString(row, "moodleBindings", "localId");
+    const kind = row.kind;
+    if (kind !== "course" && kind !== "student" && kind !== "activity") {
+      throw new Error("La tabla 'moodleBindings' contiene un tipo de asociación no válido.");
+    }
+    if (kind === "course" && row.remoteId !== row.courseId) {
+      throw new Error("La tabla 'moodleBindings' contiene una asociación de curso incoherente.");
+    }
+    requireString(row, "moodleBindings", "remoteLabel");
+    requireBaseline(row, "moodleBindings", "localBaseline");
+    requireBaseline(row, "moodleBindings", "remoteBaseline");
+    const localAllowed = kind === "student" ? ["firstName", "lastName", "fullName", "email"] : kind === "activity" ? ["title"] : [];
+    const remoteAllowed = kind === "student" ? ["firstName", "lastName", "fullName", "email"] : kind === "activity" ? ["title", "url", "dueDate"] : ["fullName", "shortName"];
+    requireOnlyFields(row.localBaseline as Record<string, unknown>, "moodleBindings.localBaseline", localAllowed);
+    requireOnlyFields(row.remoteBaseline as Record<string, unknown>, "moodleBindings.remoteBaseline", remoteAllowed);
+    if (kind === "activity" && (row.remoteBaseline as Record<string, unknown>).url !== undefined) {
+      requireSecretFreeMoodleUrl((row.remoteBaseline as Record<string, unknown>).url);
+    }
+    requireIsoDateTimeString(row.updatedAt, "moodleBindings.updatedAt");
+  }
+  const moodleScopeKey = (row: Record<string, unknown>) =>
+    `${row.connectionId}:${row.courseId}:${row.remoteGroupId ?? "all"}:${row.classId}:${row.subjectId}`;
+  requireUniqueLogicalRows(rows("moodleBindings"), "moodleBindings", "scope+kind+remoteId", (row) => `${moodleScopeKey(row)}:${row.kind}:${row.remoteId}`);
+  requireUniqueLogicalRows(rows("moodleBindings").filter((row) => row.kind !== "course"), "moodleBindings", "scope+kind+localId", (row) => `${moodleScopeKey(row)}:${row.kind}:${row.localId}`);
+
+  for (const row of rows("moodleOperations")) {
+    requireOnlyFields(row, "moodleOperations", ["id", "connectionId", "createdAt", "kind", "summary", "count"]);
+    const connectionId = requireString(row, "moodleOperations", "connectionId");
+    requireReference(connectionId, moodleConnectionIds, "moodleOperations", "connectionId");
+    if (row.kind !== "link" && row.kind !== "update" && row.kind !== "grades") {
+      throw new Error("La tabla 'moodleOperations' contiene un tipo de operación no válido.");
+    }
+    requireString(row, "moodleOperations", "summary");
+    requireNumber(row, "moodleOperations", "count");
+    if (!Number.isSafeInteger(row.count) || (row.count as number) < 0) {
+      throw new Error("La tabla 'moodleOperations' contiene un recuento no válido.");
+    }
+    requireIsoDateTimeString(row.createdAt, "moodleOperations.createdAt");
+  }
   for (const row of rows("scheduleSettings")) {
     if (row.id !== "default") {
       throw new Error("La tabla 'scheduleSettings' contiene un id no válido.");
@@ -1696,6 +1829,88 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     }
   }
   return validatedTables;
+}
+
+export async function buildCurrentPayload(): Promise<DatabaseExportPayload> {
+  return db.transaction("r", db.tables, async () => {
+    const tables: Record<string, unknown[]> = {};
+    for (const table of db.tables) {
+      const rows = await table.toArray();
+      tables[table.name] = table.name === "tasks" ? rows.map((row) => isPlainObject(row) ? {
+        ...row,
+        sessionCount: typeof row.sessionCount === "number" && Number.isFinite(row.sessionCount)
+          ? Math.max(1, Math.round(row.sessionCount)) : 1
+      } : row) : rows;
+    }
+    return { app: PRODUCT_NAME, schemaVersion: DATABASE_SCHEMA_VERSION, exportedAt: new Date().toISOString(), tables };
+  });
+}
+
+function pruneStaleMoodleBindings(tablesData: Record<string, unknown[]>): void {
+  const tableRows = (name: string) => (tablesData[name] ?? []) as Record<string, unknown>[];
+  const classIds = new Set(tableRows("classGroups").map((row) => row.id as string));
+  const subjectIds = new Set(tableRows("subjects").map((row) => row.id as string));
+  const taskIds = new Set(tableRows("tasks").map((row) => row.id as string));
+  const studentClassById = new Map(tableRows("students").map((row) => [row.id as string, row.classId as string]));
+  const subjectCourseKeys = new Set(tableRows("subjectCourseLinks").map((row) => `${row.subjectId}:${row.classId}`));
+  const taskSubjectKeys = new Set(tableRows("taskSubjectLinks").map((row) => `${row.taskId}:${row.subjectId}`));
+  const original = tableRows("moodleBindings");
+  const retained = original.filter((row) => {
+    const kind = row.kind;
+    const classId = row.classId as string;
+    const subjectId = row.subjectId as string;
+    const localId = row.localId as string;
+    if (!classIds.has(classId) || !subjectIds.has(subjectId) || !subjectCourseKeys.has(`${subjectId}:${classId}`)) return false;
+    if (kind === "course") return localId === classId;
+    if (kind === "student") return studentClassById.get(localId) === classId;
+    return kind === "activity" && taskIds.has(localId) && taskSubjectKeys.has(`${localId}:${subjectId}`);
+  });
+  tablesData.moodleBindings = retained;
+  const removedByConnection = new Map<string, number>();
+  for (const row of original) {
+    if (retained.includes(row)) continue;
+    const connectionId = row.connectionId as string;
+    removedByConnection.set(connectionId, (removedByConnection.get(connectionId) ?? 0) + 1);
+  }
+  const timestamp = new Date().toISOString();
+  const operations = tableRows("moodleOperations");
+  for (const [connectionId, count] of removedByConnection) {
+    operations.push({ id: crypto.randomUUID(), connectionId, createdAt: timestamp, kind: "link",
+      summary: "Asociaciones obsoletas omitidas al restaurar la copia", count });
+  }
+  tablesData.moodleOperations = operations;
+}
+
+export async function restoreDatabasePayload(
+  payload: unknown,
+  expectedCurrentTables?: Record<string, unknown[]>,
+  signal?: AbortSignal
+): Promise<void> {
+  const tablesData = validateDatabasePayload(payload);
+  pruneStaleMoodleBindings(tablesData);
+  signal?.throwIfAborted();
+  await db.transaction("rw", db.tables, async (transaction) => {
+    const abort = () => transaction.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      signal?.throwIfAborted();
+      if (expectedCurrentTables) {
+        const current = await buildCurrentPayload();
+        if (JSON.stringify(current.tables) !== JSON.stringify(expectedCurrentTables)) {
+          throw new Error("Los datos locales cambiaron mientras se creaba la copia preventiva. Cierra otras pestañas de Edunoza y vuelve a intentarlo. No se ha sustituido ningún dato.");
+        }
+      }
+      for (const table of db.tables) await table.clear();
+      for (const table of db.tables) {
+        const rows = tablesData[table.name];
+        if (rows.length) await table.bulkPut(rows as object[]);
+      }
+      signal?.throwIfAborted();
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  });
+  clearLocalDrafts();
 }
 
 export function ManagementDatabasePage() {
@@ -1736,35 +1951,6 @@ export function ManagementDatabasePage() {
     }
   };
 
-  const buildCurrentPayload = async (): Promise<DatabaseExportPayload> => {
-    return db.transaction("r", db.tables, async () => {
-      const tables: Record<string, unknown[]> = {};
-      for (const table of db.tables) {
-        const rows = await table.toArray();
-        tables[table.name] =
-          table.name === "tasks"
-            ? rows.map((row) =>
-                isPlainObject(row)
-                  ? {
-                      ...row,
-                      sessionCount:
-                        typeof row.sessionCount === "number" && Number.isFinite(row.sessionCount)
-                          ? Math.max(1, Math.round(row.sessionCount))
-                          : 1
-                    }
-                  : row
-              )
-            : rows;
-      }
-      return {
-        app: "ProfePlus",
-        schemaVersion: DATABASE_SCHEMA_VERSION,
-        exportedAt: new Date().toISOString(),
-        tables
-      };
-    });
-  };
-
   const downloadPayload = (payload: unknown, label = "backup"): void => {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const downloadUrl = URL.createObjectURL(blob);
@@ -1798,7 +1984,7 @@ export function ManagementDatabasePage() {
       setExportPassword("");
       setExportPasswordConfirmation("");
       setShowExportModal(false);
-      setNotice("Copia cifrada exportada. Guarda la contraseña en un lugar seguro.");
+      setNotice("Copia cifrada descargada. Comprueba el archivo en «Comprobar una copia» y guarda la contraseña en un lugar seguro.");
     });
   };
 
@@ -1837,6 +2023,7 @@ export function ManagementDatabasePage() {
         const tablesData = validateDatabasePayload(parsed);
         const totalRows = Object.values(tablesData).reduce((sum, rows) => sum + rows.length, 0);
         setNotice(`Copia válida: ${totalRows} registros comprobados sin modificar tus datos.`);
+        recordBackupVerified();
         trackAnalyticsEvent("backup_verified");
       } else {
         prepareValidatedImport(parsed, file.name);
@@ -1852,6 +2039,7 @@ export function ManagementDatabasePage() {
         const tablesData = validateDatabasePayload(parsed);
         const totalRows = Object.values(tablesData).reduce((sum, rows) => sum + rows.length, 0);
         setNotice(`Copia cifrada válida: ${totalRows} registros comprobados sin modificar tus datos.`);
+        recordBackupVerified();
         trackAnalyticsEvent("backup_verified");
       } else {
         prepareValidatedImport(parsed, encryptedImport.fileName);
@@ -1865,24 +2053,20 @@ export function ManagementDatabasePage() {
     if (!pendingImport) return;
     await runDatabaseAction(async () => {
       await downloadSafetyBackup("before-import");
-      await db.transaction("rw", db.tables, async () => {
-        for (const table of db.tables) {
-          await table.clear();
-        }
-        for (const table of db.tables) {
-          const rows = pendingImport.tablesData[table.name];
-          if (rows.length > 0) {
-            await table.bulkPut(rows as object[]);
-          }
-        }
-      });
+      const current = await buildCurrentPayload();
+      await restoreDatabasePayload({
+        app: PRODUCT_NAME,
+        schemaVersion: pendingImport.schemaVersion,
+        exportedAt: pendingImport.exportedAt,
+        tables: pendingImport.tablesData
+      }, current.tables);
 
       await refreshAll();
       const preferences = await db.appPreferences.get("default");
       if (preferences) {
         dispatch(hydrateAppPreferences(preferences));
       }
-      setNotice("Base de datos importada.");
+      setNotice("Base de datos importada. Los borradores anteriores se han descartado.");
       trackAnalyticsEvent("backup_imported");
       setPendingImport(null);
       setSafetyPassword("");
@@ -1896,7 +2080,7 @@ export function ManagementDatabasePage() {
         tables[table.name] = await table.toArray();
       }
       validateDatabasePayload({
-        app: "ProfePlus",
+        app: PRODUCT_NAME,
         schemaVersion: DATABASE_SCHEMA_VERSION,
         exportedAt: new Date().toISOString(),
         tables
@@ -1914,7 +2098,8 @@ export function ManagementDatabasePage() {
         }
       });
       await refreshAll();
-      setNotice("Todos los datos de la base han sido eliminados.");
+      clearLocalDrafts();
+      setNotice("Todos los datos de la base y sus borradores han sido eliminados.");
       setShowDeleteAllModal(false);
       setSafetyPassword("");
     });
@@ -1925,6 +2110,7 @@ export function ManagementDatabasePage() {
       await downloadSafetyBackup("before-demo-data");
       await seedDatabase();
       await refreshAll();
+      clearLocalDrafts();
       setNotice("Datos de prueba cargados.");
       setShowSeedModal(false);
       setSafetyPassword("");
@@ -1933,15 +2119,85 @@ export function ManagementDatabasePage() {
 
   return (
     <>
-      <BackupTrustPanel />
-      <article className="management-card">
-        <h2>Acciones de copia</h2>
-        <p className="hint">
-          Exporta una copia cifrada, compruébala sin modificar tus datos o restaura una copia anterior.
-        </p>
+      <article className="management-card database-actions database-actions-simple">
+        <BackupTrustPanel />
+        <section className="database-primary-action" aria-labelledby="database-backup-title">
+          <div>
+            <h3 id="database-backup-title">Crear una copia segura</h3>
+            <p>Descarga un archivo cifrado que podrás guardar fuera de este navegador.</p>
+          </div>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={isBusy}
+            onClick={() => setShowExportModal(true)}
+          >
+            Crear copia cifrada
+          </button>
+        </section>
+
+          <section aria-labelledby="database-restore-title">
+            <h3 id="database-restore-title">Restaurar una copia</h3>
+            <p>Revisa primero el archivo. Antes de sustituir los datos se descargará una copia de seguridad.</p>
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={isBusy}
+              onClick={() => importInputRef.current?.click()}
+            >
+              Seleccionar copia para restaurar
+            </button>
+          </section>
+
+        <details className="database-disclosure">
+          <summary>Comprobaciones</summary>
+          <section aria-labelledby="database-checks-title">
+            <h3 id="database-checks-title">Comprobaciones</h3>
+            <p>Comprueba una copia o revisa la integridad de los datos de este navegador.</p>
+            <div className="database-action-buttons">
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={isBusy}
+                onClick={() => verificationInputRef.current?.click()}
+              >
+                Comprobar una copia
+              </button>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={isBusy}
+                onClick={() => void verifyDatabaseIntegrity()}
+              >
+                Verificar datos actuales
+              </button>
+            </div>
+          </section>
+
+        </details>
+        <details className="database-disclosure">
+          <summary>Opciones avanzadas</summary>
+        <section className="database-danger-zone" aria-labelledby="database-danger-title">
+          <div>
+            <h3 id="database-danger-title">Zona de peligro</h3>
+            <p>Elimina toda la información local después de descargar una copia preventiva.</p>
+          </div>
+          <button
+            type="button"
+            className="btn secondary management-danger-btn"
+            disabled={isBusy}
+            onClick={() => {
+              setSafetyPassword("");
+              setShowDeleteAllModal(true);
+            }}
+          >
+            Borrar todo
+          </button>
+        </section>
 
         {import.meta.env.DEV && (
-          <div className="inline-form">
+          <div className="database-developer-action">
+            <span>Solo desarrollo</span>
             <button
               type="button"
               className="btn secondary"
@@ -1956,51 +2212,7 @@ export function ManagementDatabasePage() {
           </div>
         )}
 
-        <div className="inline-form">
-          <button
-            type="button"
-            className="btn secondary"
-            disabled={isBusy}
-            onClick={() => setShowExportModal(true)}
-          >
-            Exportar cifrada
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            disabled={isBusy}
-            onClick={() => importInputRef.current?.click()}
-          >
-            Restaurar copia
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            disabled={isBusy}
-            onClick={() => verificationInputRef.current?.click()}
-          >
-            Comprobar una copia
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            disabled={isBusy}
-            onClick={() => void verifyDatabaseIntegrity()}
-          >
-            Verificar datos actuales
-          </button>
-          <button
-            type="button"
-            className="btn secondary management-danger-btn"
-            disabled={isBusy}
-            onClick={() => {
-              setSafetyPassword("");
-              setShowDeleteAllModal(true);
-            }}
-          >
-            Borrar todo
-          </button>
-        </div>
+        </details>
 
         <input
           ref={importInputRef}
@@ -2045,8 +2257,9 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={showExportModal}
+        form
         title="Exportar copia cifrada"
-        subtitle="La contraseña no se puede recuperar. Guárdala fuera de ProfePlus."
+        subtitle="La contraseña no se puede recuperar. Guárdala fuera de Edunoza."
         onClose={() => {
           if (isBusy) return;
           setShowExportModal(false);
@@ -2055,7 +2268,7 @@ export function ManagementDatabasePage() {
         }}
       >
         <div className="detail-grid">
-          <label className="detail-field full">
+          <label className="detail-field full compact-field">
             <span>Contraseña de la copia</span>
             <input
               className="input"
@@ -2066,7 +2279,7 @@ export function ManagementDatabasePage() {
               onChange={(event) => setExportPassword(event.target.value)}
             />
           </label>
-          <label className="detail-field full">
+          <label className="detail-field full compact-field">
             <span>Repetir contraseña</span>
             <input
               className="input"
@@ -2099,6 +2312,7 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={encryptedImport !== null}
+        form
         title={encryptedImport?.mode === "verify" ? "Comprobar copia cifrada" : "Descifrar copia de seguridad"}
         subtitle={
           encryptedImport?.mode === "verify"
@@ -2111,7 +2325,7 @@ export function ManagementDatabasePage() {
           setImportPassword("");
         }}
       >
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Contraseña de la copia</span>
           <input
             className="input"
@@ -2143,6 +2357,7 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={pendingImport !== null}
+        form
         title="Confirmar importación"
         subtitle={pendingImport?.fileName}
         onClose={() => {
@@ -2160,7 +2375,7 @@ export function ManagementDatabasePage() {
             <div><dt>Registros</dt><dd>{pendingImport.totalRows}</dd></div>
           </dl>
         ) : null}
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Contraseña para la copia de seguridad</span>
           <input
             className="input"
@@ -2196,6 +2411,7 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={showSeedModal}
+        form
         title="Cargar datos de prueba"
         onClose={() => {
           if (!isBusy) {
@@ -2205,7 +2421,7 @@ export function ManagementDatabasePage() {
         }}
       >
         <p>Los datos actuales se sustituirán por el conjunto de demostración. Se descargará una copia cifrada antes de continuar.</p>
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Contraseña para la copia de seguridad</span>
           <input
             className="input"
@@ -2241,6 +2457,7 @@ export function ManagementDatabasePage() {
 
       <Modal
         open={showDeleteAllModal}
+        form
         title="Borrar toda la base de datos"
         onClose={() => {
           if (!isBusy) {
@@ -2250,7 +2467,7 @@ export function ManagementDatabasePage() {
         }}
       >
         <p>Se eliminarán todos los datos de la app. Antes de continuar se descargará automáticamente una copia cifrada.</p>
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Contraseña para la copia de seguridad</span>
           <input
             className="input"

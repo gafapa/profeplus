@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
 import { ProductFeedback } from "../../shared/feedback/ProductFeedback";
 
-function ProductMark() {
+export function ProductMark() {
   return (
     <span className="landing-product-mark" aria-hidden="true">
       <svg viewBox="0 0 48 48">
@@ -18,9 +18,9 @@ export function LandingPage() {
     <div className="landing-page">
       <a className="skip-link" href="#landing-main">Saltar al contenido principal</a>
       <header className="landing-header">
-        <NavLink className="landing-brand" to="/" aria-label="ProfePlus, inicio">
+        <NavLink className="landing-brand" to="/" aria-label="Edunoza, inicio">
           <ProductMark />
-          <span>ProfePlus</span>
+          <span>Edunoza</span>
         </NavLink>
         <nav aria-label="Presentación">
           <a href="#como-funciona">Cómo funciona</a>
@@ -48,7 +48,7 @@ export function LandingPage() {
                 to="/today"
                 onClick={() => trackAnalyticsEvent("landing_workspace_open")}
               >
-                Empezar sin cuenta
+                Abrir mi espacio
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
               </NavLink>
               <a className="landing-secondary-action" href="#como-funciona">Ver el flujo completo</a>
@@ -111,7 +111,7 @@ export function LandingPage() {
           <div className="landing-privacy-copy">
             <h2 id="privacy-title">Privacidad que se entiende antes de empezar</h2>
             <p>
-              ProfePlus no necesita una cuenta ni un servidor académico. Los datos se guardan en el perfil de tu navegador y solo salen cuando tú exportas, compartes o autorizas una función externa.
+              Edunoza no necesita una cuenta ni un servidor académico. Los datos se guardan en el perfil de tu navegador y solo salen cuando tú exportas, compartes o autorizas una función externa.
             </p>
             <NavLink className="landing-secondary-action" to="/config/database">Ver copias y recuperación</NavLink>
           </div>
@@ -126,20 +126,28 @@ export function LandingPage() {
         <section className="landing-close" aria-labelledby="landing-close-title">
           <div>
             <h2 id="landing-close-title">Empieza con tu próxima clase.</h2>
-            <p>No necesitas registrarte. El asistente te ayudará a preparar el primer curso.</p>
+            <p>No necesitas registrarte. El asistente te ayudará a preparar el primer grupo.</p>
           </div>
           <NavLink
             className="landing-primary-action"
             to="/today"
             onClick={() => trackAnalyticsEvent("landing_workspace_open")}
           >
-            Abrir ProfePlus
+            Abrir mi espacio
           </NavLink>
         </section>
       </main>
 
       <footer className="landing-footer">
-        <span>ProfePlus · Cuaderno docente local-first</span>
+        <div className="landing-footer-identity">
+          <span>Edunoza · Cuaderno docente local-first</span>
+          <nav aria-label="Información legal">
+            <NavLink to="/aviso-legal">Aviso legal</NavLink>
+            <NavLink to="/privacidad">Privacidad</NavLink>
+            <NavLink to="/cookies">Almacenamiento local</NavLink>
+            <NavLink to="/condiciones">Condiciones de uso</NavLink>
+          </nav>
+        </div>
         <ProductFeedback placement="inline" />
       </footer>
     </div>

@@ -44,6 +44,8 @@ export function ClassroomPage() {
   const [pickedStudent, setPickedStudent] = useState<Student | null>(null);
   const [groupCount, setGroupCount] = useState(4);
   const [groups, setGroups] = useState<Student[][]>([]);
+  const [draggedStudent, setDraggedStudent] = useState<{ id: string; classId: string } | null>(null);
+  const [dropSeat, setDropSeat] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -111,7 +113,7 @@ export function ClassroomPage() {
     const updated = { ...layout, updatedAt: new Date().toISOString() };
     try {
       await db.classroomLayouts.put(updated);
-      setData((current) => ({ ...current, layout: updated }));
+      setData((current) => current.layout?.classId === updated.classId ? { ...current, layout: updated } : current);
       setNotice(message);
     } catch (error) {
       setNotice(`No se pudo guardar el plano: ${error instanceof Error ? error.message : "Error desconocido"}.`);
@@ -173,13 +175,7 @@ export function ClassroomPage() {
 
   return (
     <article className="classroom-page">
-      <header className="classroom-header">
-        <div>
-          <span className="agenda-eyebrow">Herramientas de aula</span>
-          <h1>Plano y grupos</h1>
-          <p>Organiza los asientos, realiza selecciones sin repeticiones y crea grupos equilibrados.</p>
-        </div>
-      </header>
+      <h1 className="sr-only">Plano y grupos</h1>
 
       <div className="courses-layout classroom-layout-shell">
         <aside className="courses-list-panel classroom-sidebar" aria-label="Controles del aula">
@@ -187,7 +183,7 @@ export function ClassroomPage() {
           <section className="classroom-control-section" aria-labelledby="layout-controls-heading">
             <h2 id="layout-controls-heading">Distribución</h2>
             <div className="classroom-dimension-controls">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Filas</span>
                 <input
                   className="input"
@@ -199,7 +195,7 @@ export function ClassroomPage() {
                   onChange={(event) => void updateDimension("rows", Number(event.target.value))}
                 />
               </label>
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Columnas</span>
                 <input
                   className="input"
@@ -240,7 +236,7 @@ export function ClassroomPage() {
 
           <section className="classroom-control-section" aria-labelledby="groups-heading">
             <h2 id="groups-heading">Grupos rápidos</h2>
-            <label className="detail-field">
+            <label className="detail-field compact-field">
               <span>Número de grupos</span>
               <input
                 className="input"
@@ -262,15 +258,15 @@ export function ClassroomPage() {
           {isLoading ? (
             <p className="empty-state" role="status">Cargando aula…</p>
           ) : !selectedClassId ? (
-            <p className="empty-state">Selecciona o crea un curso para preparar su aula.</p>
+            <p className="empty-state">Selecciona o crea un grupo para preparar su aula.</p>
           ) : data.students.length === 0 ? (
-            <p className="empty-state">Añade alumnado al curso para crear el plano de aula.</p>
+            <p className="empty-state">Añade alumnado al grupo para crear el plano de aula.</p>
           ) : layout ? (
             <>
               <div className="course-detail-header">
                 <div>
                   <h2 id="classroom-map-heading">Plano de aula</h2>
-                  <p className="hint">Cada selector permite mover, intercambiar o quitar a un alumno sin usar arrastre.</p>
+                  <p className="hint">Arrastra un alumno a otro puesto para moverlo o intercambiarlo. También puedes utilizar los selectores con teclado.</p>
                 </div>
                 <span className={`pill ${capacity < data.students.length ? "warning" : ""}`}>
                   {data.students.length} alumnos · {capacity} puestos
@@ -289,14 +285,38 @@ export function ClassroomPage() {
                   const student = studentBySeat.get(seat);
                   const name = student ? formatName(student) : "Puesto vacío";
                   return (
-                    <li key={seat} className={`classroom-seat ${student ? "occupied" : "empty"}`}>
+                    <li key={seat} className={`classroom-seat ${student ? "occupied" : "empty"} ${dropSeat === seat ? "drop-target" : ""}`}
+                      onDragOver={(event) => {
+                        if (draggedStudent?.classId !== selectedClassId || isLoading) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        setDropSeat(seat);
+                      }}
+                      onDragLeave={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropSeat(null);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (draggedStudent?.classId === selectedClassId && !isLoading && data.students.some((item) => item.id === draggedStudent.id)) {
+                          void assignSeat(draggedStudent.id, seat);
+                        }
+                        setDraggedStudent(null);
+                        setDropSeat(null);
+                      }}>
                       <span className="classroom-seat-number">{seatLabel(seat, layout.columns)}</span>
-                      <div className="classroom-seat-student">
+                      <div className="classroom-seat-student" draggable={Boolean(student)}
+                        onDragStart={(event) => {
+                          if (!student || !selectedClassId) { event.preventDefault(); return; }
+                          setDraggedStudent({ id: student.id, classId: selectedClassId });
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", "Edunoza classroom seat");
+                        }}
+                        onDragEnd={() => { setDraggedStudent(null); setDropSeat(null); }}>
                         {student?.photoDataUrl ? <img src={student.photoDataUrl} alt="" /> : <span aria-hidden="true">{student ? name.charAt(0) : "—"}</span>}
                         <strong>{name}</strong>
                         {student && data.absentStudentIds.has(student.id) ? <small>Ausente hoy</small> : null}
                       </div>
-                      <label>
+                      <label className="compact-field">
                         <span className="sr-only">Alumno en {seatLabel(seat, layout.columns)}</span>
                         <select className="input" value={student?.id ?? ""} onChange={(event) => void assignSeat(event.target.value, seat)}>
                           <option value="">Dejar vacío</option>

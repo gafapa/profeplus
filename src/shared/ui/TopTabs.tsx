@@ -4,6 +4,7 @@ import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { setSelectedClass, setSelectedSubject } from "../../app/store";
 import { db } from "../db/database";
 import type { ClassGroup, Subject } from "../db/types";
+import { Modal } from "./Modal";
 import {
   findActiveNavigationArea,
   matchesNavigationPath,
@@ -54,6 +55,7 @@ export function TopTabs() {
   const selectedSubjectId = useAppSelector((s) => s.app.selectedSubjectId);
   const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [subjects,    setSubjects]    = useState<Subject[]>([]);
+  const [isMoreNavigationOpen, setIsMoreNavigationOpen] = useState(false);
 
   const isManagementRoute = location.pathname.startsWith("/management");
   const isJournalRoute = location.pathname.startsWith("/journal");
@@ -64,14 +66,20 @@ export function TopTabs() {
   const usesLocalContextSelector =
     isConfigRoute ||
     isJournalRoute ||
+    location.pathname.startsWith("/agenda") ||
     location.pathname.startsWith("/gradebook") ||
     location.pathname.startsWith("/today") ||
+    location.pathname.startsWith("/classroom") ||
     location.pathname.startsWith("/planner") ||
     location.pathname.startsWith("/reports") ||
     location.pathname.startsWith("/search") ||
     location.pathname.startsWith("/management/units") ||
     location.pathname.startsWith("/management/tasks");
   const showSelectors = !isManagementRoute && !usesLocalContextSelector;
+
+  useEffect(() => {
+    setIsMoreNavigationOpen(false);
+  }, [location.pathname]);
 
   // Reload courses on mount and after returning from management pages.
   useEffect(() => {
@@ -90,10 +98,7 @@ export function TopTabs() {
         return;
       }
       if (!selectedClassId) {
-        if (active) {
-          setSubjects((current) => (current.length > 0 ? [] : current));
-          if (selectedSubjectId) dispatch(setSelectedSubject(""));
-        }
+        if (active) setSubjects((current) => (current.length > 0 ? [] : current));
         return;
       }
       const [allSubjects, links] = await Promise.all([
@@ -106,7 +111,7 @@ export function TopTabs() {
     };
     void load();
     return () => { active = false; };
-  }, [dispatch, selectedClassId, selectedSubjectId, showSelectors]);
+  }, [dispatch, selectedClassId, showSelectors]);
 
   const hasSelectedSubject = useMemo(
     () => subjects.some((s) => s.id === selectedSubjectId),
@@ -138,7 +143,7 @@ export function TopTabs() {
                 aria-label={`${area.label}: ${area.description}`}
                 aria-current={isActive ? "location" : undefined}
                 title={area.description}
-                className={`section-tab compact featured ${area.tone} ${
+                className={`section-tab compact featured navigation-area-${area.id} ${
                   isActive ? "active" : ""
                 }`}
               >
@@ -154,7 +159,7 @@ export function TopTabs() {
         {showSelectors && (
           <div className="top-tabs-selectors" aria-label="Selección principal">
             {classGroups.length > 0 ? (
-              <div className="top-context-tabs section-tabs" role="group" aria-label="Curso">
+              <div className="top-context-tabs section-tabs" role="group" aria-label="Grupo">
                 {classGroups.map((group) => (
                   <button
                     key={group.id}
@@ -166,7 +171,7 @@ export function TopTabs() {
                     onClick={() => dispatch(setSelectedClass(group.id))}
                     title={group.name}
                   >
-                    <span>{group.name || "Curso sin nombre"}</span>
+                    <span>{group.name || "Grupo sin nombre"}</span>
                     <small>{group.schoolYear}</small>
                   </button>
                 ))}
@@ -194,7 +199,7 @@ export function TopTabs() {
                   ))}
                 </div>
               ) : (
-                <span className="top-context-empty">Sin asignaturas</span>
+                <span className="top-context-empty">No hay asignaturas</span>
               )
             ) : null}
           </div>
@@ -210,6 +215,24 @@ export function TopTabs() {
             <TopTabIcon icon={settingsNavigationItem.icon} />
             <span>{settingsNavigationItem.label}</span>
           </NavLink>
+          <button
+            type="button"
+            className={`section-tab compact mobile-more-trigger ${
+              activeArea?.id === "follow-up" || activeArea?.id === "organization" || isConfigRoute
+                ? "active"
+                : ""
+            }`}
+            aria-haspopup="dialog"
+            aria-expanded={isMoreNavigationOpen}
+            onClick={() => setIsMoreNavigationOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.5" />
+              <circle cx="12" cy="12" r="1.5" />
+              <circle cx="19" cy="12" r="1.5" />
+            </svg>
+            <span>Más</span>
+          </button>
         </div>
       </nav>
 
@@ -223,7 +246,6 @@ export function TopTabs() {
           </span>
           <div
             className="workflow-subnav-list section-tabs"
-            style={{ gridTemplateColumns: `repeat(${activeArea.items.length}, minmax(0, 1fr))` }}
           >
             {activeArea.items.map((item) => {
               const isActive = matchesNavigationPath(location.pathname, item.to);
@@ -242,6 +264,46 @@ export function TopTabs() {
           </div>
         </nav>
       ) : null}
+
+      <Modal
+        open={isMoreNavigationOpen}
+        title="Más áreas"
+        subtitle="Seguimiento, organización y ajustes de la aplicación."
+        panelClassName="mobile-navigation-sheet"
+        onClose={() => setIsMoreNavigationOpen(false)}
+      >
+        <nav className="mobile-navigation-list" aria-label="Más áreas de trabajo">
+          {navigationAreas
+            .filter((area) => area.id === "follow-up" || area.id === "organization")
+            .map((area) => (
+              <NavLink
+                key={area.id}
+                to={area.to}
+                className={`mobile-navigation-item ${activeArea?.id === area.id ? "active" : ""}`}
+                aria-current={activeArea?.id === area.id ? "location" : undefined}
+                onClick={() => setIsMoreNavigationOpen(false)}
+              >
+                <TopTabIcon icon={area.icon} />
+                <span>
+                  <strong>{area.label}</strong>
+                  <small>{area.description}</small>
+                </span>
+              </NavLink>
+            ))}
+          <NavLink
+            to={settingsNavigationItem.to}
+            className={`mobile-navigation-item ${isConfigRoute ? "active" : ""}`}
+            aria-current={isConfigRoute ? "location" : undefined}
+            onClick={() => setIsMoreNavigationOpen(false)}
+          >
+            <TopTabIcon icon={settingsNavigationItem.icon} />
+            <span>
+              <strong>{settingsNavigationItem.label}</strong>
+              <small>Privacidad, datos y preferencias</small>
+            </span>
+          </NavLink>
+        </nav>
+      </Modal>
     </div>
   );
 }

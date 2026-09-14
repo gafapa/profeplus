@@ -25,7 +25,7 @@ import {
   sessionStatusLabel,
   type SessionPlanDraft
 } from "../../shared/planner/sessionPlan";
-import { addDays, buildVisiblePlannerWeekDates, formatWeekRange, isoDayOfWeek, startOfWeek, toIsoDate } from "../../shared/planner/week";
+import { addDays, buildVisiblePlannerWeekDates, formatPlannerDate, formatWeekRange, isoDayOfWeek, startOfWeek, toIsoDate } from "../../shared/planner/week";
 import { buildPrintablePlannerReport, type PrintablePlannerSession } from "../../shared/planner/printablePlanner";
 import { canQuickAssignTask, completesTaskWithNextSession, countsAsPlannedSession } from "../../shared/planner/quickAssignment";
 import { availableRescheduleBlocks } from "../../shared/planner/reschedule";
@@ -106,6 +106,7 @@ export function PlannerPage() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), weekStartsOn));
   const [selectedCell, setSelectedCell] = useState<PlannerCell | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [newTaskTitle, setNewTaskTitle] = useState("");
   const [sessionPlanDraft, setSessionPlanDraft] = useState<SessionPlanDraft>(() => sessionPlanDraftFromSession());
   const [draggedSessionId, setDraggedSessionId] = useState("");
   const [quickTaskKey, setQuickTaskKey] = useState("");
@@ -464,6 +465,7 @@ export function PlannerPage() {
   }, [selectedCell, taskById, taskLinksBySubject, taskSessionCountByTaskSubject, unitById]);
 
   useEffect(() => {
+    setNewTaskTitle("");
     if (!selectedCell) {
       setSelectedTaskId("");
       return;
@@ -481,8 +483,8 @@ export function PlannerPage() {
     if (!selectedCell) return false;
     const originalTaskId = selectedCell.session?.taskId ?? selectableTasksForCell[0]?.task.id ?? "";
     const originalDraft = sessionPlanDraftFromSession(selectedCell.session);
-    return selectedTaskId !== originalTaskId || JSON.stringify(sessionPlanDraft) !== JSON.stringify(originalDraft);
-  }, [selectableTasksForCell, selectedCell, selectedTaskId, sessionPlanDraft]);
+    return newTaskTitle.length > 0 || selectedTaskId !== originalTaskId || JSON.stringify(sessionPlanDraft) !== JSON.stringify(originalDraft);
+  }, [newTaskTitle, selectableTasksForCell, selectedCell, selectedTaskId, sessionPlanDraft]);
   useUnsavedChangesGuard(plannerDraftDirty, "Hay cambios sin guardar en la sesión del Planificador.");
 
   const closePlannerModal = async (): Promise<void> => {
@@ -524,7 +526,35 @@ export function PlannerPage() {
   };
 
   const assignTaskToCell = async (): Promise<void> => {
-    if (!selectedCell || !selectedTaskId) return;
+    if (!selectedCell || isBusy) return;
+    if (!selectedTaskId && selectableTasksForCell.length === 0) {
+      const title = newTaskTitle.trim();
+      if (title.length < 2) return;
+      setIsBusy(true);
+      try {
+        const taskId = crypto.randomUUID();
+        await db.transaction("rw", db.tasks, db.taskSubjectLinks, db.taskSessions, async () => {
+          const occupied = await db.taskSessions.where("classId").equals(selectedCell.classGroup.id)
+            .filter((session) => session.date === selectedCell.date && session.scheduleSlotId === selectedCell.block.id).first();
+          if (occupied) throw new Error("Esta clase ya tiene una tarea. Cierra el formulario y revisa la sesión.");
+          await db.tasks.add({ id: taskId, title, description: "", sessionCount: 1, sendToGradebook: false });
+          await db.taskSubjectLinks.add({ id: crypto.randomUUID(), taskId, subjectId: selectedCell.subject.id });
+          await db.taskSessions.add({
+            id: crypto.randomUUID(), taskId, subjectId: selectedCell.subject.id,
+            classId: selectedCell.classGroup.id, date: selectedCell.date, scheduleSlotId: selectedCell.block.id,
+            ...normalizeSessionPlanDraft(sessionPlanDraft)
+          });
+        });
+        setSelectedCell(null);
+        await refreshAfterAction("Primera sesión guardada. La tarea está disponible en Tareas y la clase en Hoy.");
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "No se pudo guardar la sesión. Tus datos siguen en el formulario; inténtalo de nuevo.");
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+    if (!selectedTaskId) return;
     const task = taskById.get(selectedTaskId);
     if (!task) return;
 
@@ -712,7 +742,7 @@ export function PlannerPage() {
 
   const exportPrintableWeek = (): void => {
     if (!selectedClass) {
-      setNotice("Selecciona un curso para exportar el planificador.");
+      setNotice("Selecciona un grupo para exportar el planificador.");
       return;
     }
     const selectedSubject = selectedSubjectId ? subjectById.get(selectedSubjectId) : null;
@@ -813,6 +843,9 @@ export function PlannerPage() {
               <p>{formatWeekRange(weekStart)}</p>
             </div>
           </header>
+          {!isBusy && selectedClassId && subjectsForClass.length > 0 && taskSessions.length === 0 ? (
+            <p className="empty-state">Prepara tu primera clase: elige «Programar tarea» en una franja del horario. Si aún no tienes tareas, podrás crear una allí mismo.</p>
+          ) : null}
           <section className="detail-section flush">
             <div className="metric-grid compact">
               <article className="metric-item">
@@ -841,7 +874,7 @@ export function PlannerPage() {
           </section>
 
           {!selectedClassId ? (
-            <p className="empty-state">Selecciona un curso para abrir el planificador semanal.</p>
+            <p className="empty-state">Selecciona un grupo para abrir el planificador semanal.</p>
           ) : subjectsForClass.length === 0 ? (
             <p className="empty-state">El curso seleccionado no tiene asignaturas asociadas.</p>
           ) : weekDates.length === 0 ? (
@@ -854,7 +887,7 @@ export function PlannerPage() {
                   <section key={day.iso} className="planner-day-column">
                     <header className="planner-day-header">
                       <strong>{day.label}</strong>
-                      <span>{day.iso}</span>
+                      <span>{formatPlannerDate(day.date, true)}</span>
                     </header>
                     <div className="planner-day-slots">
                       {cells.map((cell) => {
@@ -915,8 +948,8 @@ export function PlannerPage() {
                                 disabled={isBusy}
                                 aria-label={
                                   isQuickTarget
-                                    ? `Asignar ${selectedQuickTask?.task.title || "tarea"} al ${cell.date}, ${formatBlockTime(cell.block)}`
-                                    : `Programar tarea el ${cell.date}, ${formatBlockTime(cell.block)}`
+                                    ? `Asignar ${selectedQuickTask?.task.title || "tarea"} al ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
+                                    : `Programar tarea el ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
                                 }
                                 onClick={() => {
                                   if (isQuickTarget) {
@@ -952,9 +985,20 @@ export function PlannerPage() {
         {selectedCell ? (
           <div className="planner-session-modal">
             <p className="hint">
-              {selectedCell.dayName} {selectedCell.date} · {formatBlockTime(selectedCell.block)} · {selectedCell.subject.name}
+              {selectedCell.dayName} {formatPlannerDate(selectedCell.date)} · {formatBlockTime(selectedCell.block)} · {selectedCell.subject.name}
             </p>
-            <label className="detail-field full">
+            {selectableTasksForCell.length === 0 ? (
+              <div className="planner-first-task">
+                <p className="hint">Crea la tarea de esta clase sin salir del planificador. Conservaremos el grupo, la asignatura y la hora seleccionados. Podrás añadir una unidad o un instrumento de evaluación después, en Tareas.</p>
+                <label className="detail-field full compact-field">
+                  <span>Título de la nueva tarea</span>
+                  <input className="input" value={newTaskTitle} minLength={2} maxLength={200}
+                    placeholder="Ej. Sumamos con material manipulativo"
+                    onChange={(event) => setNewTaskTitle(event.target.value)} />
+                </label>
+              </div>
+            ) : (
+            <label className="detail-field full compact-field">
               <span>Tarea</span>
               <select className="input" value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value)}>
                 {selectableTasksForCell.map((item) => (
@@ -964,11 +1008,11 @@ export function PlannerPage() {
                 ))}
               </select>
             </label>
-            {selectableTasksForCell.length === 0 ? (
-              <p className="empty-state">No hay tareas vinculadas a esta asignatura.</p>
-            ) : null}
+            )}
+            <details open={Boolean(selectedCell.session)}>
+              <summary>Objetivos y otros detalles de la sesión (opcional)</summary>
             <div className="detail-grid">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Estado</span>
                 <select
                   className="input"
@@ -1005,7 +1049,7 @@ export function PlannerPage() {
                   onChange={(event) => setSessionPlanDraft((current) => ({ ...current, competencies: event.target.value }))}
                 />
               </label>
-              <label className="detail-field full">
+              <label className="detail-field full compact-field">
                 <span>Materiales</span>
                 <input
                   className="input"
@@ -1014,7 +1058,7 @@ export function PlannerPage() {
                   onChange={(event) => setSessionPlanDraft((current) => ({ ...current, materials: event.target.value }))}
                 />
               </label>
-              <label className="detail-field full">
+              <label className="detail-field full compact-field">
                 <span>Deberes</span>
                 <input
                   className="input"
@@ -1033,6 +1077,8 @@ export function PlannerPage() {
                 />
               </label>
             </div>
+            </details>
+            {notice ? <p className="notice" role="status">{notice}</p> : null}
             <div className="inline-form">
               <button type="button" className="btn secondary" onClick={() => void closePlannerModal()}>
                 Cancelar
@@ -1057,8 +1103,8 @@ export function PlannerPage() {
                   Quitar
                 </button>
               ) : null}
-              <button type="button" className="btn primary" disabled={!selectedTaskId} onClick={() => void assignTaskToCell()}>
-                {selectedCell.session ? "Guardar sesión" : "Programar sesión"}
+              <button type="button" className="btn primary" disabled={isBusy || (!selectedTaskId && newTaskTitle.trim().length < 2)} onClick={() => void assignTaskToCell()}>
+                {isBusy ? "Guardando…" : selectedCell.session ? "Guardar sesión" : selectableTasksForCell.length === 0 ? "Crear tarea y programar sesión" : "Programar sesión"}
               </button>
               {selectedCell.session ? (
                 <>
@@ -1094,7 +1140,7 @@ export function PlannerPage() {
               Elige una fecha lectiva y una franja asignada a la misma asignatura.
             </p>
             <div className="detail-grid">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Fecha</span>
                 <input
                   className="input"
@@ -1103,7 +1149,7 @@ export function PlannerPage() {
                   onChange={(event) => setRescheduleDate(event.target.value)}
                 />
               </label>
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Franja</span>
                 <select
                   className="input"

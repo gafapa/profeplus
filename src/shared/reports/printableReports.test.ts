@@ -10,6 +10,7 @@ describe("printable reports", () => {
     const html = buildPrintableReportHtml({
       title: "Informe <grupo>",
       generatedAt: "2026-07-08",
+      context: { group: "3 ESO <A>", schoolYear: "2026-2027", period: "2026-09-01 — 2026-12-20" },
       summary: [{ label: "Media", value: "7.25" }],
       tables: [
         {
@@ -24,6 +25,9 @@ describe("printable reports", () => {
     expect(html).toContain("Informe &lt;grupo&gt;");
     expect(html).toContain("<th>Alumno</th>");
     expect(html).toContain("<td>Ana</td>");
+    expect(html).toContain("Grupo: 3 ESO &lt;A&gt;");
+    expect(html).toContain("Curso escolar: 2026-2027");
+    expect(html).toContain("Periodo: 2026-09-01 — 2026-12-20");
   });
 
   it("builds paginated sections for individual printable reports", () => {

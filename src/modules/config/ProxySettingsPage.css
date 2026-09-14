@@ -1,0 +1,47 @@
+.proxy-settings-page {
+  display: grid;
+  gap: 24px;
+  overflow-wrap: anywhere;
+}
+
+.proxy-settings-page section,
+.proxy-settings-page details {
+  max-width: 72ch;
+}
+
+.proxy-settings-page h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.proxy-settings-page p,
+.proxy-settings-page dd,
+.proxy-settings-page li {
+  line-height: 1.55;
+}
+
+.proxy-settings-page ol {
+  padding-inline-start: 24px;
+}
+
+.proxy-settings-page li + li {
+  margin-top: 8px;
+}
+
+.proxy-settings-page dd {
+  margin-inline-start: 0;
+  margin-bottom: 12px;
+}
+
+.proxy-settings-page a,
+.proxy-settings-page summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.proxy-settings-page summary {
+  display: list-item;
+  align-content: center;
+  cursor: pointer;
+}

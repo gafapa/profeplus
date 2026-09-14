@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { useAppDispatch } from "../../app/hooks";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { setSelectedClass, setSelectedSubject } from "../../app/store";
 import {
   buildAgendaIcs,
@@ -14,7 +14,9 @@ import type {
   AcademicPeriod,
   Assessment,
   ClassGroup,
+  DailyClassRecord,
   FamilyContact,
+  ScheduleDay,
   Student,
   StudentFollowUp,
   Subject,
@@ -34,6 +36,8 @@ type AgendaData = {
   taskSessions: TaskSession[];
   academicPeriods: AcademicPeriod[];
   assessments: Assessment[];
+  scheduleDays: ScheduleDay[];
+  dailyClassRecords: DailyClassRecord[];
 };
 
 const EMPTY_DATA: AgendaData = {
@@ -45,7 +49,9 @@ const EMPTY_DATA: AgendaData = {
   familyContacts: [],
   taskSessions: [],
   academicPeriods: [],
-  assessments: []
+  assessments: [],
+  scheduleDays: [],
+  dailyClassRecords: []
 };
 
 const KIND_LABELS: Record<AgendaItemKind, string> = {
@@ -77,7 +83,7 @@ function downloadCalendar(items: AgendaItem[], today: string): void {
   try {
     const link = document.createElement("a");
     link.href = url;
-    link.download = `profeplus-agenda-${today}.ics`;
+    link.download = `edunoza-agenda-${today}.ics`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -90,7 +96,8 @@ export function AgendaPage() {
   const dispatch = useAppDispatch();
   const today = toLocalIsoDate();
   const [data, setData] = useState<AgendaData>(EMPTY_DATA);
-  const [classFilter, setClassFilter] = useState("all");
+  const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
+  const classFilter = selectedClassId || "all";
   const [kindFilter, setKindFilter] = useState<AgendaItemKind | "all">("all");
   const [urgencyFilter, setUrgencyFilter] = useState<AgendaUrgency | "all">("all");
   const [horizonDays, setHorizonDays] = useState(30);
@@ -109,7 +116,9 @@ export function AgendaPage() {
         familyContacts,
         taskSessions,
         academicPeriods,
-        assessments
+        assessments,
+        scheduleDays,
+        dailyClassRecords
       ] = await Promise.all([
         db.classGroups.orderBy("name").toArray(),
         db.students.toArray(),
@@ -119,7 +128,9 @@ export function AgendaPage() {
         db.familyContacts.toArray(),
         db.taskSessions.toArray(),
         db.academicPeriods.toArray(),
-        db.assessments.toArray()
+        db.assessments.toArray(),
+        db.scheduleDays.toArray(),
+        db.dailyClassRecords.toArray()
       ]);
       if (!active) return;
       setData({
@@ -131,7 +142,9 @@ export function AgendaPage() {
         familyContacts,
         taskSessions,
         academicPeriods,
-        assessments
+        assessments,
+        scheduleDays,
+        dailyClassRecords
       });
       setIsLoading(false);
     };
@@ -190,12 +203,56 @@ export function AgendaPage() {
 
   return (
     <section className="agenda-page" aria-labelledby="agenda-title">
-      <header className="agenda-hero">
-        <div>
-          <span className="agenda-eyebrow">Centro de acciones</span>
-          <h1 id="agenda-title">Agenda</h1>
-          <p>Reúne próximos pasos, clases, pruebas y cierres sin duplicar tus registros.</p>
-        </div>
+      <div className="courses-layout agenda-layout">
+        <aside className="courses-list-panel agenda-sidebar" aria-label="Opciones de agenda">
+      <section className="agenda-filters" aria-labelledby="agenda-filters-title">
+        <h2 id="agenda-filters-title" className="sr-only">Filtrar agenda</h2>
+        <label className="compact-field">
+          <span>Grupo</span>
+          <select value={classFilter} onChange={(event) => dispatch(setSelectedClass(event.target.value === "all" ? "" : event.target.value))}>
+            <option value="all">Todos los grupos</option>
+            {data.classGroups.map((classGroup) => (
+              <option key={classGroup.id} value={classGroup.id}>{classGroup.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="compact-field">
+          <span>Tipo</span>
+          <select
+            value={kindFilter}
+            onChange={(event) => setKindFilter(event.target.value as AgendaItemKind | "all")}
+          >
+            <option value="all">Todos los tipos</option>
+            {Object.entries(KIND_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="compact-field">
+          <span>Estado</span>
+          <select
+            value={urgencyFilter}
+            onChange={(event) => setUrgencyFilter(event.target.value as AgendaUrgency | "all")}
+          >
+            <option value="all">Todos los estados</option>
+            {Object.entries(URGENCY_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="compact-field">
+          <span>Horizonte</span>
+          <select value={horizonDays} onChange={(event) => setHorizonDays(Number(event.target.value))}>
+            <option value={7}>7 días</option>
+            <option value={30}>30 días</option>
+            <option value={60}>60 días</option>
+            <option value={90}>90 días</option>
+          </select>
+        </label>
+      </section>
+
+      <div className="inline-form">
+        <h1 id="agenda-title" className="sr-only">Agenda</h1>
         <button
           type="button"
           className="btn secondary"
@@ -204,8 +261,10 @@ export function AgendaPage() {
         >
           Descargar calendario
         </button>
-      </header>
+      </div>
 
+        </aside>
+        <div className="course-detail-panel agenda-main">
       <section className="agenda-metrics" aria-label="Resumen de la agenda">
         <article className="agenda-metric overdue">
           <strong>{counts.overdue}</strong>
@@ -223,52 +282,6 @@ export function AgendaPage() {
           <strong>{counts.total}</strong>
           <span>Total</span>
         </article>
-      </section>
-
-      <section className="agenda-filters" aria-labelledby="agenda-filters-title">
-        <h2 id="agenda-filters-title" className="sr-only">Filtrar agenda</h2>
-        <label>
-          <span>Curso</span>
-          <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
-            <option value="all">Todos los cursos</option>
-            {data.classGroups.map((classGroup) => (
-              <option key={classGroup.id} value={classGroup.id}>{classGroup.name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Tipo</span>
-          <select
-            value={kindFilter}
-            onChange={(event) => setKindFilter(event.target.value as AgendaItemKind | "all")}
-          >
-            <option value="all">Todos los tipos</option>
-            {Object.entries(KIND_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Estado</span>
-          <select
-            value={urgencyFilter}
-            onChange={(event) => setUrgencyFilter(event.target.value as AgendaUrgency | "all")}
-          >
-            <option value="all">Todos los estados</option>
-            {Object.entries(URGENCY_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Horizonte</span>
-          <select value={horizonDays} onChange={(event) => setHorizonDays(Number(event.target.value))}>
-            <option value={7}>7 días</option>
-            <option value={30}>30 días</option>
-            <option value={60}>60 días</option>
-            <option value={90}>90 días</option>
-          </select>
-        </label>
       </section>
 
       {notice ? (
@@ -308,7 +321,7 @@ export function AgendaPage() {
                     <span className="agenda-kind">{KIND_LABELS[item.kind]}</span>
                   </div>
                   <h3>{item.title}</h3>
-                  <p>{item.detail}</p>
+                  <p>{item.detail}{item.startTime && item.endTime ? ` · ${item.startTime}–${item.endTime}` : ""}</p>
                 </div>
                 <NavLink
                   className="btn secondary agenda-item-action"
@@ -323,6 +336,8 @@ export function AgendaPage() {
           </ol>
         )}
       </section>
+        </div>
+      </div>
     </section>
   );
 }

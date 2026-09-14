@@ -7,6 +7,7 @@ type ModalProps = {
   title: string;
   subtitle?: string;
   panelClassName?: string;
+  form?: boolean;
   onClose: () => void;
   children: ReactNode;
 };
@@ -16,6 +17,7 @@ export function Modal({
   title,
   subtitle,
   panelClassName = "",
+  form = false,
   onClose,
   children
 }: ModalProps) {
@@ -91,7 +93,7 @@ export function Modal({
           </div>
           <IconButton icon="close" label="Cerrar" onClick={onClose} />
         </div>
-        <div className="modal-body">{children}</div>
+        {form ? <form className="modal-body" onSubmit={(event) => event.preventDefault()}>{children}</form> : <div className="modal-body">{children}</div>}
       </div>
     </div>,
     document.body,

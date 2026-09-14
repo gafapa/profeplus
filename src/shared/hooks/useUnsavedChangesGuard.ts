@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect } from "react";
+import { useCallback, useContext, useEffect, useRef } from "react";
 import { UNSAFE_NavigationContext as NavigationContext, useBeforeUnload } from "react-router-dom";
 import { useUnsavedChangesDialog } from "../ui/UnsavedChangesDialog";
 
@@ -8,9 +8,12 @@ type BlockableNavigator = {
   block?: (blocker: (tx: { retry: () => void }) => void) => () => void;
 };
 
-export function useUnsavedChangesGuard(when: boolean, message = DEFAULT_MESSAGE): void {
+export function useUnsavedChangesGuard(when: boolean, message = DEFAULT_MESSAGE, beforeLeave?: () => Promise<boolean>): void {
   const navigationContext = useContext(NavigationContext) as { navigator?: BlockableNavigator } | null;
   const dialog = useUnsavedChangesDialog();
+  const latest = useRef({ when, beforeLeave });
+  const navigating = useRef(false);
+  useEffect(() => { latest.current = { when, beforeLeave }; }, [when, beforeLeave]);
 
   const handleBeforeUnload = useCallback(
     (event: BeforeUnloadEvent) => {
@@ -36,15 +39,35 @@ export function useUnsavedChangesGuard(when: boolean, message = DEFAULT_MESSAGE)
 
     const unblock = block((tx) => {
       void (async () => {
-        const shouldLeave = dialog
-          ? await dialog.confirmLeave(message)
-          : window.confirm(message);
+        if (navigating.current) return;
+        navigating.current = true;
+        try {
+          if (!latest.current.when) {
+            unblock();
+            tx.retry();
+            return;
+          }
+          const shouldLeave = dialog
+            ? await dialog.confirmLeave(message)
+            : window.confirm(message);
 
-        if (!shouldLeave) {
-          return;
+          if (!shouldLeave) {
+            return;
+          }
+          if (latest.current.beforeLeave) {
+            try {
+              await latest.current.beforeLeave();
+            } catch {
+              // Best-effort save; the user already confirmed leaving.
+            }
+          }
+          unblock();
+          tx.retry();
+        } catch {
+          // Stay on the current form if a save fails unexpectedly.
+        } finally {
+          navigating.current = false;
         }
-        unblock();
-        tx.retry();
       })();
     });
 

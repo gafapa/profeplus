@@ -19,6 +19,7 @@ export type PrintableSection = {
 export type PrintableReport = {
   title: string;
   generatedAt: string;
+  context?: { group: string; schoolYear: string; period: string };
   summary?: PrintableSummaryItem[];
   tables?: PrintableTable[];
   sections?: PrintableSection[];
@@ -86,6 +87,9 @@ export function buildPrintableReportHtml(report: PrintableReport): string {
   const summaryHtml = buildSummaryHtml(report.summary);
   const tableHtml = buildTableHtml(report.tables);
   const sectionHtml = (report.sections ?? []).map(buildSectionHtml).join("");
+  const contextHtml = report.context
+    ? `<p>Grupo: ${escapeHtml(report.context.group)} · Curso escolar: ${escapeHtml(report.context.schoolYear)} · Periodo: ${escapeHtml(report.context.period)}</p>`
+    : "";
 
   return `<!doctype html>
 <html lang="es">
@@ -121,6 +125,7 @@ export function buildPrintableReportHtml(report: PrintableReport): string {
 <body>
   <header>
     <h1>${escapeHtml(report.title)}</h1>
+    ${contextHtml}
     <div class="generated">Generado: ${escapeHtml(report.generatedAt)}</div>
   </header>
   <main>

@@ -23,7 +23,7 @@ describe("planner visible week dates", () => {
       scheduleDay(5, "Viernes")
     ]);
 
-    expect(formatWeekRange(weekStart)).toBe("2026-07-06 - 2026-07-12");
+    expect(formatWeekRange(weekStart)).toBe("6–12 de julio de 2026");
     expect(days.map((day) => day.label)).toEqual(["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]);
     expect(days.map((day) => day.iso)).toEqual([
       "2026-07-06",
@@ -44,5 +44,10 @@ describe("planner visible week dates", () => {
 
     expect(days.map((day) => day.label)).toEqual(["Lunes", "Sábado"]);
     expect(days.map((day) => day.iso)).toEqual(["2026-07-06", "2026-07-11"]);
+  });
+
+  it("formats ranges across month and year boundaries in natural Spanish", () => {
+    expect(formatWeekRange(new Date(2026, 5, 29))).toBe("29 de junio–5 de julio de 2026");
+    expect(formatWeekRange(new Date(2025, 11, 29))).toBe("29 de diciembre de 2025–4 de enero de 2026");
   });
 });

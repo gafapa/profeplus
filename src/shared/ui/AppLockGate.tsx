@@ -130,9 +130,9 @@ export function AppLockGate({ children }: { children: ReactNode }) {
         }}
       >
         <span className="app-lock-mark" aria-hidden="true">PP</span>
-        <h1>ProfePlus está bloqueado</h1>
+        <h1>Edunoza está bloqueado</h1>
         <p>Introduce la clave local de este dispositivo para continuar.</p>
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Clave del dispositivo</span>
           <input
             className="input"

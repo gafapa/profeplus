@@ -1,0 +1,125 @@
+.moodle-workflow-stepper {
+  min-width: 0;
+}
+
+.moodle-workflow-stepper-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.moodle-workflow-stepper-item {
+  flex: 1 1 10.5rem;
+  min-width: 0;
+}
+
+.moodle-workflow-stepper-button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid #c8d8ef;
+  border-radius: 9px;
+  background: #f6f9fd;
+  color: #294f84;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.moodle-workflow-stepper-button:hover:not(:disabled) {
+  border-color: #9ebae2;
+  background: #edf4fd;
+}
+
+.moodle-workflow-stepper-button[aria-current="step"] {
+  border-color: #1f4b99;
+  background: #eaf2ff;
+  color: #173d6e;
+}
+
+.moodle-workflow-stepper-button:disabled {
+  border-color: #dbe3ef;
+  background: #f6f8fb;
+  color: #71819a;
+  cursor: not-allowed;
+}
+
+.moodle-workflow-stepper-number {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: #dce8f8;
+  color: #294f84;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.moodle-workflow-stepper-button[aria-current="step"] .moodle-workflow-stepper-number {
+  background: #1f4b99;
+  color: #fff;
+}
+
+.moodle-workflow-stepper-button:disabled .moodle-workflow-stepper-number {
+  background: #e6ebf2;
+  color: #71819a;
+}
+
+.moodle-workflow-stepper-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.moodle-workflow-stepper-label {
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.moodle-workflow-stepper-description {
+  color: #5a6f8e;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.moodle-workflow-stepper-complete {
+  color: #17643c;
+  font-size: 0.76rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.moodle-workflow-stepper-button:disabled .moodle-workflow-stepper-description,
+.moodle-workflow-stepper-button:disabled .moodle-workflow-stepper-complete {
+  color: inherit;
+}
+
+.moodle-workflow-stepper-button:focus-visible {
+  outline: 3px solid #2e6cc8;
+  outline-offset: 2px;
+}
+
+@media (max-width: 620px) {
+  .moodle-workflow-stepper-list {
+    gap: 6px;
+  }
+
+  .moodle-workflow-stepper-item {
+    flex-basis: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moodle-workflow-stepper-button {
+    transition: none;
+  }
+}

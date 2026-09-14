@@ -1,12 +1,12 @@
-# CLAUDE.md - ProfePlus
+# CLAUDE.md - Edunoza
 
-Context guide for coding agents working on ProfePlus.
+Context guide for coding agents working on Edunoza.
 
 ## Description
 
-ProfePlus is an offline-first PWA for teachers. It includes a gradebook, journal, task planning, attendance tracking, rubrics, checklists, reports, and local database tools.
+Edunoza is an offline-first PWA for teachers. It includes a gradebook, journal, task planning, attendance tracking, rubrics, checklists, reports, and local database tools.
 
-AI features are provided by the external AI Proxy Bridge Chrome extension located at `D:\ProyectosIA\ia extension`. Do not modify that extension from this project.
+AI features use the built-in browser runtime in `src/shared/ai/runtime.ts`. It connects directly to user-selected cloud providers or loopback services and keeps credentials session-only unless the user explicitly opts into device persistence.
 
 ## Stack
 
@@ -41,7 +41,7 @@ src/
     reports/            # Reporting views
     management/         # Courses, students, subjects, units, tasks, schedules, backups
   shared/
-    ai/                 # AI extension runtime client
+    ai/                 # Direct browser AI runtime
     attendance/         # Attendance normalization helpers
     db/                 # Dexie schema and shared types
     gradebook/          # Scoring and manual assessment helpers
@@ -63,12 +63,11 @@ src/
 ## Deployment
 
 - Root deployment: `VITE_BASE_PATH=/`
-- Subdirectory deployment: `VITE_BASE_PATH=/profeplus/`
-- Optional AI extension default: `VITE_AI_RUNTIME_EXTENSION_ID=<chrome-extension-id>`
+- Subdirectory deployment: `VITE_BASE_PATH=/edunoza/`
 
 ## Conventions
 
 - Documentation, variable names, function names, and comments are written in English.
 - User-facing UI text can remain Spanish.
 - Keep modules scoped under `src/modules/<module-name>/`.
-- Keep AI calls behind `src/shared/ai/extensionRuntime.ts`; do not reintroduce direct WebLLM app imports.
+- Keep AI calls behind `src/shared/ai/runtime.ts`; never expose credentials outside that module or broaden provider network origins without reviewing security and legal documentation.

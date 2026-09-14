@@ -19,6 +19,7 @@ type IconName =
 type IconButtonProps = {
   icon: IconName;
   label: string;
+  showLabel?: boolean;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">;
 
 function Icon({ icon }: { icon: IconName }) {
@@ -119,16 +120,17 @@ function Icon({ icon }: { icon: IconName }) {
   }
 }
 
-export function IconButton({ icon, label, type = "button", className = "", ...rest }: IconButtonProps) {
+export function IconButton({ icon, label, showLabel = false, type = "button", className = "", ...rest }: IconButtonProps) {
   return (
     <button
       type={type}
-      className={`icon-btn ${className}`.trim()}
+      className={`icon-btn ${showLabel ? "has-label" : ""} ${className}`.trim()}
       aria-label={label}
       title={label}
       {...rest}
     >
       <Icon icon={icon} />
+      {showLabel ? <span>{label}</span> : null}
     </button>
   );
 }

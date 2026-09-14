@@ -31,6 +31,8 @@ import {
 } from "../../shared/attendance/attendance";
 import { matchesTaskScope } from "../../shared/gradebook/calculations";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { ClassGroupSelect } from "../../shared/ui/ClassGroupSelect";
 import { toLocalIsoDate } from "../../shared/utils/date";
 import {
   filterTaskSessionsByAcademicContext,
@@ -321,7 +323,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
           slots.push({
             key: `${link.classId}:${subject.id}:${block.id}`,
             classId: link.classId,
-            className: classGroup?.name ?? "Curso sin nombre",
+            className: classGroup?.name ?? "Grupo sin nombre",
             subjectId: subject.id,
             subjectName: subject.name,
             slotId: block.id,
@@ -1653,14 +1655,12 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       }}
     />
   );
-  const savePendingWorkChanges = async (): Promise<void> => {
-    if (attendanceDirty) {
-      await saveAttendance();
-    }
-    if (taskDirty) {
-      await saveTaskDiary();
-    }
+  const savePendingWorkChanges = async (): Promise<boolean> => {
+    if (attendanceDirty && !(await saveAttendance())) return false;
+    if (taskDirty && !(await saveTaskDiary())) return false;
+    return true;
   };
+  useUnsavedChangesGuard(hasUnsavedChanges, "Hay cambios de evaluación sin guardar.", savePendingWorkChanges);
 
   const selectWorkTaskSession = async (session: TaskSession): Promise<void> => {
     if (taskDirty) {
@@ -1799,28 +1799,14 @@ export function AttendancePage({ mode }: AttendancePageProps) {
             <>
               <div className="context-sidebar-tabs">
                 <div className="context-sidebar-group">
-                  <strong>Curso</strong>
-                  {classGroups.length > 0 ? (
-                    <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Curso">
-                      {classGroups.map((classGroup) => (
-                        <button
-                          key={classGroup.id}
-                          type="button"
-                          aria-pressed={selectedClassId === classGroup.id}
-                          className={`section-tab ${selectedClassId === classGroup.id ? "active" : ""}`}
-                          onClick={async () => {
-                            await savePendingWorkChanges();
-                            dispatch(setSelectedClass(classGroup.id));
-                          }}
-                        >
-                          <span>{classGroup.name || "Curso sin nombre"}</span>
-                          <small>{classGroup.schoolYear}</small>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="hint">No hay cursos creados.</p>
-                  )}
+                  <ClassGroupSelect
+                    groups={classGroups}
+                    value={selectedClassId}
+                    onChange={async (classId) => {
+                      if (!(await savePendingWorkChanges())) return;
+                      dispatch(setSelectedClass(classId));
+                    }}
+                  />
                 </div>
 
                 {selectedClassId ? (
@@ -1837,7 +1823,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                               aria-pressed={selectedSubjectId === subject.id}
                               className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
                               onClick={async () => {
-                                await savePendingWorkChanges();
+                                if (!(await savePendingWorkChanges())) return;
                                 dispatch(setSelectedSubject(subject.id));
                               }}
                             >
@@ -1866,7 +1852,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                             aria-pressed={selectedWorkUnitId === unit.id}
                             className={`section-tab ${selectedWorkUnitId === unit.id ? "active" : ""}`}
                             onClick={async () => {
-                              await savePendingWorkChanges();
+                              if (!(await savePendingWorkChanges())) return;
                               setSelectedWorkUnitId(unit.id);
                             }}
                           >
@@ -1937,7 +1923,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
               <section className="detail-section diary-work-section">
                 <h5>Trabajo realizado en esta hora</h5>
                 <div className="diary-task-picker">
-                  <label className="diary-inline-select">
+                  <label className="diary-inline-select compact-field">
                     <span>Unidad:</span>
                     <select
                       className="input"
@@ -1953,7 +1939,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                       ))}
                     </select>
                   </label>
-                  <label className="diary-inline-select">
+                  <label className="diary-inline-select compact-field">
                     <span>Tarea:</span>
                     <select
                       className="input"

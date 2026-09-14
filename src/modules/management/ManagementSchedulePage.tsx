@@ -32,9 +32,9 @@ function sortBlocksByTime(blocks: ScheduleBlock[]): ScheduleBlock[] {
 function formatBlockSummary(blocks: ScheduleBlock[]): string {
   const breakCount = blocks.filter((block) => block.isBreak).length;
   const classCount = blocks.length - breakCount;
-  if (breakCount === 0) return `${classCount} bloques`;
-  if (classCount === 0) return `${breakCount} descansos`;
-  return `${classCount} clases · ${breakCount} descansos`;
+  if (breakCount === 0) return `${classCount} ${classCount === 1 ? "bloque" : "bloques"}`;
+  if (classCount === 0) return `${breakCount} ${breakCount === 1 ? "descanso" : "descansos"}`;
+  return `${classCount} ${classCount === 1 ? "clase" : "clases"} · ${breakCount} ${breakCount === 1 ? "descanso" : "descansos"}`;
 }
 
 function addMinutesToTime(value: string, minutesToAdd: number): string {
@@ -69,6 +69,7 @@ function TimeSelect({
   return (
     <span className="time-select">
       <select
+        aria-label="Hora"
         className="input time-select-input"
         value={hour}
         disabled={disabled}
@@ -80,6 +81,7 @@ function TimeSelect({
       </select>
       <span className="time-separator">:</span>
       <select
+        aria-label="Minutos"
         className="input time-select-input"
         value={minute}
         disabled={disabled}
@@ -108,7 +110,6 @@ export function ManagementSchedulePage() {
   const [dirty, setDirty] = useState(false);
   const [durationDirty, setDurationDirty] = useState(false);
   const [defaultDuration, setDefaultDuration] = useState(50);
-  useUnsavedChangesGuard(dirty || durationDirty, "Hay cambios del horario sin guardar.");
 
   useEffect(() => {
     if (!selectedDayId && scheduleDays.length > 0) {
@@ -185,6 +186,7 @@ export function ManagementSchedulePage() {
     setDetailDay(next);
     setDirty(true);
   };
+  useUnsavedChangesGuard(dirty || durationDirty, "Hay cambios del horario sin guardar.", saveIfDirty);
 
   const scheduleValidationError = detailDay ? validateScheduleDay(detailDay) : null;
 
@@ -245,9 +247,9 @@ export function ManagementSchedulePage() {
     <article className="management-card">
       <h1 className="sr-only">Horario</h1>
       <div className="inline-form split">
-        <label>
+        <label className="compact-field"><span>
           Duración global (min)
-          <input
+          </span><input
             className="input"
             type="number"
             min={5}

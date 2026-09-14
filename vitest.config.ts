@@ -5,6 +5,7 @@ export default defineConfig((configEnvironment) => {
   const baseConfig = typeof viteConfig === "function" ? viteConfig(configEnvironment) : viteConfig;
   return mergeConfig(baseConfig, {
     test: {
+      exclude: ["**/node_modules/**", "**/e2e/**", "**/scripts/**"],
       coverage: {
         provider: "v8",
         reporter: ["text", "html"],

@@ -18,7 +18,8 @@ const validStepIds = new Set<OnboardingChecklistItem["id"]>([
   "course",
   "students",
   "schedule",
-  "subjects"
+  "subjects",
+  "lesson"
 ]);
 
 export function readOnboardingState(storage?: StorageReader): OnboardingState | null {

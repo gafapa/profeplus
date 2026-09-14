@@ -131,14 +131,14 @@ export function ResourceManager({ ownerType, ownerId, heading = "Recursos y evid
       </div>
 
       <form className="resource-form" onSubmit={(event) => void saveResource(event)}>
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Tipo</span>
           <select className="input" value={kind} onChange={(event) => setKind(event.target.value as ResourceKind)}>
             <option value="link">Enlace web</option>
             <option value="file">Archivo local</option>
           </select>
         </label>
-        <label className="detail-field">
+        <label className="detail-field compact-field">
           <span>Título</span>
           <input
             className="input"
@@ -151,7 +151,7 @@ export function ResourceManager({ ownerType, ownerId, heading = "Recursos y evid
           />
         </label>
         {kind === "link" ? (
-          <label key="link-resource-location" className="detail-field resource-location-field">
+          <label key="link-resource-location" className="detail-field resource-location-field compact-field">
             <span>URL</span>
             <input
               className="input"

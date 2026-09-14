@@ -1,3 +1,9 @@
+import {
+  PRODUCT_NAME,
+  isCompatibleProductName,
+  type CompatibleProductName
+} from "../brand";
+
 const ALGORITHM = "AES-GCM";
 const KDF = "PBKDF2";
 const HASH = "SHA-256";
@@ -6,7 +12,7 @@ const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
 export type EncryptedBackupEnvelope = {
-  app: "ProfePlus";
+  app: CompatibleProductName;
   format: "encrypted-backup";
   version: 1;
   encryption: {
@@ -58,7 +64,7 @@ export function isEncryptedBackupEnvelope(value: unknown): value is EncryptedBac
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Partial<EncryptedBackupEnvelope>;
   return (
-    candidate.app === "ProfePlus" &&
+    isCompatibleProductName(candidate.app) &&
     candidate.format === "encrypted-backup" &&
     candidate.version === 1 &&
     candidate.encryption?.algorithm === ALGORITHM &&
@@ -82,7 +88,7 @@ export async function encryptBackupPayload(payload: unknown, password: string): 
   const ciphertext = await crypto.subtle.encrypt({ name: ALGORITHM, iv }, key, plaintext);
 
   return {
-    app: "ProfePlus",
+    app: PRODUCT_NAME,
     format: "encrypted-backup",
     version: 1,
     encryption: {

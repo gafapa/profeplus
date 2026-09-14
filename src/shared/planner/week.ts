@@ -41,7 +41,28 @@ export function startOfWeek(value: Date, weekStartsOn: WeekStartsOn): Date {
 
 export function formatWeekRange(weekStart: Date): string {
   const weekEnd = addDays(weekStart, 6);
-  return `${toIsoDate(weekStart)} - ${toIsoDate(weekEnd)}`;
+  const startDay = weekStart.getDate();
+  const endDay = weekEnd.getDate();
+  const startMonth = new Intl.DateTimeFormat("es-ES", { month: "long" }).format(weekStart);
+  const endMonth = new Intl.DateTimeFormat("es-ES", { month: "long" }).format(weekEnd);
+  const startYear = weekStart.getFullYear();
+  const endYear = weekEnd.getFullYear();
+
+  if (startYear !== endYear) {
+    return `${startDay} de ${startMonth} de ${startYear}–${endDay} de ${endMonth} de ${endYear}`;
+  }
+  if (weekStart.getMonth() !== weekEnd.getMonth()) {
+    return `${startDay} de ${startMonth}–${endDay} de ${endMonth} de ${endYear}`;
+  }
+  return `${startDay}–${endDay} de ${endMonth} de ${endYear}`;
+}
+
+export function formatPlannerDate(value: string | Date, compact = false): string {
+  const date = typeof value === "string" ? fromIsoDate(value) : value;
+  return new Intl.DateTimeFormat("es-ES", compact
+    ? { day: "numeric", month: "short" }
+    : { day: "numeric", month: "long", year: "numeric" }
+  ).format(date);
 }
 
 export function buildVisiblePlannerWeekDates(weekStart: Date, scheduleDays: ScheduleDay[]): PlannerWeekDate[] {

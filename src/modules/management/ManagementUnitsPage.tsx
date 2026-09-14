@@ -25,7 +25,6 @@ export function ManagementUnitsPage() {
   const [detailSessionCount, setDetailSessionCount] = useState(1);
   const [unitDirty, setUnitDirty] = useState(false);
   const [reusableUnitId, setReusableUnitId] = useState("");
-  useUnsavedChangesGuard(unitDirty, "Hay cambios de la unidad sin guardar.");
 
   const unitsBySubject = useMemo(
     () =>
@@ -89,6 +88,8 @@ export function ManagementUnitsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitDirty, detailName, detailDescription, detailSessionCount, selectedUnit?.id]);
 
+  useUnsavedChangesGuard(unitDirty, "Hay cambios de la unidad sin guardar.", saveIfDirty);
+
   const reuseUnit = async (): Promise<void> => {
     if (!selectedSubjectId || !reusableUnitId) return;
     if (!(await saveIfDirty())) return;
@@ -126,6 +127,7 @@ export function ManagementUnitsPage() {
             <IconButton
               icon="add"
               label="Crear unidad"
+              showLabel
               disabled={!selectedSubjectId}
               onClick={async () => {
                 if (!(await saveIfDirty())) return;
@@ -136,7 +138,7 @@ export function ManagementUnitsPage() {
           </div>
           {selectedSubjectId && reusableUnits.length > 0 ? (
             <div className="sidebar-reuse-panel">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Reutilizar unidad</span>
                 <select
                   className="input"
@@ -174,7 +176,7 @@ export function ManagementUnitsPage() {
                   }}
                 >
                   <span>{unit.name || "Sin nombre"}</span>
-                  <small>{unit.sessionCount} sesiones previstas</small>
+                  <small>{unit.sessionCount} {unit.sessionCount === 1 ? "sesión prevista" : "sesiones previstas"}</small>
                 </button>
                 <IconButton
                   icon="delete"
@@ -197,11 +199,12 @@ export function ManagementUnitsPage() {
             <>
               <div className="course-detail-header">
                 <h2>Detalle de unidad</h2>
+                <span role="status" className="hint">{unitDirty ? "Cambios pendientes de guardar" : "Guardado"}</span>
               </div>
 
               <section className="detail-section">
                 <div className="unit-detail-layout">
-                  <label className="unit-field unit-field-full">
+                  <label className="unit-field unit-field-full compact-field">
                     <span className="unit-field-label">Nombre</span>
                     <input
                       className="input"
@@ -221,7 +224,7 @@ export function ManagementUnitsPage() {
                     />
                   </label>
 
-                  <label className="unit-field">
+                  <label className="unit-field compact-field">
                     <span className="unit-field-label">Sesiones previstas</span>
                     <input
                       className="input"
@@ -238,7 +241,7 @@ export function ManagementUnitsPage() {
 
                 <p className="hint">
                   Las fechas de inicio y fin se calculan automáticamente a partir de las sesiones
-                  registradas en el Diario.
+                  registradas en Hoy y en el Planificador.
                 </p>
               </section>
             </>

@@ -9,6 +9,7 @@ import { store } from "./app/store";
 import { AppErrorBoundary } from "./shared/ui/AppErrorBoundary";
 import { UnsavedChangesDialogProvider } from "./shared/ui/UnsavedChangesDialog";
 import "./styles.css";
+import "./shared/ui/compactForms.css";
 
 function registerServiceWorker(): void {
   if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
@@ -18,7 +19,7 @@ function registerServiceWorker(): void {
     if (!navigator.serviceWorker.controller || updatePromptShown) return;
     updatePromptShown = true;
     const shouldReload = window.confirm(
-      "Hay una nueva versión de ProfePlus. ¿Quieres recargar ahora?"
+      "Hay una nueva versión de Edunoza. ¿Quieres recargar ahora?"
     );
     if (shouldReload) {
       worker.postMessage({ type: "SKIP_WAITING" });
@@ -46,7 +47,7 @@ function registerServiceWorker(): void {
         });
       })
       .catch((error: unknown) => {
-        console.error("ProfePlus could not register its offline worker.", error);
+        console.error("Edunoza could not register its offline worker.", error);
       });
   });
 }

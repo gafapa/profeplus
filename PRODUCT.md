@@ -12,11 +12,11 @@ The primary user is an individual teacher managing day-to-day classroom work fro
 
 ## Product Purpose
 
-ProfePlus is an offline-first teacher workspace for planning classes, recording attendance and evidence, consolidating grades, coordinating tutor follow-up, producing reports, and protecting local academic records. Success means a teacher can complete recurring classroom work quickly while retaining control of sensitive data and being able to recover it safely.
+Edunoza is an offline-first teacher workspace for planning classes, recording attendance and evidence, consolidating grades, coordinating tutor follow-up, producing reports, and protecting local academic records. Success means a teacher can complete recurring classroom work quickly while retaining control of sensitive data and being able to recover it safely.
 
 ## Positioning
 
-Unlike account-based learning platforms and school information systems, ProfePlus keeps academic records in the teacher's browser and remains usable without a central application backend. Its value is a coherent private workspace across teaching, planning, assessment, follow-up, and recovery rather than student submission or institutional collaboration.
+Unlike account-based learning platforms and school information systems, Edunoza keeps academic records in the teacher's browser and remains usable without a central application backend. Its value is a coherent private workspace across teaching, planning, assessment, follow-up, and recovery rather than student submission or institutional collaboration.
 
 ## Operating Context
 
@@ -28,12 +28,12 @@ Teachers use the product before class for planning, during class for attendance 
 - The app is a React PWA with network-first navigation and cached application assets.
 - There is no application account system or academic-data backend.
 - Encrypted backups, validated restore, local app locking, and explicit destructive confirmations are established product capabilities.
-- AI features depend on an external browser extension and require explicit confirmation before academic data is sent.
+- AI features connect directly from the browser to a user-selected cloud or loopback provider and require explicit confirmation before academic data is sent.
 - Marketing and onboarding must not invent customers, testimonials, adoption figures, or performance claims.
 
 ## Brand Commitments
 
-The product name is ProfePlus. The interface voice is direct, calm, practical, and written for Spanish-speaking teachers. The existing blue-led visual identity and workflow-based navigation remain the incumbent design authority.
+The product name is Edunoza. The primary domain is `edunoza.com`. The interface voice is direct, calm, practical, and written for Spanish-speaking teachers. The existing blue-led visual identity and workflow-based navigation remain the incumbent design authority.
 
 ## Evidence on Hand
 

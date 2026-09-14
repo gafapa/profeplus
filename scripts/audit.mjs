@@ -15,7 +15,8 @@ if (!npmCliPath) {
 
 const result = spawnSync(process.execPath, [npmCliPath, "audit", "--json"], {
   cwd: process.cwd(),
-  encoding: "utf8"
+  encoding: "utf8",
+  timeout: 60_000
 });
 
 let report;
@@ -26,7 +27,18 @@ try {
   process.exit(1);
 }
 
-const vulnerabilities = report.vulnerabilities ?? {};
+if (
+  result.error || result.signal || ![0, 1].includes(result.status) ||
+  !report || report.error || report.auditReportVersion !== 2 ||
+  !report.vulnerabilities || typeof report.vulnerabilities !== "object" ||
+  Array.isArray(report.vulnerabilities) || !report.metadata?.vulnerabilities ||
+  (result.status !== 0 && Object.keys(report.vulnerabilities).length === 0)
+) {
+  process.stderr.write("Dependency audit could not complete. Check registry connectivity and retry.\n");
+  process.exit(1);
+}
+
+const vulnerabilities = report.vulnerabilities;
 const allowedPackages = new Set();
 
 for (const [packageName, vulnerability] of Object.entries(vulnerabilities)) {

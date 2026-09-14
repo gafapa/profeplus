@@ -27,7 +27,6 @@ export type NavigationArea = {
   shortLabel: string;
   description: string;
   icon: NavigationIcon;
-  tone: "today" | "planner" | "work" | "attendance" | "organization";
   items: NavigationItem[];
 };
 
@@ -39,11 +38,9 @@ export const navigationAreas: NavigationArea[] = [
     shortLabel: "Hoy",
     description: "Impartir y registrar las clases del día",
     icon: "today",
-    tone: "today",
     items: [
       { to: "/today", label: "Jornada", icon: "today" },
       { to: "/agenda", label: "Agenda", icon: "schedule" },
-      { to: "/classroom", label: "Aula", icon: "students" },
       { to: "/search", label: "Buscar", icon: "search" }
     ]
   },
@@ -54,7 +51,6 @@ export const navigationAreas: NavigationArea[] = [
     shortLabel: "Plan",
     description: "Preparar sesiones, unidades y tareas",
     icon: "planner",
-    tone: "planner",
     items: [
       { to: "/planner", label: "Semana", icon: "planner" },
       { to: "/management/units", label: "Unidades", icon: "units" },
@@ -68,7 +64,6 @@ export const navigationAreas: NavigationArea[] = [
     shortLabel: "Evaluar",
     description: "Registrar evidencias y calcular resultados",
     icon: "tasks",
-    tone: "work",
     items: [
       { to: "/journal/work", label: "Evaluación", icon: "tasks" },
       { to: "/gradebook", label: "Cuaderno", icon: "gradebook" },
@@ -82,7 +77,6 @@ export const navigationAreas: NavigationArea[] = [
     shortLabel: "Seguir",
     description: "Revisar asistencia, tutoría e informes",
     icon: "tutor",
-    tone: "attendance",
     items: [
       { to: "/journal/attendance", label: "Asistencia", icon: "journal" },
       { to: "/management/tutor", label: "Tutoría", icon: "tutor" },
@@ -96,10 +90,10 @@ export const navigationAreas: NavigationArea[] = [
     shortLabel: "Gestión",
     description: "Gestionar la estructura académica",
     icon: "courses",
-    tone: "organization",
     items: [
-      { to: "/management/courses", label: "Cursos", icon: "courses" },
-      { to: "/management/students", label: "Alumnos", icon: "students" },
+      { to: "/management/courses", label: "Grupos", icon: "courses" },
+      { to: "/management/students", label: "Alumnado", icon: "students" },
+      { to: "/classroom", label: "Aula", icon: "students" },
       { to: "/management/subjects", label: "Asignaturas", icon: "subjects" },
       { to: "/management/schedule", label: "Horario", icon: "schedule" }
     ]

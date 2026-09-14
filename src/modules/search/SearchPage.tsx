@@ -128,16 +128,10 @@ export function SearchPage() {
 
   return (
     <section className="search-page" aria-labelledby="search-page-title">
-      <header className="search-header">
-        <div>
-          <span className="agenda-eyebrow">Acceso rápido</span>
-          <h1 id="search-page-title">Buscar en ProfePlus</h1>
-          <p>Encuentra alumnado, tareas, pruebas, seguimientos, contactos y recursos.</p>
-        </div>
-      </header>
+      <h1 id="search-page-title" className="sr-only">Buscar en Edunoza</h1>
 
       <div className="search-controls">
-        <label className="detail-field search-query-field">
+        <label className="detail-field search-query-field compact-field">
           <span>Texto de búsqueda</span>
           <input
             autoFocus
@@ -148,7 +142,7 @@ export function SearchPage() {
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <label className="detail-field search-kind-field">
+        <label className="detail-field search-kind-field compact-field">
           <span>Tipo de resultado</span>
           <select
             className="input"

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { setSelectedClass } from "../../app/store";
 import {
   assignAssessmentToAcademicPeriod,
   assignTaskConfigToAcademicPeriod,
@@ -17,6 +19,7 @@ import type {
   Task,
   TaskGradebookConfig
 } from "../../shared/db/types";
+import { ClassGroupSelect } from "../../shared/ui/ClassGroupSelect";
 import { useManagement } from "./ManagementContext";
 
 type PeriodAssignmentRow =
@@ -33,8 +36,9 @@ function suggestNextSchoolYear(currentSchoolYear: string): string {
 }
 
 export function ManagementAcademicPeriodsPage() {
-  const { courses, refreshAll } = useManagement();
-  const [selectedClassId, setSelectedClassId] = useState("");
+  const dispatch = useAppDispatch();
+  const selectedClassId = useAppSelector((state) => state.app.selectedClassId) ?? "";
+  const { courses, isReady, refreshAll } = useManagement();
   const [periods, setPeriods] = useState<AcademicPeriod[]>([]);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [taskConfigs, setTaskConfigs] = useState<TaskGradebookConfig[]>([]);
@@ -120,14 +124,15 @@ export function ManagementAcademicPeriodsPage() {
   };
 
   useEffect(() => {
+    if (!isReady) return;
     if (!courses.length) {
-      setSelectedClassId("");
+      if (selectedClassId) dispatch(setSelectedClass(null));
       return;
     }
     if (!courses.some((course) => course.id === selectedClassId)) {
-      setSelectedClassId(courses[0].id);
+      dispatch(setSelectedClass(courses[0].id));
     }
-  }, [courses, selectedClassId]);
+  }, [courses, dispatch, isReady, selectedClassId]);
 
   useEffect(() => {
     void loadData(selectedClassId).catch((error: unknown) => {
@@ -209,7 +214,7 @@ export function ManagementAcademicPeriodsPage() {
         targetSchoolYear
       });
       await refreshAll();
-      setSelectedClassId(targetClass.id);
+      dispatch(setSelectedClass(targetClass.id));
       setRolloverConfirmed(false);
     }, "Promoción completada. El curso histórico permanece sin cambios.");
   };
@@ -219,22 +224,14 @@ export function ManagementAcademicPeriodsPage() {
       <h1 className="sr-only">Periodos académicos y cierre de curso</h1>
       <div className="courses-layout">
         <aside className="courses-list-panel">
-          <div className="courses-list-header">
-            <strong>Curso</strong>
-          </div>
-          <div className="courses-list section-tabs" role="group" aria-label="Curso para periodos académicos">
-            {courses.map((course) => (
-              <button
-                key={course.id}
-                type="button"
-                className={`section-tab ${selectedClassId === course.id ? "active" : ""}`}
-                aria-pressed={selectedClassId === course.id}
-                onClick={() => setSelectedClassId(course.id)}
-              >
-                <span>{course.name}</span>
-                <small>{course.schoolYear}</small>
-              </button>
-            ))}
+          <div className="context-sidebar-tabs">
+            <ClassGroupSelect
+              groups={courses}
+              value={selectedClassId}
+              onChange={(classId) => {
+                dispatch(setSelectedClass(classId));
+              }}
+            />
           </div>
         </aside>
 
@@ -242,7 +239,7 @@ export function ManagementAcademicPeriodsPage() {
           <header className="workflow-page-header">
             <div>
               <h2>Periodos y cierre</h2>
-              <p>{selectedClass ? `${selectedClass.name} · ${selectedClass.schoolYear}` : "Selecciona un curso"}</p>
+              <p>{selectedClass ? `${selectedClass.name} · ${selectedClass.schoolYear}` : "Selecciona un grupo"}</p>
             </div>
           </header>
 
@@ -258,15 +255,15 @@ export function ManagementAcademicPeriodsPage() {
                   </div>
                 </div>
                 <div className="detail-grid academic-period-create-grid">
-                  <label className="detail-field">
+                  <label className="detail-field compact-field">
                     <span>Nombre</span>
                     <input className="input" value={periodName} onChange={(event) => setPeriodName(event.target.value)} placeholder="1ª evaluación" />
                   </label>
-                  <label className="detail-field">
+                  <label className="detail-field compact-field">
                     <span>Desde</span>
                     <input className="input" type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} />
                   </label>
-                  <label className="detail-field">
+                  <label className="detail-field compact-field">
                     <span>Hasta</span>
                     <input className="input" type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} />
                   </label>
@@ -393,20 +390,20 @@ export function ManagementAcademicPeriodsPage() {
                 </div>
                 {rolloverMode === "new" ? (
                   <div className="detail-grid">
-                    <label className="detail-field">
+                    <label className="detail-field compact-field">
                       <span>Nombre del nuevo curso</span>
                       <input className="input" value={targetName} onChange={(event) => setTargetName(event.target.value)} />
                     </label>
-                    <label className="detail-field">
+                    <label className="detail-field compact-field">
                       <span>Curso escolar</span>
                       <input className="input" value={targetSchoolYear} onChange={(event) => setTargetSchoolYear(event.target.value)} />
                     </label>
                   </div>
                 ) : (
-                  <label className="detail-field">
-                    <span>Curso de destino</span>
+                  <label className="detail-field compact-field">
+                    <span>Grupo de destino</span>
                     <select className="input" value={targetClassId} onChange={(event) => setTargetClassId(event.target.value)}>
-                      <option value="">Selecciona un curso vacío</option>
+                      <option value="">Selecciona un grupo vacío</option>
                       {courses.filter((course) => course.id !== selectedClassId).map((course) => (
                         <option key={course.id} value={course.id}>{course.name} · {course.schoolYear}</option>
                       ))}

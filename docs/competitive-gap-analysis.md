@@ -11,11 +11,11 @@ Reviewed on 2026-08-12 against the current public product documentation for:
 
 ## Product Position
 
-ProfePlus is a private, offline-first teacher workspace. Its closest comparison is the individual-teacher workflow in iDoceo or Additio Teachers, not a cloud LMS or school information system. Google Classroom is useful as a reference for assignment, feedback, and analytics workflows, but its account, guardian, collaboration, and submission features require a server-side identity and sharing model that ProfePlus intentionally does not have.
+Edunoza is a private, offline-first teacher workspace. Its closest comparison is the individual-teacher workflow in iDoceo or Additio Teachers, not a cloud LMS or school information system. Google Classroom is useful as a reference for assignment, feedback, and analytics workflows, but its account, guardian, collaboration, and submission features require a server-side identity and sharing model that Edunoza intentionally does not have.
 
 ## Capability Matrix
 
-| Capability | ProfePlus | Market pattern | Decision |
+| Capability | Edunoza | Market pattern | Decision |
 | --- | --- | --- | --- |
 | Attendance and daily class record | Strong | Core in Additio, iDoceo, and TeacherKit-style tools | Maintain |
 | Weekly planning and lesson details | Strong | Core in Additio and iDoceo | Maintain |

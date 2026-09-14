@@ -1,8 +1,10 @@
-# ProfePlus
+# Edunoza
 
-ProfePlus is an offline-first teacher notebook packaged as a PWA. It is built for day-to-day classroom management: courses, students, subjects, schedules, attendance, work logs, task planning, gradebook, follow-up records, reports, and local backups.
+Edunoza is an offline-first teacher notebook packaged as a PWA. It is built for day-to-day classroom management: class groups, students, subjects, schedules, attendance, work logs, task planning, gradebook, follow-up records, reports, and local backups.
 
-All academic data is stored locally in the browser with IndexedDB. AI features are routed through the external AI Proxy Bridge Chrome extension; the app does not bundle a local model runtime.
+All academic data is stored locally in the browser with IndexedDB. AI features connect to the selected provider from the browser (through the Proxy extension for Ollama); Edunoza does not operate an AI proxy server or receive those requests.
+
+The optional [read-only Moodle connection](docs/moodle-integration.md) associates existing local groups, students and tasks with Moodle information through the Proxy extension. Reviewed updates and supported assignment grades are applied locally; Edunoza does not modify Moodle. Tokens remain in memory, and disconnecting preserves academic work and saved associations.
 
 ## Current Scope
 
@@ -10,7 +12,7 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 - Top-level teacher workspace organized around Today, an actionable Agenda, the weekly Planificador, advanced task evaluation, attendance history, gradebook, academic management, reports, and configuration.
 - A local-first action agenda combines overdue and upcoming tutor follow-ups, family next steps, planned task sessions, dated assessments, and open academic-period endings. It supports course, type, status, and time-horizon filters plus standards-based ICS calendar export.
 - A persistent classroom layout supports accessible seat reassignment and swapping, random seating, non-repeating student selection, balanced group generation, and optional exclusion of students marked absent today.
-- Course and student management, including student photos, email contacts, educational measures, tutorial follow-up records, CSV import, and pasted spreadsheet import.
+- Course and student management, including student photos, email contacts, educational measures, tutorial follow-up records, grouped XADE CSV import, and pasted spreadsheet import.
 - Local resource attachments for student evidence and reusable task materials, supporting validated web links and common document, image, audio, and video formats.
 - A guided, resumable onboarding flow that derives progress from saved course, student, schedule, and subject data without creating sample content.
 - Mobile-first tutor coordination with due dates, ownership, priorities, structured family contacts, and cross-class support groups backed by stable person identities.
@@ -24,7 +26,7 @@ All academic data is stored locally in the browser with IndexedDB. AI features a
 - A categorized feedback bank inserts teacher-authored reusable comments into Today observations and manual gradebook evidence without applying or saving them automatically.
 - Accent-insensitive global search finds students, tasks, assessments, follow-ups, family contacts, and local resources, then opens the owning workspace with its academic context restored.
 - Reusable units, tasks, rubrics, and checklists, plus accessible `Move to…` controls wherever drag and drop is offered.
-- Reports module with date-range filtering, printable HTML reports, CSV exports, AI-ready datasets, and AI report generation through the extension runtime.
+- Reports module with prerequisite-aware empty states, date-range filtering, printable HTML reports, CSV exports, AI-ready datasets, and an explicit local-versus-AI output choice.
 - Local database operations for seeded test data, encrypted JSON backup export/import, integrity checks, and data reset. Destructive replacements create an encrypted safety backup and require explicit confirmation.
 - Selective encrypted handoff packages for chosen students and support groups, with conflict preview and non-destructive merge semantics.
 - Privacy-preserving product analytics record only fixed event names through same-origin, bodyless requests. No academic content, search text, record IDs, cookies, or persistent user identifiers are collected.
@@ -68,8 +70,8 @@ The v1-to-v2 migration preserves existing manual assessments. Legacy text period
 
 - Node.js 22.13+ (`.node-version` currently selects Node.js 24.18)
 - npm 10+
-- Chrome or Chromium for AI features and browser QA
-- AI Proxy Bridge extension loaded from `D:\ProyectosIA\ia extension\dist\extension` when AI workflows are needed
+- A current browser with Fetch, Web Crypto, IndexedDB, and service-worker support
+- A provider API key, or a local Ollama or LM Studio server, when AI workflows are needed
 
 ## Local Development
 
@@ -101,7 +103,7 @@ Use `npm run verify` before publishing or handing off a larger change.
 
 ## Data Model And Backups
 
-ProfePlus has no backend. Data persists in IndexedDB through Dexie.
+Edunoza has no backend. Data persists in IndexedDB through Dexie.
 
 Database tools are available under `Configuración > Base de datos`:
 
@@ -113,7 +115,7 @@ Database tools are available under `Configuración > Base de datos`:
 
 Backups include `schemaVersion` and `exportedAt`. Unsupported or malformed backups are rejected before existing local tables are cleared. Imports and destructive demo/reset operations show a confirmation summary and require a separate password before downloading an encrypted safety backup.
 
-The IndexedDB database uses additive Dexie migrations under `profeplus-db`; schema v2 added academic periods and closure snapshots without deleting v1 data, schema v3 added stable person identities and tutor-coordination tables, schema v4 added resource attachments, schema v5 added classroom layouts, and schema v6 added reusable feedback comments. Student enrolment rows carry a stable `personId` so year rollover can create a new enrolment without losing longitudinal identity. Cross-class support groups reference those student enrolments without duplicating student profiles. Each subject belongs to exactly one course. Attendance and task evaluation rows always include their course, subject, date, schedule slot, and required scope fields. Attendance also stores creation and update timestamps. Free daily class records allow Today to document unplanned lessons without creating artificial tasks.
+The IndexedDB database uses additive Dexie migrations. It retains the legacy internal name `profeplus-db` so existing same-origin installations keep their data after the Edunoza rebrand. Schema v2 added academic periods and closure snapshots without deleting v1 data, schema v3 added stable person identities and tutor-coordination tables, schema v4 added resource attachments, schema v5 added classroom layouts, and schema v6 added reusable feedback comments. Student enrolment rows carry a stable `personId` so year rollover can create a new enrolment without losing longitudinal identity. Cross-class support groups reference those student enrolments without duplicating student profiles. Each subject belongs to exactly one course. Attendance and task evaluation rows always include their course, subject, date, schedule slot, and required scope fields. Attendance also stores creation and update timestamps. Free daily class records allow Today to document unplanned lessons without creating artificial tasks.
 
 Resource files are stored as backup-safe base64 data with a 5 MB per-file limit and a 20 MB application-wide limit. Active web formats such as HTML and SVG are rejected; links must use HTTP or HTTPS. Deleting an otherwise unreferenced student or task also removes its attachments. Full encrypted backups include resources, while school-year rollover and selective student handoff packages deliberately exclude them to avoid silently duplicating or disclosing files.
 
@@ -125,8 +127,8 @@ Database payloads are intentionally not backward compatible. Only payloads produ
 
 ## Security Model
 
-- Academic records remain local to the browser profile in IndexedDB; ProfePlus has no application backend.
-- Downloaded backups and automatic pre-operation safety backups are encrypted. ProfePlus never stores their passwords.
+- Academic records remain local to the browser profile in IndexedDB; Edunoza has no application backend.
+- Downloaded backups and automatic pre-operation safety backups are encrypted. Edunoza never stores their passwords.
 - An optional local app lock uses a salted PBKDF2-SHA-256 verifier, validates its stored work factor, pauses retries after repeated failures, and automatically locks after the configured inactivity period. It protects the visible application from casual access but is not a substitute for operating-system disk and profile encryption.
 - CSV exports neutralize spreadsheet formula prefixes before escaping cell values.
 - Backup imports enforce a size limit and validate metadata, structure, types, relationships, scopes, uniqueness, dates, and numeric ranges before changing the database.
@@ -138,28 +140,39 @@ Database payloads are intentionally not backward compatible. Only payloads produ
 
 Production builds can emit a deliberately small set of anonymous product events to the same origin. Events are encoded only in an allowlisted URL path and sent as `POST` requests with no request body, query string, cookies, referrer, student data, free text, record IDs, or generated user ID. Browser Do Not Track and Global Privacy Control are respected. Test and local builds leave analytics disabled by default.
 
+Event deduplication is held only in JavaScript memory for the current page runtime. Analytics does not write identifiers or deduplication flags to `localStorage`, `sessionStorage`, IndexedDB, or cookies.
+
 The supported events cover application and coarse workspace opens, initial setup completion, class saves, calendar exports, search use, backup export/verification/import, and feedback opening/sharing. They measure whether major workflows are reached; they do not reconstruct teacher behavior or individual sessions.
 
 For Nginx, include `deploy/nginx-analytics-log-format.conf` once inside the global `http` block and `deploy/nginx-analytics-endpoint.conf` inside the production HTTPS `server` block before publishing. The endpoint returns `204` and writes a dedicated-format line to the container log containing only an ISO timestamp and the fixed event path; IP addresses, user agents, referrers, cookies, request bodies, and query strings are excluded from that line. Set `VITE_ANALYTICS_ENDPOINT` to an empty value to disable collection.
 
-## AI Extension
+## Public Legal Pages
 
-ProfePlus does not include an in-app AI settings page and does not import WebLLM directly.
+The public legal area is available without opening or unlocking the academic workspace:
 
-AI features use the AI Proxy Bridge Chrome extension through its versioned same-origin page bridge:
+- `/legal`: legal information index.
+- `/aviso-legal`: service-provider identification and legal notice.
+- `/privacidad`: privacy information for technical logs, product events, email inquiries, local academic data, and optional external actions.
+- `/cookies`: cookie and browser-storage information.
+- `/condiciones`: terms of use for the free service.
+- `/config/ai`: direct AI provider, model, credential lifetime, local endpoint, model discovery, and a non-academic connection test.
 
-- The extension injects its compact overlay into trusted pages.
-- Feature-level AI requests go through `src/shared/ai/extensionRuntime.ts`.
-- Report generation asks for explicit confirmation before academic data is sent to AI.
-- AI reports anonymize student names by default, with an opt-in control to include names when needed.
+The landing footer links directly to every document, and the workspace status bar links to the legal index. The published copy reflects a free, advertising-free service operated by an individual and must be reviewed whenever the owner, hosting, analytics, external integrations, pricing, or data flows change.
 
-Configuration options:
+## Direct AI Runtime
 
-- `VITE_AI_RUNTIME_EXTENSION_ID`: optional extension-ID pin. Use it when the deployed extension has a stable ID.
-- Without a pin, the app discovers the installed bridge through a versioned `postMessage` availability exchange and keeps the discovered ID fixed for each request.
-- The extension must authorize the current hostname, such as `localhost`, `127.0.0.1`, or the deployed domain.
+AI features use the built-in browser runtime in `src/shared/ai/runtime.ts`:
 
-The extension project is external to this app and should be managed separately.
+- Supported cloud providers are OpenRouter, OpenAI, and Anthropic.
+- Supported local providers are Ollama and LM Studio on `localhost` or `127.0.0.1`.
+- `Configuration > Artificial intelligence` stores the provider, model, and loopback endpoint, refreshes the provider model catalog, displays normalized metadata such as context limits, pricing, capabilities, architecture, or local file size when available, and runs a test without academic data.
+- API keys are stored in `sessionStorage` by default. The teacher can explicitly opt into persistence in `localStorage` for the current browser profile and can remove the saved key from the same screen.
+- Keys are never bundled into the application, sent to Edunoza servers, included in database backups, analytics, or service-worker caches.
+- The browser sends AI requests to the selected provider, using the Proxy extension for Ollama. Provider terms, retention, billing, regional processing, and applicable CORS policies still apply.
+- Report generation asks for explicit confirmation before academic data is sent to AI, and AI reports anonymize student names by default.
+- The content security policy allows only the three supported cloud API origins and loopback HTTP(S) endpoints for AI traffic.
+
+Ollama uses the Proxy browser extension for model discovery and generation, with no direct-fetch fallback. Keep Ollama running locally; authorize `edunoza.com` in Proxy, enable its local-network policy and allow GET/POST. No `OLLAMA_ORIGINS` change is required. Proxy can read AI prompts and responses; use a trusted extension and local models for local processing. Its request timeout is capped at 120 seconds. LM Studio still connects directly and must enable cross-origin access for the site. The connection probe uses a larger output budget and disables Ollama thinking only for the probe (GPT-OSS uses low reasoning); report generation retains the model defaults.
 
 ## Project Layout
 
@@ -178,7 +191,7 @@ src/
     today/              Daily classroom workspace
   shared/
     agenda/             Agenda derivation and ICS serialization
-    ai/                 AI extension runtime client
+    ai/                 Direct browser AI runtime and provider configuration
     attendance/         Attendance normalization helpers
     backup/             Password-based backup encryption
     classroom/          Seating, random selection, and balanced grouping logic
@@ -223,7 +236,7 @@ Automated coverage includes focused Vitest suites for:
 - Printable reports.
 - Student follow-up helpers.
 - AI-generated instrument parsing and validation.
-- Versioned AI extension bridge envelopes.
+- Direct AI provider configuration, loopback endpoint restrictions, and user-facing failure mapping.
 - Student handoff scope, reference, date, and enum validation.
 
 Run `npm run test:coverage` to generate the complete text and HTML coverage report for `src/`.
@@ -260,8 +273,8 @@ Both deployments serve the SPA from the domain root:
 
 | Environment | Public URL | Build command | Environment file |
 | --- | --- | --- | --- |
-| Test | `https://test.profeplus.gallego.top` | `npm run build:test` | `.env.test` |
-| Production | `https://profeplus.gallego.top` | `npm run build:production` | `.env.production` |
+| Test | `https://test.edunoza.com` | `npm run build:test` | `.env.test` |
+| Production | `https://edunoza.com` | `npm run build:production` | `.env.production` |
 
 Each build writes the deployable static application to `dist/`. The hosting
 provider must:
@@ -277,12 +290,12 @@ provider must:
 - Avoid sharing browser storage or service-worker state between the two
   domains. Their separate origins provide this isolation automatically.
 
-The AI Proxy Bridge extension must authorize both deployment hostnames when AI
-features are enabled.
+The deployed content security policy must keep the supported cloud API origins and
+loopback endpoints in `connect-src` when AI features are enabled.
 
 ## Development Conventions
 
 - Documentation, variable names, function names, and code comments are written in English.
 - User-facing UI text can remain Spanish.
 - Keep data operations local-first and avoid introducing backend dependencies unless the architecture is intentionally changed.
-- Keep AI calls behind the extension runtime; do not reintroduce direct WebLLM imports in the app bundle.
+- Keep AI calls behind `src/shared/ai/runtime.ts`; do not read credentials outside that module or add provider origins without updating the content security policy and legal documentation.

@@ -1,9 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "./app/hooks";
 import { hydrateAppPreferences, setSelectedClass } from "./app/store";
 import { NotFoundPage } from "./modules/NotFoundPage";
-import { enableAiExtensionOverlay } from "./shared/ai/extensionOverlay";
 import { db } from "./shared/db/database";
 import { NoContextBanner } from "./shared/ui/NoContextBanner";
 import { TopTabs } from "./shared/ui/TopTabs";
@@ -11,12 +10,15 @@ import { ConnectionStatus } from "./shared/ui/ConnectionStatus";
 import { AppLockButton, AppLockGate } from "./shared/ui/AppLockGate";
 import packageJson from "../package.json";
 import { LandingPage } from "./modules/landing/LandingPage";
+import { LEGAL_PATHS, LegalPage } from "./modules/legal/LegalPage";
 import {
   analyticsEventForPath,
   trackAnalyticsEventOncePerSession
 } from "./shared/analytics/analytics";
 import { ProductFeedback } from "./shared/feedback/ProductFeedback";
 import { BackupReminder, BackupStatusLink } from "./shared/ui/BackupStatus";
+import { DataBackupLayout } from "./modules/config/DataBackupLayout";
+import { OnboardingStatus } from "./shared/ui/OnboardingStatus";
 
 const AttendancePage = lazy(() =>
   import("./modules/attendance/AttendancePage").then((module) => ({ default: module.AttendancePage }))
@@ -32,6 +34,21 @@ const ClassroomPage = lazy(() =>
 );
 const ConfigLayout = lazy(() =>
   import("./modules/config/ConfigLayout").then((module) => ({ default: module.ConfigLayout }))
+);
+const AiSettingsPage = lazy(() =>
+  import("./modules/config/AiSettingsPage").then((module) => ({ default: module.AiSettingsPage }))
+);
+const MoodleSettingsPage = lazy(() =>
+  import("./modules/config/MoodleSettingsPage").then((module) => ({ default: module.MoodleSettingsPage }))
+);
+const ProxySettingsPage = lazy(() =>
+  import("./modules/config/ProxySettingsPage").then((module) => ({ default: module.ProxySettingsPage }))
+);
+const CommentBankPage = lazy(() =>
+  import("./modules/config/CommentBankPage").then((module) => ({ default: module.CommentBankPage }))
+);
+const NextcloudBackupPage = lazy(() =>
+  import("./modules/config/NextcloudBackupPage").then((module) => ({ default: module.NextcloudBackupPage }))
 );
 const GradebookPage = lazy(() =>
   import("./modules/gradebook/GradebookPage").then((module) => ({ default: module.GradebookPage }))
@@ -60,6 +77,9 @@ const ManagementSchedulePage = lazy(() =>
 );
 const ManagementStudentsPage = lazy(() =>
   import("./modules/management/ManagementStudentsPage").then((module) => ({ default: module.ManagementStudentsPage }))
+);
+const StudentImportPage = lazy(() =>
+  import("./modules/config/StudentImportPage").then((module) => ({ default: module.StudentImportPage }))
 );
 const ManagementTutorPage = lazy(() =>
   import("./modules/management/ManagementTutorPage").then((module) => ({ default: module.ManagementTutorPage }))
@@ -99,10 +119,7 @@ function WorkspaceApp() {
 
   const isConfigRoute = location.pathname.startsWith("/config");
   const isManagementRoute = location.pathname.startsWith("/management");
-
-  useEffect(() => {
-    enableAiExtensionOverlay();
-  }, []);
+  const isReportsRoute = location.pathname.startsWith("/reports");
 
   useEffect(() => {
     const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
@@ -196,7 +213,9 @@ function WorkspaceApp() {
 
       <TopTabs />
 
-      <BackupReminder />
+      <div id="global-notification-region" className="global-notification-region">
+        <BackupReminder />
+      </div>
 
       {runtimeError ? (
         <div className="runtime-error" role="alert">
@@ -207,7 +226,7 @@ function WorkspaceApp() {
         </div>
       ) : null}
 
-      {!isConfigRoute && !isManagementRoute && (
+      {!isConfigRoute && !isManagementRoute && !isReportsRoute && (
         <NoContextBanner
           noClass={!selectedClassId}
           noSubject={false}
@@ -240,7 +259,16 @@ function WorkspaceApp() {
           <Route path="/config" element={<ConfigLayout />}>
             <Route index element={<Navigate replace to="/config/preferences" />} />
             <Route path="preferences" element={<ManagementPreferencesPage />} />
-            <Route path="database" element={<ManagementDatabasePage />} />
+            <Route path="comments" element={<CommentBankPage />} />
+            <Route path="database" element={<DataBackupLayout />}>
+              <Route index element={<ManagementDatabasePage />} />
+              <Route path="nextcloud" element={<NextcloudBackupPage />} />
+            </Route>
+            <Route path="nextcloud" element={<Navigate replace to="/config/database/nextcloud" />} />
+            <Route path="student-import" element={<StudentImportPage />} />
+            <Route path="ai" element={<AiSettingsPage />} />
+            <Route path="moodle" element={<MoodleSettingsPage />} />
+            <Route path="proxy" element={<ProxySettingsPage />} />
           </Route>
 
           <Route path="/today" element={<TodayPage />} />
@@ -259,10 +287,12 @@ function WorkspaceApp() {
       </main>
       <footer className="status-bar" aria-label="Estado de la aplicación">
         <ConnectionStatus />
+        <OnboardingStatus />
         <BackupStatusLink />
         <ProductFeedback placement="status" />
         <AppLockButton />
-        <span className="status-bar-brand">ProfePlus</span>
+        <NavLink className="status-bar-legal-link" to="/legal" aria-label="Información legal y privacidad">Legal</NavLink>
+        <span className="status-bar-brand">Edunoza</span>
         <span className="status-bar-version">v{packageJson.version}</span>
       </footer>
     </div>
@@ -284,6 +314,10 @@ function App() {
 
   if (location.pathname === "/") {
     return <LandingPage />;
+  }
+
+  if (LEGAL_PATHS.has(location.pathname)) {
+    return <LegalPage />;
   }
 
   return <WorkspaceApp />;

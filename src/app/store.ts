@@ -1,4 +1,9 @@
-import { configureStore, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import {
+  configureStore,
+  createListenerMiddleware,
+  createSlice,
+  type PayloadAction
+} from "@reduxjs/toolkit";
 
 export type StudentSortBy = "lastName" | "firstName";
 export type StudentNameFormat = "firstLast" | "lastFirst";
@@ -85,41 +90,53 @@ const appSlice = createSlice({
     },
     setStudentSortBy(state, action: PayloadAction<StudentSortBy>) {
       state.studentSortBy = action.payload;
-      writePreferencesToLocalStorage(state);
     },
     setStudentNameFormat(state, action: PayloadAction<StudentNameFormat>) {
       state.studentNameFormat = action.payload;
-      writePreferencesToLocalStorage(state);
     },
     setWeekStartsOn(state, action: PayloadAction<WeekStartsOn>) {
       state.weekStartsOn = action.payload;
-      writePreferencesToLocalStorage(state);
     },
     setNotSubmittedGradePolicy(state, action: PayloadAction<NotSubmittedGradePolicy>) {
       state.notSubmittedGradePolicy = action.payload;
-      writePreferencesToLocalStorage(state);
     },
     hydrateAppPreferences(state, action: PayloadAction<Partial<AppPreferences>>) {
-      const next = {
-        studentSortBy:
-          action.payload.studentSortBy === "firstName" ? "firstName" : DEFAULT_APP_PREFERENCES.studentSortBy,
-        studentNameFormat:
-          action.payload.studentNameFormat === "lastFirst"
-            ? "lastFirst"
-            : DEFAULT_APP_PREFERENCES.studentNameFormat,
-        weekStartsOn:
-          action.payload.weekStartsOn === "sunday" ? "sunday" : DEFAULT_APP_PREFERENCES.weekStartsOn,
-        notSubmittedGradePolicy:
-          action.payload.notSubmittedGradePolicy === "zero"
-            ? "zero"
-            : DEFAULT_APP_PREFERENCES.notSubmittedGradePolicy
-      };
-      state.studentSortBy = next.studentSortBy;
-      state.studentNameFormat = next.studentNameFormat;
-      state.weekStartsOn = next.weekStartsOn;
-      state.notSubmittedGradePolicy = next.notSubmittedGradePolicy;
-      writePreferencesToLocalStorage(next);
+      state.studentSortBy =
+        action.payload.studentSortBy === "firstName" ? "firstName" : DEFAULT_APP_PREFERENCES.studentSortBy;
+      state.studentNameFormat =
+        action.payload.studentNameFormat === "lastFirst"
+          ? "lastFirst"
+          : DEFAULT_APP_PREFERENCES.studentNameFormat;
+      state.weekStartsOn =
+        action.payload.weekStartsOn === "sunday" ? "sunday" : DEFAULT_APP_PREFERENCES.weekStartsOn;
+      state.notSubmittedGradePolicy =
+        action.payload.notSubmittedGradePolicy === "zero"
+          ? "zero"
+          : DEFAULT_APP_PREFERENCES.notSubmittedGradePolicy;
     }
+  }
+});
+
+const preferencesListener = createListenerMiddleware<{ app: AppState }>();
+preferencesListener.startListening({
+  predicate: (_action, currentState, previousState) => {
+    const current = currentState.app;
+    const previous = previousState.app;
+    return (
+      current.studentSortBy !== previous.studentSortBy ||
+      current.studentNameFormat !== previous.studentNameFormat ||
+      current.weekStartsOn !== previous.weekStartsOn ||
+      current.notSubmittedGradePolicy !== previous.notSubmittedGradePolicy
+    );
+  },
+  effect: (_action, listenerApi) => {
+    const app = listenerApi.getState().app;
+    writePreferencesToLocalStorage({
+      studentSortBy: app.studentSortBy,
+      studentNameFormat: app.studentNameFormat,
+      weekStartsOn: app.weekStartsOn,
+      notSubmittedGradePolicy: app.notSubmittedGradePolicy
+    });
   }
 });
 
@@ -136,7 +153,8 @@ export const {
 export const store = configureStore({
   reducer: {
     app: appSlice.reducer
-  }
+  },
+  middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(preferencesListener.middleware)
 });
 
 export type RootState = ReturnType<typeof store.getState>;

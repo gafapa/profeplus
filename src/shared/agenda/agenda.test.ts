@@ -244,4 +244,33 @@ describe("agenda", () => {
     expect(calendar).toContain("\r\n ");
     expect(calendar).not.toContain("�");
   });
+
+  it("exports a scheduled class with fixed start and end instants instead of an all-day event", () => {
+    const items = buildAgendaItems(source({
+      scheduleDays: [{ id: "thursday", dayOfWeek: 4, dayName: "Jueves", enabled: true, blocks: [{ id: "slot-1", startTime: "09:00", endTime: "09:50" }] }],
+      taskSessions: [{ id: "timed", classId: "class-1", subjectId: "subject-1", taskId: "task-1", date: "2026-08-13", scheduleSlotId: "slot-1", status: "planned" }]
+    }));
+    const calendar = buildAgendaIcs(items);
+    const utc = (localTime: string) => new Date(`2026-08-13T${localTime}:00`).toISOString().replace(/[-:]/g, "").replace(/\.000Z$/, "Z");
+    expect(items[0]).toMatchObject({ startTime: "09:00", endTime: "09:50" });
+    expect(calendar).toContain(`DTSTART:${utc("09:00")}`);
+    expect(calendar).toContain(`DTEND:${utc("09:50")}`);
+    expect(calendar).not.toContain("VALUE=DATE");
+  });
+
+  it("keeps unknown slot times as dates and handles overnight end dates", () => {
+    const item = { id: "night", sourceId: "night", kind: "taskSession" as const, date: "2026-08-13", urgency: "upcoming" as const, title: "Clase", detail: "", classId: "class-1", route: "/planner", priority: 1 };
+    expect(buildAgendaIcs([item])).toContain("DTSTART;VALUE=DATE:20260813");
+    const end = new Date("2026-08-14T00:30:00").toISOString().replace(/[-:]/g, "").replace(/\.000Z$/, "Z");
+    expect(buildAgendaIcs([{ ...item, startTime: "23:30", endTime: "00:30" }])).toContain(`DTEND:${end}`);
+  });
+
+  it("preserves an exceptional class's recorded hours before the timetable defaults", () => {
+    const items = buildAgendaItems(source({
+      scheduleDays: [{ id: "day", dayOfWeek: 4, dayName: "Jueves", enabled: true, blocks: [{ id: "slot-1", startTime: "09:00", endTime: "09:50" }] }],
+      taskSessions: [{ id: "session", classId: "class-1", subjectId: "subject-1", taskId: "task-1", date: "2026-08-13", scheduleSlotId: "slot-1", status: "planned" }],
+      dailyClassRecords: [{ id: "record", classId: "class-1", subjectId: "subject-1", date: "2026-08-13", scheduleSlotId: "slot-1", startTime: "11:00", endTime: "11:45", generalComment: "", studentComments: {}, createdAt: "2026-08-12", updatedAt: "2026-08-12" }]
+    }));
+    expect(items[0]).toMatchObject({ startTime: "11:00", endTime: "11:45" });
+  });
 });

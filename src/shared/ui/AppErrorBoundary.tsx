@@ -16,7 +16,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("ProfePlus could not render the current view.", error, info);
+    console.error("Edunoza could not render the current view.", error, info);
   }
 
   render(): ReactNode {
@@ -24,7 +24,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
       return (
         <main className="fatal-error-page" id="main-content">
           <section role="alert" aria-labelledby="fatal-error-title">
-            <h1 id="fatal-error-title">No se pudo mostrar ProfePlus</h1>
+            <h1 id="fatal-error-title">No se pudo mostrar Edunoza</h1>
             <p>Recarga la aplicación. Tus datos locales no se han eliminado.</p>
             <button type="button" className="btn primary" onClick={() => window.location.reload()}>
               Recargar

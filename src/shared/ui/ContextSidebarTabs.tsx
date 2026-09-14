@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { setSelectedClass, setSelectedSubject } from "../../app/store";
 import { db } from "../db/database";
 import type { ClassGroup, Subject } from "../db/types";
+import { ClassGroupSelect } from "./ClassGroupSelect";
 
 type ContextSidebarTabsProps = {
   includeSubjects?: boolean;
@@ -11,10 +13,13 @@ type ContextSidebarTabsProps = {
 
 export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: ContextSidebarTabsProps) {
   const dispatch = useAppDispatch();
+  const location = useLocation();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
-  const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [classGroups, setClassGroups] = useState<ClassGroup[] | null>(null);
+  const [subjectContext, setSubjectContext] = useState<{ classId: string; subjects: Subject[] } | null>(null);
+  const subjects = useMemo(() => subjectContext?.classId === selectedClassId ? subjectContext.subjects : [], [subjectContext, selectedClassId]);
+  const isManagementRoute = location.pathname.startsWith("/management");
 
   useEffect(() => {
     let active = true;
@@ -24,9 +29,10 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
     return () => {
       active = false;
     };
-  }, []);
+  }, [isManagementRoute]);
 
   useEffect(() => {
+    if (classGroups === null) return;
     if (classGroups.length === 0) {
       if (selectedClassId) dispatch(setSelectedClass(null));
       return;
@@ -41,7 +47,7 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
     let active = true;
     const loadSubjects = async (): Promise<void> => {
       if (!includeSubjects || !selectedClassId) {
-        if (active) setSubjects((current) => (current.length > 0 ? [] : current));
+        if (active) setSubjectContext(null);
         return;
       }
       const [subjectsData, linksData] = await Promise.all([
@@ -50,7 +56,7 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
       ]);
       if (!active) return;
       const linkedSubjectIds = new Set(linksData.map((link) => link.subjectId));
-      setSubjects(subjectsData.filter((subject) => linkedSubjectIds.has(subject.id)));
+      setSubjectContext({ classId: selectedClassId, subjects: subjectsData.filter((subject) => linkedSubjectIds.has(subject.id)) });
     };
     void loadSubjects();
     return () => {
@@ -60,6 +66,7 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
 
   useEffect(() => {
     if (!includeSubjects) return;
+    if (!subjectContext || subjectContext.classId !== selectedClassId) return;
     if (!selectedClassId || subjects.length === 0) {
       if (selectedSubjectId) dispatch(setSelectedSubject(""));
       return;
@@ -68,7 +75,7 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
     if (!exists) {
       dispatch(setSelectedSubject(subjects[0].id));
     }
-  }, [dispatch, includeSubjects, selectedClassId, selectedSubjectId, subjects]);
+  }, [dispatch, includeSubjects, selectedClassId, selectedSubjectId, subjectContext, subjects]);
 
   const runChange = async (action: () => void): Promise<void> => {
     const canChange = await beforeChange?.();
@@ -79,27 +86,12 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
   return (
     <div className="context-sidebar-tabs">
       <div className="context-sidebar-group">
-        <strong>Curso</strong>
-        {classGroups.length > 0 ? (
-          <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Curso">
-            {classGroups.map((classGroup) => (
-              <button
-                key={classGroup.id}
-                type="button"
-                aria-pressed={selectedClassId === classGroup.id}
-                className={`section-tab ${selectedClassId === classGroup.id ? "active" : ""}`}
-                onClick={() => {
-                  void runChange(() => dispatch(setSelectedClass(classGroup.id)));
-                }}
-              >
-                <span>{classGroup.name || "Curso sin nombre"}</span>
-                <small>{classGroup.schoolYear}</small>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="hint">No hay cursos creados.</p>
-        )}
+        <ClassGroupSelect
+          groups={classGroups ?? []}
+          value={selectedClassId}
+          disabled={classGroups === null}
+          onChange={(classId) => runChange(() => dispatch(setSelectedClass(classId)))}
+        />
       </div>
 
       {includeSubjects && selectedClassId ? (
@@ -124,7 +116,7 @@ export function ContextSidebarTabs({ includeSubjects = true, beforeChange }: Con
                 ))}
               </div>
             ) : (
-              <p className="hint">No hay asignaturas asociadas a este curso.</p>
+              <p className="hint">No hay asignaturas en este grupo.</p>
             )}
           </div>
         </>

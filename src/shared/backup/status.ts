@@ -1,5 +1,25 @@
 export const BACKUP_STATUS_CHANGED_EVENT = "profeplus-backup-status-changed";
 export const LAST_BACKUP_STORAGE_KEY = "profeplus_last_backup_at";
+export const LAST_VERIFIED_BACKUP_STORAGE_KEY = "edunoza_last_backup_verified_at";
+
+export function readLastVerifiedBackupAt(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(LAST_VERIFIED_BACKUP_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function recordBackupVerified(verifiedAt = new Date().toISOString()): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_VERIFIED_BACKUP_STORAGE_KEY, verifiedAt);
+    window.dispatchEvent(new CustomEvent(BACKUP_STATUS_CHANGED_EVENT));
+  } catch {
+    // Verification still succeeded when the browser cannot retain its status.
+  }
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

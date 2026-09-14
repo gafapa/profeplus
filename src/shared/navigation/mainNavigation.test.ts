@@ -9,7 +9,7 @@ describe("main navigation", () => {
   it.each([
     ["/today", "today"],
     ["/agenda", "today"],
-    ["/classroom", "today"],
+    ["/classroom", "organization"],
     ["/search", "today"],
     ["/planner", "planning"],
     ["/management/units", "planning"],

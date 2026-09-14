@@ -21,7 +21,7 @@ const entry: AttendanceEntry = {
 describe("buildTodayLink", () => {
   it("preserves date, class, subject, and slot context", () => {
     const link = buildTodayLink(entry);
-    const url = new URL(link, "https://profeplus.local");
+    const url = new URL(link, "https://edunoza.local");
 
     expect(url.pathname).toBe("/today");
     expect(Object.fromEntries(url.searchParams)).toEqual({
@@ -34,7 +34,7 @@ describe("buildTodayLink", () => {
 
   it("uses the subject stored in the attendance record", () => {
     const link = buildTodayLink({ ...entry, subjectId: "subject-historical" });
-    const url = new URL(link, "https://profeplus.local");
+    const url = new URL(link, "https://edunoza.local");
 
     expect(url.searchParams.get("subjectId")).toBe("subject-historical");
   });

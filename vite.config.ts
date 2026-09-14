@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
-const PRECACHE_ASSETS_MARKER = "/* __PROFEPLUS_PRECACHE_ASSETS__ */ []";
-const CACHE_NAME_MARKER = "__PROFEPLUS_CACHE_NAME__";
+const PRECACHE_ASSETS_MARKER = "/* __EDUNOZA_PRECACHE_ASSETS__ */ []";
+const CACHE_NAME_MARKER = "__EDUNOZA_CACHE_NAME__";
 
 export function normalizePrecacheAssetPaths(paths: string[]): string[] {
   return Array.from(
@@ -44,7 +44,7 @@ function offlinePrecachePlugin(): Plugin {
   let resolvedConfig: ResolvedConfig;
 
   return {
-    name: "profeplus-offline-precache",
+    name: "edunoza-offline-precache",
     apply: "build",
     configResolved(config) {
       resolvedConfig = config;
@@ -69,7 +69,7 @@ function offlinePrecachePlugin(): Plugin {
         revisionHash.update("\0");
         revisionHash.update(await readFile(join(outputDirectory, assetPath)));
       }
-      const cacheName = `profeplus-${revisionHash.digest("hex").slice(0, 16)}`;
+      const cacheName = `edunoza-${revisionHash.digest("hex").slice(0, 16)}`;
 
       const serviceWorkerSource = await readFile(serviceWorkerPath, "utf8");
       if (
@@ -80,8 +80,8 @@ function offlinePrecachePlugin(): Plugin {
       }
 
       const generatedSource = serviceWorkerSource
-        .replace(CACHE_NAME_MARKER, cacheName)
-        .replace(PRECACHE_ASSETS_MARKER, JSON.stringify(assetPaths, null, 2));
+        .replace(CACHE_NAME_MARKER, () => cacheName)
+        .replace(PRECACHE_ASSETS_MARKER, () => JSON.stringify(assetPaths, null, 2));
       await writeFile(serviceWorkerPath, generatedSource, "utf8");
     }
   };
@@ -94,19 +94,30 @@ function normalizeBasePath(rawBase?: string): string {
 }
 
 function contentSecurityPolicyPlugin(isDevelopment: boolean): Plugin {
-  const connectSources = isDevelopment
-    ? "'self' ws://127.0.0.1:* ws://localhost:*"
-    : "'self'";
+  const aiConnectSources = [
+    "https://api.openai.com",
+    "https://openrouter.ai",
+    "https://api.anthropic.com",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "https://localhost:*",
+    "https://127.0.0.1:*"
+  ];
+  const connectSources = [
+    "'self'",
+    ...aiConnectSources,
+    ...(isDevelopment ? ["ws://127.0.0.1:*", "ws://localhost:*"] : [])
+  ].join(" ");
   const styleSources = isDevelopment ? "'self' 'unsafe-inline'" : "'self'";
 
   return {
-    name: "profeplus-content-security-policy",
+    name: "edunoza-content-security-policy",
     transformIndexHtml: {
       order: "pre",
       handler(html) {
         return html
-          .replace("__PROFEPLUS_CONNECT_SRC__", connectSources)
-          .replace("__PROFEPLUS_STYLE_SRC__", styleSources);
+          .replace("__EDUNOZA_CONNECT_SRC__", connectSources)
+          .replace("__EDUNOZA_STYLE_SRC__", styleSources);
       }
     }
   };

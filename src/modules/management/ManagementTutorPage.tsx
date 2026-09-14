@@ -31,6 +31,9 @@ import { FOLLOW_UP_KINDS, followUpKindLabel } from "../../shared/students/follow
 import { toLocalIsoDate } from "../../shared/utils/date";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { useManagement } from "./ManagementContext";
+import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
+import { useRecoverableDraft } from "../../shared/hooks/useRecoverableDraft";
+import { DraftRecoveryNotice } from "../../shared/ui/DraftRecoveryNotice";
 
 type TutorView = "followUps" | "contacts" | "groups" | "handoff";
 
@@ -67,6 +70,18 @@ type GroupDraft = {
   focus: string;
   memberIds: string[];
 };
+
+type TutorRecovery = { followUp: FollowUpDraft; contact: ContactDraft; group: GroupDraft; view: TutorView };
+function isTutorRecovery(value: unknown): value is TutorRecovery {
+  if (!value || typeof value !== "object") return false;
+  const saved = value as TutorRecovery;
+  return Boolean(saved.followUp && saved.contact && saved.group) &&
+    ["followUps", "contacts", "groups", "handoff"].includes(saved.view) &&
+    Object.keys(defaultFollowUpDraft()).every((key) => typeof saved.followUp[key as keyof FollowUpDraft] === "string") &&
+    Object.keys(defaultContactDraft()).every((key) => typeof saved.contact[key as keyof ContactDraft] === "string") &&
+    [saved.group.id, saved.group.name, saved.group.responsiblePerson, saved.group.focus].every((item) => typeof item === "string") &&
+    Array.isArray(saved.group.memberIds) && saved.group.memberIds.every((item) => typeof item === "string");
+}
 
 const VIEW_LABELS: Array<{ id: TutorView; label: string }> = [
   { id: "followUps", label: "Seguimientos" },
@@ -138,7 +153,7 @@ function downloadJson(payload: unknown, label: string): void {
   try {
     const link = document.createElement("a");
     link.href = url;
-    link.download = `profeplus-${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    link.download = `edunoza-${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -159,6 +174,18 @@ export function ManagementTutorPage() {
   const [followUpDraft, setFollowUpDraft] = useState<FollowUpDraft>(defaultFollowUpDraft);
   const [contactDraft, setContactDraft] = useState<ContactDraft>(defaultContactDraft);
   const [groupDraft, setGroupDraft] = useState<GroupDraft>(defaultGroupDraft);
+  const [studentGroupFilter, setStudentGroupFilter] = useState("");
+  const [studentSearch, setStudentSearch] = useState("");
+  const existingGroup = supportGroups.find((item) => item.id === groupDraft.id);
+  const groupBaseline = existingGroup ? {
+    id: existingGroup.id, name: existingGroup.name, responsiblePerson: existingGroup.responsiblePerson,
+    focus: existingGroup.focus ?? "", memberIds: supportMembers.filter((item) => item.supportGroupId === existingGroup.id).map((item) => item.studentId)
+  } : defaultGroupDraft();
+  const hasTutorDraft = JSON.stringify(followUpDraft) !== JSON.stringify(defaultFollowUpDraft()) ||
+    JSON.stringify(contactDraft) !== JSON.stringify(defaultContactDraft()) || JSON.stringify(groupDraft) !== JSON.stringify(groupBaseline);
+  useUnsavedChangesGuard(hasTutorDraft, "Hay un registro tutorial sin guardar. Puedes recuperar su borrador al volver.");
+  const tutorRecovery = useRecoverableDraft<TutorRecovery>("tutor", { followUp: followUpDraft, contact: contactDraft, group: groupDraft, view }, hasTutorDraft, isTutorRecovery,
+    (saved) => { setFollowUpDraft(saved.followUp); setContactDraft(saved.contact); setGroupDraft(saved.group); setView(saved.view); });
   const [isSaving, setIsSaving] = useState(false);
   const [selectedHandoffStudentIds, setSelectedHandoffStudentIds] = useState<string[]>([]);
   const [exportPassword, setExportPassword] = useState("");
@@ -197,6 +224,10 @@ export function ManagementTutorPage() {
     [courses]
   );
   const sortedStudents = useMemo(() => [...students].sort(compareFn), [compareFn, students]);
+  const selectableStudents = sortedStudents.filter((student) =>
+    student.id === followUpDraft.studentId || student.id === contactDraft.studentId ||
+    ((!studentGroupFilter || student.classId === studentGroupFilter) && formatName(student).toLocaleLowerCase("es").includes(studentSearch.trim().toLocaleLowerCase("es")))
+  );
   const today = toLocalIsoDate();
   const normalizedFollowUps = useMemo(
     () =>
@@ -257,6 +288,7 @@ export function ManagementTutorPage() {
         updatedAt: now
       });
       setFollowUpDraft(defaultFollowUpDraft());
+      tutorRecovery.discard();
       await loadTutorData();
       setNotice("Seguimiento añadido.");
     } finally {
@@ -306,6 +338,7 @@ export function ManagementTutorPage() {
         updatedAt: now
       });
       setContactDraft(defaultContactDraft());
+      tutorRecovery.discard();
       await loadTutorData();
       setNotice("Contacto familiar registrado.");
     } finally {
@@ -445,7 +478,7 @@ export function ManagementTutorPage() {
     try {
       const parsed = JSON.parse(await file.text()) as unknown;
       if (!isEncryptedBackupEnvelope(parsed)) {
-        throw new Error("El archivo no es un paquete cifrado de ProfePlus.");
+        throw new Error("El archivo no es un paquete cifrado de Edunoza.");
       }
       setEncryptedImport(parsed);
       setImportPassword("");
@@ -515,12 +548,9 @@ export function ManagementTutorPage() {
 
   return (
     <article className="management-card tutor-page">
+      <DraftRecoveryNotice {...tutorRecovery} />
       <header className="tutor-hero">
-        <div>
-          <span className="eyebrow">Espacio de coordinación</span>
-          <h1>Tutoría y apoyos</h1>
-          <p>Próximos pasos, familias, agrupamientos transversales y relevos seguros.</p>
-        </div>
+        <h1 className="sr-only">Tutoría y apoyos</h1>
         <div className="tutor-hero-metrics" aria-label="Resumen tutorial">
           <span><strong>{openFollowUps.length}</strong> pendientes</span>
           <span className={overdueFollowUps.length ? "urgent" : ""}><strong>{overdueFollowUps.length}</strong> vencidos</span>
@@ -528,6 +558,15 @@ export function ManagementTutorPage() {
         </div>
       </header>
 
+      <fieldset className="tutor-form-grid">
+        <legend>Filtrar opciones de alumnado</legend>
+        <label className="compact-field"><span>Grupo del alumno</span><select value={studentGroupFilter} onChange={(event) => setStudentGroupFilter(event.target.value)}>
+          <option value="">Todos los grupos</option>
+          {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+        </select></label>
+        <label className="compact-field"><span>Buscar alumno</span><input type="search" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} /></label>
+        <p className="hint">Filtra las opciones de los formularios. El alumno ya seleccionado se conserva.</p>
+      </fieldset>
       <div className="tutor-tabs" role="tablist" aria-label="Áreas de tutoría">
         {VIEW_LABELS.map((item) => (
           <button
@@ -559,31 +598,31 @@ export function ManagementTutorPage() {
             </div>
           </div>
           <div className="tutor-form-grid">
-            <label>
+            <label className="compact-field">
               <span>Alumno</span>
               <select value={followUpDraft.studentId} onChange={(event) => setFollowUpDraft((current) => ({ ...current, studentId: event.target.value }))}>
                 <option value="">Seleccionar</option>
-                {sortedStudents.map((student) => <option key={student.id} value={student.id}>{formatName(student)} · {courseById.get(student.classId)?.name}</option>)}
+                {selectableStudents.map((student) => <option key={student.id} value={student.id}>{formatName(student)} · {courseById.get(student.classId)?.name}</option>)}
               </select>
             </label>
-            <label><span>Fecha</span><input type="date" value={followUpDraft.date} onChange={(event) => setFollowUpDraft((current) => ({ ...current, date: event.target.value }))} /></label>
-            <label>
+            <label className="compact-field"><span>Fecha</span><input type="date" value={followUpDraft.date} onChange={(event) => setFollowUpDraft((current) => ({ ...current, date: event.target.value }))} /></label>
+            <label className="compact-field">
               <span>Tipo</span>
               <select value={followUpDraft.kind} onChange={(event) => setFollowUpDraft((current) => ({ ...current, kind: event.target.value as StudentFollowUpKind }))}>
                 {FOLLOW_UP_KINDS.map((kind) => <option key={kind} value={kind}>{followUpKindLabel(kind)}</option>)}
               </select>
             </label>
-            <label><span>Fecha límite</span><input type="date" value={followUpDraft.dueDate} onChange={(event) => setFollowUpDraft((current) => ({ ...current, dueDate: event.target.value }))} /></label>
-            <label><span>Responsable</span><input value={followUpDraft.responsiblePerson} onChange={(event) => setFollowUpDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} placeholder="Tutor, PT, AL…" /></label>
-            <label>
+            <label className="compact-field"><span>Fecha límite</span><input type="date" value={followUpDraft.dueDate} onChange={(event) => setFollowUpDraft((current) => ({ ...current, dueDate: event.target.value }))} /></label>
+            <label className="compact-field"><span>Responsable</span><input value={followUpDraft.responsiblePerson} onChange={(event) => setFollowUpDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} placeholder="Tutor, PT, AL…" /></label>
+            <label className="compact-field">
               <span>Prioridad</span>
               <select value={followUpDraft.priority} onChange={(event) => setFollowUpDraft((current) => ({ ...current, priority: event.target.value as FollowUpPriority }))}>
                 <option value="low">Baja</option><option value="normal">Normal</option><option value="high">Alta</option>
               </select>
             </label>
-            <label className="wide"><span>Título</span><input value={followUpDraft.title} onChange={(event) => setFollowUpDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+            <label className="wide compact-field"><span>Título</span><input value={followUpDraft.title} onChange={(event) => setFollowUpDraft((current) => ({ ...current, title: event.target.value }))} /></label>
             <label className="wide"><span>Notas</span><textarea value={followUpDraft.notes} onChange={(event) => setFollowUpDraft((current) => ({ ...current, notes: event.target.value }))} /></label>
-            <label className="wide"><span>Próximo paso</span><input value={followUpDraft.nextStep} onChange={(event) => setFollowUpDraft((current) => ({ ...current, nextStep: event.target.value }))} /></label>
+            <label className="wide compact-field"><span>Próximo paso</span><input value={followUpDraft.nextStep} onChange={(event) => setFollowUpDraft((current) => ({ ...current, nextStep: event.target.value }))} /></label>
           </div>
           <button type="button" className="btn primary" disabled={isSaving} onClick={() => void saveFollowUp()}>Añadir seguimiento</button>
 
@@ -626,16 +665,16 @@ export function ManagementTutorPage() {
         <section className="tutor-panel" role="tabpanel" id="tutor-panel-contacts" aria-labelledby="tutor-tab-contacts">
           <div className="tutor-panel-heading"><div><h2>Contactos con familias</h2><p>Registro estructurado de comunicaciones y acuerdos.</p></div></div>
           <div className="tutor-form-grid">
-            <label><span>Alumno</span><select value={contactDraft.studentId} onChange={(event) => setContactDraft((current) => ({ ...current, studentId: event.target.value }))}><option value="">Seleccionar</option>{sortedStudents.map((student) => <option key={student.id} value={student.id}>{formatName(student)} · {courseById.get(student.classId)?.name}</option>)}</select></label>
-            <label><span>Fecha</span><input type="date" value={contactDraft.date} onChange={(event) => setContactDraft((current) => ({ ...current, date: event.target.value }))} /></label>
-            <label><span>Canal</span><select value={contactDraft.channel} onChange={(event) => setContactDraft((current) => ({ ...current, channel: event.target.value as FamilyContactChannel }))}>{CONTACT_CHANNELS.map((channel) => <option key={channel} value={channel}>{contactChannelLabel(channel)}</option>)}</select></label>
-            <label><span>Persona contactada</span><input value={contactDraft.contactName} onChange={(event) => setContactDraft((current) => ({ ...current, contactName: event.target.value }))} /></label>
-            <label><span>Relación</span><input value={contactDraft.relationship} onChange={(event) => setContactDraft((current) => ({ ...current, relationship: event.target.value }))} placeholder="Madre, padre, tutor legal…" /></label>
-            <label><span>Responsable del próximo paso</span><input value={contactDraft.responsiblePerson} onChange={(event) => setContactDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} /></label>
+            <label className="compact-field"><span>Alumno</span><select value={contactDraft.studentId} onChange={(event) => setContactDraft((current) => ({ ...current, studentId: event.target.value }))}><option value="">Seleccionar</option>{selectableStudents.map((student) => <option key={student.id} value={student.id}>{formatName(student)} · {courseById.get(student.classId)?.name}</option>)}</select></label>
+            <label className="compact-field"><span>Fecha</span><input type="date" value={contactDraft.date} onChange={(event) => setContactDraft((current) => ({ ...current, date: event.target.value }))} /></label>
+            <label className="compact-field"><span>Canal</span><select value={contactDraft.channel} onChange={(event) => setContactDraft((current) => ({ ...current, channel: event.target.value as FamilyContactChannel }))}>{CONTACT_CHANNELS.map((channel) => <option key={channel} value={channel}>{contactChannelLabel(channel)}</option>)}</select></label>
+            <label className="compact-field"><span>Persona contactada</span><input value={contactDraft.contactName} onChange={(event) => setContactDraft((current) => ({ ...current, contactName: event.target.value }))} /></label>
+            <label className="compact-field"><span>Relación</span><input value={contactDraft.relationship} onChange={(event) => setContactDraft((current) => ({ ...current, relationship: event.target.value }))} placeholder="Madre, padre, tutor legal…" /></label>
+            <label className="compact-field"><span>Responsable del próximo paso</span><input value={contactDraft.responsiblePerson} onChange={(event) => setContactDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} /></label>
             <label className="wide"><span>Resumen</span><textarea value={contactDraft.summary} onChange={(event) => setContactDraft((current) => ({ ...current, summary: event.target.value }))} /></label>
             <label className="wide"><span>Acuerdos</span><textarea value={contactDraft.agreements} onChange={(event) => setContactDraft((current) => ({ ...current, agreements: event.target.value }))} /></label>
-            <label><span>Próximo paso</span><input value={contactDraft.nextStep} onChange={(event) => setContactDraft((current) => ({ ...current, nextStep: event.target.value }))} /></label>
-            <label><span>Fecha límite</span><input type="date" value={contactDraft.dueDate} onChange={(event) => setContactDraft((current) => ({ ...current, dueDate: event.target.value }))} /></label>
+            <label className="compact-field"><span>Próximo paso</span><input value={contactDraft.nextStep} onChange={(event) => setContactDraft((current) => ({ ...current, nextStep: event.target.value }))} /></label>
+            <label className="compact-field"><span>Fecha límite</span><input type="date" value={contactDraft.dueDate} onChange={(event) => setContactDraft((current) => ({ ...current, dueDate: event.target.value }))} /></label>
           </div>
           <button type="button" className="btn primary" disabled={isSaving} onClick={() => void saveContact()}>Registrar contacto</button>
           <div className="tutor-card-list">
@@ -657,9 +696,9 @@ export function ManagementTutorPage() {
         <section className="tutor-panel" role="tabpanel" id="tutor-panel-groups" aria-labelledby="tutor-tab-groups">
           <div className="tutor-panel-heading"><div><h2>Grupos de apoyo transversales</h2><p>Un mismo expediente de alumno puede participar en apoyos con compañeros de otros cursos.</p></div><button type="button" className="btn secondary" onClick={() => setGroupDraft(defaultGroupDraft())}>Nuevo grupo</button></div>
           <div className="tutor-form-grid">
-            <label><span>Nombre</span><input value={groupDraft.name} onChange={(event) => setGroupDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-            <label><span>Responsable</span><input value={groupDraft.responsiblePerson} onChange={(event) => setGroupDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} /></label>
-            <label className="wide"><span>Foco de intervención</span><input value={groupDraft.focus} onChange={(event) => setGroupDraft((current) => ({ ...current, focus: event.target.value }))} placeholder="Lectoescritura, comunicación, funciones ejecutivas…" /></label>
+            <label className="compact-field"><span>Nombre</span><input value={groupDraft.name} onChange={(event) => setGroupDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label className="compact-field"><span>Responsable</span><input value={groupDraft.responsiblePerson} onChange={(event) => setGroupDraft((current) => ({ ...current, responsiblePerson: event.target.value }))} /></label>
+            <label className="wide compact-field"><span>Foco de intervención</span><input value={groupDraft.focus} onChange={(event) => setGroupDraft((current) => ({ ...current, focus: event.target.value }))} placeholder="Lectoescritura, comunicación, funciones ejecutivas…" /></label>
           </div>
           <fieldset className="tutor-student-picker">
             <legend>Alumnado del grupo</legend>
@@ -697,7 +736,7 @@ export function ManagementTutorPage() {
       {view === "handoff" ? (
         <section className="tutor-panel" role="tabpanel" id="tutor-panel-handoff" aria-labelledby="tutor-tab-handoff">
           <div className="tutor-panel-heading"><div><h2>Relevo cifrado y selectivo</h2><p>Comparte solo expedientes, seguimientos, contactos y grupos seleccionados. Nunca incluye notas ni asistencia.</p></div></div>
-          <div className="handoff-layout">
+          <form className="handoff-layout" onSubmit={(event) => event.preventDefault()}>
             <section className="handoff-card">
               <h3>1. Seleccionar alcance</h3>
               <div className="handoff-group-shortcuts">{supportGroups.map((group) => <button type="button" className="btn secondary" key={group.id} onClick={() => selectSupportGroupForHandoff(group.id)}>Añadir {group.name}</button>)}</div>
@@ -705,17 +744,17 @@ export function ManagementTutorPage() {
             </section>
             <section className="handoff-card">
               <h3>2. Proteger y descargar</h3>
-              <label><span>Contraseña</span><input type="password" autoComplete="new-password" minLength={12} value={exportPassword} onChange={(event) => setExportPassword(event.target.value)} /></label>
-              <label><span>Repetir contraseña</span><input type="password" autoComplete="new-password" minLength={12} value={exportPasswordConfirmation} onChange={(event) => setExportPasswordConfirmation(event.target.value)} /></label>
+              <label className="compact-field"><span>Contraseña</span><input type="password" autoComplete="new-password" minLength={12} value={exportPassword} onChange={(event) => setExportPassword(event.target.value)} /></label>
+              <label className="compact-field"><span>Repetir contraseña</span><input type="password" autoComplete="new-password" minLength={12} value={exportPasswordConfirmation} onChange={(event) => setExportPasswordConfirmation(event.target.value)} /></label>
               <button type="button" className="btn primary" disabled={isSaving || selectedHandoffStudentIds.length === 0 || exportPassword.length < 12 || exportPassword !== exportPasswordConfirmation} onClick={() => void exportHandoff()}>Descargar relevo cifrado</button>
             </section>
             <section className="handoff-card">
               <h3>Importar sin sobrescribir</h3>
               <input ref={importInputRef} className="student-photo-input-hidden" type="file" accept=".json,application/json" aria-label="Seleccionar paquete de relevo cifrado" onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void prepareEncryptedImport(file); }} />
               <button type="button" className="btn secondary" onClick={() => importInputRef.current?.click()}>Seleccionar paquete</button>
-              {encryptedImport ? <><label><span>Contraseña del paquete</span><input type="password" autoComplete="current-password" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} /></label><button type="button" className="btn secondary" disabled={isSaving || !importPassword} onClick={() => void decryptAndPreview()}>Descifrar y previsualizar</button></> : null}
+              {encryptedImport ? <><label className="compact-field"><span>Contraseña del paquete</span><input type="password" autoComplete="current-password" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} /></label><button type="button" className="btn secondary" disabled={isSaving || !importPassword} onClick={() => void decryptAndPreview()}>Descifrar y previsualizar</button></> : null}
             </section>
-          </div>
+          </form>
           {mergePreview && incomingHandoff ? (
             <section className={`handoff-preview ${mergePreview.conflictCount ? "has-conflicts" : ""}`} aria-live="polite">
               <div><h3>Previsualización de mezcla</h3><p>{mergePreview.createCount} nuevos · {mergePreview.unchangedCount} ya presentes · {mergePreview.conflictCount} conflictos</p></div>

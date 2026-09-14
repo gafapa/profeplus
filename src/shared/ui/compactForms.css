@@ -1,0 +1,129 @@
+/* Keep captions adjacent to bounded controls; stack complete pairs in narrow rails. */
+:root {
+  --form-label-width: 10rem;
+  --form-control-width: 28rem;
+  --form-column-gap: 8px;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px var(--form-column-gap);
+  min-width: 0;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field > :is(span, label):first-child {
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field > :is(input, select, .ai-secret-input) {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 0;
+  max-width: min(100%, var(--form-control-width));
+  min-height: 44px;
+  box-sizing: border-box;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field > input:is([type="number"], [type="time"]) {
+  flex: 0 1 9rem;
+  width: 9rem;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field > input:is([type="date"], [type="month"]) {
+  flex: 0 1 12rem;
+  width: 12rem;
+}
+
+:is(main, .modal-panel, .app-lock-panel) .compact-field > :is(small, p) {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+:is(main, .modal-panel) .compact-field > .ai-secret-input {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+/* Short range-filter captions need less room than record-editing labels. */
+.reports-period-controls {
+  --form-label-width: 3.5rem;
+  flex-wrap: wrap;
+}
+
+/* A single field column keeps label starts aligned instead of competing mini-grids. */
+:is(main, .modal-panel) :is(.detail-grid, .follow-up-form, .ai-provider-form, .feedback-bank-form):has(> .compact-field) {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+:is(main, .modal-panel) .detail-field:has(> textarea) {
+  min-width: 0;
+  max-width: 72ch;
+}
+
+:is(main, .modal-panel) .detail-field > textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (min-width: 901px) {
+.today-layout { grid-template-columns: 280px minmax(0, 1fr); gap: 14px; }
+.courses-list-panel .compact-field {
+  flex-flow: column nowrap;
+  align-items: stretch;
+}
+
+main .courses-list-panel .compact-field > :is(input, select, .ai-secret-input) {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+}
+}
+
+.agenda-sidebar .agenda-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.agenda-main { min-width: 0; display: grid; gap: 16px; align-content: start; }
+.today-slot-rail .today-header-controls { width: 100%; min-width: 0; }
+.today-slot-rail .today-date-navigation { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+.today-slot-rail .today-date-picker { grid-column: 1 / -1; grid-row: 1; }
+.today-slot-rail .today-date-step { grid-row: 2; }
+.today-slot-rail .today-date-step:first-child { grid-column: 1; }
+.today-slot-rail .today-date-step:nth-child(3) { grid-column: 3; }
+.today-slot-rail .today-date-today { grid-column: 2; grid-row: 2; }
+.today-slot-rail .today-date-picker input.input { width: 100%; min-width: 0; }
+.classroom-seat-student[draggable="true"] { cursor: grab; }
+.classroom-seat-student[draggable="true"]:active { cursor: grabbing; }
+.classroom-seat.drop-target { outline: 3px solid #285cb0; outline-offset: 2px; }
+
+/* Compact containers wrap naturally before this device-level fallback. */
+@media (max-width: 760px) {
+  .agenda-main .agenda-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :is(main, .modal-panel, .app-lock-panel) .compact-field {
+    flex-flow: column nowrap;
+    align-items: stretch;
+  }
+  :is(main, .modal-panel, .app-lock-panel) .compact-field > :is(span, label):first-child {
+    flex-basis: auto;
+  }
+  :is(main, .modal-panel, .app-lock-panel) .compact-field > input[type],
+  :is(main, .modal-panel, .app-lock-panel) .compact-field > :is(input, select, .ai-secret-input) {
+    flex: 0 1 auto;
+    width: 100%;
+    max-width: 100%;
+  }
+  :is(main, .modal-panel, .app-lock-panel) .compact-field > :is(small, p) {
+    flex-basis: auto;
+  }
+}

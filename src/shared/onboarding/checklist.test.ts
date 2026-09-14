@@ -34,10 +34,12 @@ describe("onboarding checklist", () => {
         }
       ],
       subjects: [{ id: "math", name: "Matemáticas", scheduleSlotIds: ["monday-1"] }],
-      subjectCourseLinks: [{ id: "math-class", subjectId: "math", classId: "class-1" }]
+      subjectCourseLinks: [{ id: "math-class", subjectId: "math", classId: "class-1" }],
+      taskSessions: [{ id: "lesson", taskId: "task", subjectId: "math", classId: "class-1", date: "2026-09-07", scheduleSlotId: "monday-1", status: "planned" }]
     });
 
     expect(ready.every((item) => item.complete)).toBe(true);
+    expect(ready).toHaveLength(5);
   });
 
   it("does not mark a subject ready when it only references an inactive slot", () => {
@@ -58,5 +60,17 @@ describe("onboarding checklist", () => {
     });
 
     expect(checklist.find((item) => item.id === "subjects")?.complete).toBe(false);
+    expect(checklist.find((item) => item.id === "lesson")?.complete).toBe(false);
+  });
+
+  it("keeps the first lesson pending for cancelled or unrelated sessions", () => {
+    const base = {
+      courses: [{ id: "class", name: "Primary", level: "3", schoolYear: "2026-2027" }],
+      students: [], scheduleDays: [], subjects: [{ id: "math", name: "Math", scheduleSlotIds: [] }], subjectCourseLinks: []
+    };
+    const session = { id: "lesson", taskId: "task", subjectId: "math", classId: "class", date: "2026-09-07", scheduleSlotId: "slot", status: "planned" as const };
+    for (const taskSessions of [[], [{ ...session, status: "cancelled" as const }], [{ ...session, classId: "other" }]]) {
+      expect(buildOnboardingChecklist({ ...base, taskSessions }).find((item) => item.id === "lesson")?.complete).toBe(false);
+    }
   });
 });

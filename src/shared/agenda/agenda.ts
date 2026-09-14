@@ -2,7 +2,9 @@ import type {
   AcademicPeriod,
   Assessment,
   ClassGroup,
+  DailyClassRecord,
   FamilyContact,
+  ScheduleDay,
   Student,
   StudentFollowUp,
   Subject,
@@ -24,6 +26,8 @@ export type AgendaItem = {
   sourceId: string;
   kind: AgendaItemKind;
   date: string;
+  startTime?: string;
+  endTime?: string;
   urgency: AgendaUrgency;
   title: string;
   detail: string;
@@ -45,6 +49,8 @@ export type AgendaSource = {
   taskSessions: TaskSession[];
   academicPeriods: AcademicPeriod[];
   assessments: Assessment[];
+  scheduleDays?: ScheduleDay[];
+  dailyClassRecords?: DailyClassRecord[];
 };
 
 const KIND_ORDER: Record<AgendaItemKind, number> = {
@@ -91,6 +97,7 @@ export function buildAgendaItems(source: AgendaSource): AgendaItem[] {
   );
   const subjectNameById = new Map(source.subjects.map((item) => [item.id, item.name]));
   const taskNameById = new Map(source.tasks.map((item) => [item.id, item.title]));
+  const slotById = new Map((source.scheduleDays ?? []).flatMap((day) => day.blocks.map((block) => [block.id, block] as const)));
   const items: AgendaItem[] = [];
 
   for (const followUp of source.followUps) {
@@ -149,11 +156,15 @@ export function buildAgendaItems(source: AgendaSource): AgendaItem[] {
     const taskName = taskNameById.get(session.taskId) ?? "Tarea sin título";
     const subjectName = subjectNameById.get(session.subjectId) ?? "Asignatura sin identificar";
     const className = classNameById.get(session.classId) ?? "Curso sin identificar";
+    const slot = slotById.get(session.scheduleSlotId);
+    const record = source.dailyClassRecords?.find((item) => item.classId === session.classId && item.subjectId === session.subjectId && item.date === session.date && item.scheduleSlotId === session.scheduleSlotId);
     items.push({
       id: `task-session:${session.id}`,
       sourceId: session.id,
       kind: "taskSession",
       date: session.date,
+      startTime: record?.startTime ?? slot?.startTime,
+      endTime: record?.endTime ?? slot?.endTime,
       urgency: agendaUrgency(session.date, source.today),
       title: `Clase: ${taskName}`,
       detail: `${subjectName} · ${className}`,
@@ -261,19 +272,26 @@ export function buildAgendaIcs(items: AgendaItem[], generatedAt = new Date()): s
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//ProfePlus//Agenda//ES",
+    "PRODID:-//Edunoza//Agenda//ES",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH"
   ];
   const timestamp = compactIcsTimestamp(generatedAt);
 
   for (const item of items) {
+    const hasTime = /^\d{2}:\d{2}$/.test(item.startTime ?? "") && /^\d{2}:\d{2}$/.test(item.endTime ?? "");
+    // The app stores local wall-clock times. Resolve each dated occurrence in
+    // the exporting browser's time zone and emit fixed UTC instants (RFC 5545).
+    const start = hasTime ? new Date(`${item.date}T${item.startTime}:00`) : null;
+    const endDate = hasTime && item.endTime! <= item.startTime! ? shiftIsoDate(item.date, 1) : item.date;
+    const end = hasTime ? new Date(`${endDate}T${item.endTime}:00`) : null;
+    const timed = start !== null && end !== null && Number.isFinite(start.getTime()) && Number.isFinite(end.getTime());
     lines.push(
       "BEGIN:VEVENT",
-      `UID:${escapeIcsText(item.id)}@profeplus.local`,
+      `UID:${escapeIcsText(item.id)}@edunoza.com`,
       `DTSTAMP:${timestamp}`,
-      `DTSTART;VALUE=DATE:${compactIcsDate(item.date)}`,
-      `DTEND;VALUE=DATE:${compactIcsDate(shiftIsoDate(item.date, 1))}`,
+      timed ? `DTSTART:${compactIcsTimestamp(start)}` : `DTSTART;VALUE=DATE:${compactIcsDate(item.date)}`,
+      timed ? `DTEND:${compactIcsTimestamp(end)}` : `DTEND;VALUE=DATE:${compactIcsDate(shiftIsoDate(item.date, 1))}`,
       `SUMMARY:${escapeIcsText(item.title)}`,
       `DESCRIPTION:${escapeIcsText(item.detail)}`,
       `CATEGORIES:${item.kind}`,

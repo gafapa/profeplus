@@ -195,7 +195,7 @@ export function AttendanceHistoryPage() {
     <section className="module-card attendance-history-page" aria-labelledby="attendance-history-title">
       <div className="courses-layout attendance-history-layout">
         <aside className="courses-list-panel attendance-history-sidebar">
-          <label className="detail-field full" htmlFor="attendance-history-month">
+          <label className="detail-field full compact-field" htmlFor="attendance-history-month">
             <span>Mes</span>
             <input
               id="attendance-history-month"
@@ -206,7 +206,7 @@ export function AttendanceHistoryPage() {
             />
           </label>
           <div className="context-sidebar-separator" aria-hidden="true" />
-          <strong>Curso</strong>
+          <strong>Grupo</strong>
           <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Filtrar por curso">
             <button
               type="button"
@@ -230,14 +230,14 @@ export function AttendanceHistoryPage() {
             ))}
           </div>
           <div className="context-sidebar-separator" aria-hidden="true" />
-          <label className="detail-field full">
+          <label className="detail-field full compact-field">
             <span>Asignatura</span>
             <select className="input" value={selectedSubjectId} onChange={(event) => setSelectedSubjectId(event.target.value)}>
               <option value="all">Todas</option>
               {subjectsForFilter.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
             </select>
           </label>
-          <label className="detail-field full">
+          <label className="detail-field full compact-field">
             <span>Estado</span>
             <select
               className="input"
@@ -250,7 +250,7 @@ export function AttendanceHistoryPage() {
               <option value="absent">Ausente</option>
             </select>
           </label>
-          <label className="detail-field full">
+          <label className="detail-field full compact-field">
             <span>Alumno</span>
             <input
               className="input"
@@ -282,7 +282,7 @@ export function AttendanceHistoryPage() {
             <h2>Incidencias por alumno</h2>
             <div className="table-scroll">
               <table>
-                <thead><tr><th>Alumno</th><th>Curso</th><th>Ausencias</th><th>Retrasos</th><th>Última</th></tr></thead>
+                <thead><tr><th>Alumno o alumna</th><th>Grupo</th><th>Ausencias</th><th>Retrasos</th><th>Última</th></tr></thead>
                 <tbody>
                   {studentIncidents.map((row) => (
                     <tr key={row.student.id}>
@@ -304,7 +304,7 @@ export function AttendanceHistoryPage() {
             <div className="table-scroll attendance-history-records">
               <table>
                 <thead>
-                  <tr><th>Fecha</th><th>Hora</th><th>Curso</th><th>Asignatura</th><th>Alumno</th><th>Estado</th><th>Observación</th><th>Acción</th></tr>
+                  <tr><th>Fecha</th><th>Hora</th><th>Grupo</th><th>Asignatura</th><th>Alumno o alumna</th><th>Estado</th><th>Observación</th><th>Acción</th></tr>
                 </thead>
                 <tbody>
                   {filteredEntries.map((entry) => {

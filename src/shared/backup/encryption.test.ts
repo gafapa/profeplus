@@ -10,9 +10,20 @@ describe("encrypted backups", () => {
     const payload = { students: [{ name: "Ana" }], grades: [8.5] };
     const encrypted = await encryptBackupPayload(payload, "correct horse battery staple");
 
+    expect(encrypted.app).toBe("Edunoza");
     expect(isEncryptedBackupEnvelope(encrypted)).toBe(true);
     expect(encrypted.ciphertext).not.toContain("Ana");
     await expect(decryptBackupPayload(encrypted, "correct horse battery staple")).resolves.toEqual(payload);
+  });
+
+  it("keeps legacy ProfePlus envelopes readable", async () => {
+    const encrypted = await encryptBackupPayload({ value: "legacy" }, "correct horse battery staple");
+    const legacyEnvelope = { ...encrypted, app: "ProfePlus" as const };
+
+    expect(isEncryptedBackupEnvelope(legacyEnvelope)).toBe(true);
+    await expect(decryptBackupPayload(legacyEnvelope, "correct horse battery staple")).resolves.toEqual({
+      value: "legacy"
+    });
   });
 
   it("rejects an incorrect password", async () => {

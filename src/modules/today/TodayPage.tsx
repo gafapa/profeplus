@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useSearchParams } from "react-router-dom";
+import { useAppDispatch, useAppSelector } from "../../app/hooks";
+import { setSelectedClass } from "../../app/store";
 import { db } from "../../shared/db/database";
 import type {
   AttendanceEntry,
@@ -27,9 +29,14 @@ import { FeedbackCommentPicker } from "../../shared/feedback/FeedbackCommentPick
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 import { Modal } from "../../shared/ui/Modal";
+import { ClassGroupSelect } from "../../shared/ui/ClassGroupSelect";
 import { useUnsavedChangesDialog } from "../../shared/ui/UnsavedChangesDialog";
 import { buildTodaySlots, type TodaySlot } from "./todaySlots";
 import { trackAnalyticsEvent } from "../../shared/analytics/analytics";
+import { buildAllPresentDraft } from "./todayAttendance";
+import { isTodayDraft, type TodayDraft } from "./todayDraft";
+import { useRecoverableDraft } from "../../shared/hooks/useRecoverableDraft";
+import { DraftRecoveryNotice } from "../../shared/ui/DraftRecoveryNotice";
 
 const STATUS_LABELS: Record<AttendanceEntry["status"], string> = {
   present: "Presente",
@@ -108,6 +115,8 @@ function closestSlotKey(slots: TodaySlot[], date: string): string {
 }
 
 export function TodayPage() {
+  const dispatch = useAppDispatch();
+  const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const { formatName, compareFn } = useStudentDisplay();
   const unsavedChangesDialog = useUnsavedChangesDialog();
   const [searchParams] = useSearchParams();
@@ -116,7 +125,9 @@ export function TodayPage() {
     /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? requestedDate : toIsoDate(new Date())
   );
   const [selectedSlotKey, setSelectedSlotKey] = useState("");
+  const [loadedAttendanceKey, setLoadedAttendanceKey] = useState("");
   const deepLinkAppliedRef = useRef(false);
+  const appliedClassLinkRef = useRef("");
   const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
@@ -134,12 +145,13 @@ export function TodayPage() {
   const [attendanceDetailsDraft, setAttendanceDetailsDraft] = useState<Map<string, AttendanceDetailsDraft>>(new Map());
   const [generalCommentDraft, setGeneralCommentDraft] = useState("");
   const [studentCommentDraft, setStudentCommentDraft] = useState<Map<string, string>>(new Map());
-  const [editingNoteStudentId, setEditingNoteStudentId] = useState("");
-  const [editingWorkStudentId, setEditingWorkStudentId] = useState("");
+  const [editingStudentDetailsId, setEditingStudentDetailsId] = useState("");
+  const [bulkAttendanceUndo, setBulkAttendanceUndo] = useState<Map<string, AttendanceEntry["status"]> | null>(null);
   const [notice, setNotice] = useState("");
   const [isSavingAttendance, setIsSavingAttendance] = useState(false);
   const [isSavingWork, setIsSavingWork] = useState(false);
   const [exceptionalSessionMode, setExceptionalSessionMode] = useState<"adHoc" | "rescheduled" | null>(null);
+  const [isCreatingExceptionalSession, setIsCreatingExceptionalSession] = useState(false);
   const [exceptionalSessionDraft, setExceptionalSessionDraft] = useState<ExceptionalSessionDraft>({
     classId: "",
     subjectId: "",
@@ -193,7 +205,7 @@ export function TodayPage() {
     void loadMetadata();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const todaySlots = useMemo(
+  const allTodaySlots = useMemo(
     () =>
       buildTodaySlots({
         selectedDate,
@@ -207,6 +219,31 @@ export function TodayPage() {
     [classGroups, dailyClassRecords, scheduleDays, selectedDate, subjectCourseLinks, subjects, taskSessions]
   );
 
+  const todaySlots = useMemo(
+    () => selectedClassId ? allTodaySlots.filter((slot) => slot.classId === selectedClassId) : [],
+    [allTodaySlots, selectedClassId]
+  );
+
+  useEffect(() => {
+    if (classGroups.length === 0) return;
+    if (selectedClassId && classGroups.some((group) => group.id === selectedClassId)) return;
+    const requestedClassId = searchParams.get("classId") ?? "";
+    if (requestedClassId && classGroups.some((group) => group.id === requestedClassId)) return;
+    dispatch(setSelectedClass(classGroups[0].id));
+  }, [classGroups, dispatch, searchParams, selectedClassId]);
+
+  useEffect(() => {
+    const requestedClassId = searchParams.get("classId") ?? "";
+    if (
+      requestedClassId &&
+      appliedClassLinkRef.current !== requestedClassId &&
+      classGroups.some((group) => group.id === requestedClassId)
+    ) {
+      appliedClassLinkRef.current = requestedClassId;
+      dispatch(setSelectedClass(requestedClassId));
+    }
+  }, [classGroups, dispatch, searchParams, selectedClassId]);
+
   useEffect(() => {
     if (todaySlots.length === 0) {
       setSelectedSlotKey("");
@@ -214,6 +251,7 @@ export function TodayPage() {
     }
     if (!deepLinkAppliedRef.current) {
       const requestedClassId = searchParams.get("classId") ?? "";
+      if (requestedClassId && requestedClassId !== selectedClassId && classGroups.some((group) => group.id === requestedClassId)) return;
       const requestedSubjectId = searchParams.get("subjectId") ?? "";
       const requestedSlotId = searchParams.get("slotId") ?? "";
       const requestedSlot = todaySlots.find(
@@ -231,7 +269,7 @@ export function TodayPage() {
     if (!todaySlots.some((slot) => slot.key === selectedSlotKey)) {
       setSelectedSlotKey(closestSlotKey(todaySlots, selectedDate));
     }
-  }, [searchParams, selectedDate, selectedSlotKey, todaySlots]);
+  }, [classGroups, searchParams, selectedClassId, selectedDate, selectedSlotKey, todaySlots]);
 
   const selectedSlot = useMemo(
     () => todaySlots.find((slot) => slot.key === selectedSlotKey) ?? null,
@@ -268,13 +306,9 @@ export function TodayPage() {
     () => tasks.find((task) => task.id === selectedSession?.taskId) ?? null,
     [selectedSession?.taskId, tasks]
   );
-  const editingNoteStudent = useMemo(
-    () => students.find((student) => student.id === editingNoteStudentId) ?? null,
-    [editingNoteStudentId, students]
-  );
-  const editingWorkStudent = useMemo(
-    () => students.find((student) => student.id === editingWorkStudentId) ?? null,
-    [editingWorkStudentId, students]
+  const editingStudentDetails = useMemo(
+    () => students.find((student) => student.id === editingStudentDetailsId) ?? null,
+    [editingStudentDetailsId, students]
   );
 
   const attendanceByStudent = useMemo(
@@ -354,7 +388,9 @@ export function TodayPage() {
         .toArray();
       if (!active) return;
       setAttendanceEntries(rows);
+      setLoadedAttendanceKey(`${selectedDate}:${selectedSlot.key}`);
       setStatusDraft(new Map());
+      setBulkAttendanceUndo(null);
       setNoteDraft(new Map());
       setAttendanceDetailsDraft(new Map());
       setNotice("");
@@ -386,6 +422,7 @@ export function TodayPage() {
   }, [scopedDailyClassRecord, scopedStudentComments, scopedTaskSetting, selectedSession, selectedSlot, selectedTask]);
 
   const setStudentStatus = (studentId: string, status: AttendanceEntry["status"]): void => {
+    setBulkAttendanceUndo(null);
     const baseStatus = baseStatusByStudent.get(studentId) ?? "present";
     setStatusDraft((current) => {
       const next = new Map(current);
@@ -396,6 +433,19 @@ export function TodayPage() {
       }
       return next;
     });
+  };
+
+  const markAllStudentsPresent = (): void => {
+    setBulkAttendanceUndo(new Map(statusDraft));
+    setStatusDraft(buildAllPresentDraft(students.map((student) => student.id), baseStatusByStudent));
+    setNotice("Todo el grupo está marcado como presente. Puedes deshacer este cambio.");
+  };
+
+  const undoBulkAttendanceChange = (): void => {
+    if (!bulkAttendanceUndo) return;
+    setStatusDraft(new Map(bulkAttendanceUndo));
+    setBulkAttendanceUndo(null);
+    setNotice("Se ha restaurado la asistencia anterior.");
   };
 
   const setStudentNote = (studentId: string, note: string): void => {
@@ -419,14 +469,23 @@ export function TodayPage() {
     const existing = attendanceByStudent.get(studentId);
     setAttendanceDetailsDraft((current) => {
       const next = new Map(current);
-      const currentDraft = next.get(studentId) ?? {
+      const existingDraft: AttendanceDetailsDraft = {
         absenceJustified: Boolean(existing?.absenceJustified),
         lateMinutes: existing?.lateMinutes ? String(existing.lateMinutes) : "",
         earlyDepartureMinutes: existing?.earlyDepartureMinutes
           ? String(existing.earlyDepartureMinutes)
           : ""
       };
-      next.set(studentId, { ...currentDraft, ...patch });
+      const nextDraft = { ...(next.get(studentId) ?? existingDraft), ...patch };
+      if (
+        nextDraft.absenceJustified === existingDraft.absenceJustified &&
+        nextDraft.lateMinutes === existingDraft.lateMinutes &&
+        nextDraft.earlyDepartureMinutes === existingDraft.earlyDepartureMinutes
+      ) {
+        next.delete(studentId);
+      } else {
+        next.set(studentId, nextDraft);
+      }
       return next;
     });
   };
@@ -447,6 +506,7 @@ export function TodayPage() {
     if (!selectedSlot || students.length === 0) return false;
     setIsSavingAttendance(true);
     setIsSavingWork(true);
+    const savedSelectionContext = { selectedSlotKey, selectedDate };
     try {
       const now = new Date().toISOString();
       const attendanceRows: AttendanceEntry[] = students.map((student) => {
@@ -567,15 +627,24 @@ export function TodayPage() {
         db.dailyClassRecords.toArray(),
         db.taskSessions.toArray()
       ]);
+      const currentContext = selectionContextRef.current;
+      if (
+        currentContext.selectedSlotKey !== savedSelectionContext.selectedSlotKey ||
+        currentContext.selectedDate !== savedSelectionContext.selectedDate
+      ) {
+        return true;
+      }
       setAttendanceEntries(savedAttendance);
       setTaskDailySettings(settings);
       setTaskStudentComments(savedComments);
       setDailyClassRecords(savedDailyRecords);
       setTaskSessions(savedSessions);
       setStatusDraft(new Map());
+      setBulkAttendanceUndo(null);
       setNoteDraft(new Map());
       setAttendanceDetailsDraft(new Map());
       setNotice("Clase guardada: asistencia y registro están al día.");
+      classDraftRecovery.discard();
       trackAnalyticsEvent("class_saved");
       return true;
     } catch (error) {
@@ -614,7 +683,28 @@ export function TodayPage() {
     hasStudentCommentChanges
   );
   const hasUnsavedChanges = hasAttendanceChanges || hasWorkChanges;
+  const classDraftRecovery = useRecoverableDraft<TodayDraft>(
+    selectedSlot && loadedAttendanceKey === `${selectedDate}:${selectedSlot.key}`
+      ? `class:${selectedDate}:${selectedSlot.key}:${selectedSession?.id ?? "daily"}` : null,
+    { statuses: [...statusDraft], notes: [...noteDraft], details: [...attendanceDetailsDraft], generalComment: generalCommentDraft, studentComments: [...studentCommentDraft] },
+    hasUnsavedChanges, isTodayDraft,
+    (saved) => {
+      const validIds = new Set(students.map((student) => student.id));
+      setStatusDraft(new Map(saved.statuses.filter(([id]) => validIds.has(id))));
+      setNoteDraft(new Map(saved.notes.filter(([id]) => validIds.has(id))));
+      setAttendanceDetailsDraft(new Map(saved.details.filter(([id]) => validIds.has(id))));
+      setGeneralCommentDraft(saved.generalComment);
+      setStudentCommentDraft(new Map(saved.studentComments.filter(([id]) => validIds.has(id))));
+      setNotice("Borrador recuperado. Revisa y guarda la clase para confirmarlo.");
+    }
+  );
   useUnsavedChangesGuard(hasUnsavedChanges, "Hay cambios de asistencia o registro sin guardar en esta clase.");
+
+  const isSaving = isSavingAttendance || isSavingWork;
+  const selectionContextRef = useRef({ selectedSlotKey, selectedDate });
+  useEffect(() => {
+    selectionContextRef.current = { selectedSlotKey, selectedDate };
+  }, [selectedDate, selectedSlotKey]);
 
   const runWithContextGuard = async (action: () => void): Promise<void> => {
     if (!hasUnsavedChanges) {
@@ -634,7 +724,7 @@ export function TodayPage() {
   );
 
   const openAdHocSessionModal = (): void => {
-    const classId = selectedSlot?.classId ?? classGroups[0]?.id ?? "";
+    const classId = selectedSlot?.classId ?? selectedClassId ?? classGroups[0]?.id ?? "";
     const subjectId =
       selectedSlot?.subjectId ??
       subjectCourseLinks.find((link) => link.classId === classId)?.subjectId ??
@@ -664,8 +754,8 @@ export function TodayPage() {
   };
 
   const createExceptionalSession = async (): Promise<void> => {
+    if (!exceptionalSessionMode || isCreatingExceptionalSession) return;
     if (
-      !exceptionalSessionMode ||
       !exceptionalSessionDraft.classId ||
       !exceptionalSessionDraft.subjectId ||
       !/^\d{4}-\d{2}-\d{2}$/.test(exceptionalSessionDraft.date) ||
@@ -674,58 +764,66 @@ export function TodayPage() {
       setNotice("Revisa el grupo, la asignatura, la fecha y las horas de la sesión.");
       return;
     }
-    const now = new Date().toISOString();
-    const recordId = crypto.randomUUID();
-    const scheduleSlotId = `exception-${recordId}`;
-    const record: DailyClassRecord = {
-      id: recordId,
-      classId: exceptionalSessionDraft.classId,
-      subjectId: exceptionalSessionDraft.subjectId,
-      date: exceptionalSessionDraft.date,
-      scheduleSlotId,
-      sessionKind: exceptionalSessionMode,
-      sessionTitle:
-        exceptionalSessionDraft.title.trim() ||
-        (exceptionalSessionMode === "adHoc" ? "Sesión puntual" : "Clase reprogramada"),
-      startTime: exceptionalSessionDraft.startTime,
-      endTime: exceptionalSessionDraft.endTime,
-      originalDate:
-        exceptionalSessionMode === "rescheduled" ? selectedDate : undefined,
-      originalScheduleSlotId:
-        exceptionalSessionMode === "rescheduled" ? selectedSlot?.slotId : undefined,
-      generalComment: "",
-      studentComments: {},
-      createdAt: now,
-      updatedAt: now
-    };
+    setIsCreatingExceptionalSession(true);
+    try {
+      const now = new Date().toISOString();
+      const recordId = crypto.randomUUID();
+      const scheduleSlotId = `exception-${recordId}`;
+      const record: DailyClassRecord = {
+        id: recordId,
+        classId: exceptionalSessionDraft.classId,
+        subjectId: exceptionalSessionDraft.subjectId,
+        date: exceptionalSessionDraft.date,
+        scheduleSlotId,
+        sessionKind: exceptionalSessionMode,
+        sessionTitle:
+          exceptionalSessionDraft.title.trim() ||
+          (exceptionalSessionMode === "adHoc" ? "Sesión puntual" : "Clase reprogramada"),
+        startTime: exceptionalSessionDraft.startTime,
+        endTime: exceptionalSessionDraft.endTime,
+        originalDate:
+          exceptionalSessionMode === "rescheduled" ? selectedDate : undefined,
+        originalScheduleSlotId:
+          exceptionalSessionMode === "rescheduled" ? selectedSlot?.slotId : undefined,
+        generalComment: "",
+        studentComments: {},
+        createdAt: now,
+        updatedAt: now
+      };
 
-    await db.transaction("rw", db.dailyClassRecords, db.taskSessions, async () => {
-      await db.dailyClassRecords.add(record);
-      if (exceptionalSessionMode === "rescheduled" && selectedSession) {
-        await db.taskSessions.put({
-          ...selectedSession,
-          date: record.date,
-          scheduleSlotId: record.scheduleSlotId,
-          status: "moved"
-        });
-      }
-    });
-    const [savedRecords, savedSessions] = await Promise.all([
-      db.dailyClassRecords.toArray(),
-      db.taskSessions.toArray()
-    ]);
-    setDailyClassRecords(savedRecords);
-    setTaskSessions(savedSessions);
-    setExceptionalSessionMode(null);
-    setSelectedDate(record.date);
-    setSelectedSlotKey(
-      `${record.classId}:${record.subjectId}:${record.scheduleSlotId}`
-    );
-    setNotice(
-      exceptionalSessionMode === "adHoc"
-        ? "Sesión puntual creada."
-        : "Esta clase se ha reprogramado solo para la fecha elegida."
-    );
+      await db.transaction("rw", db.dailyClassRecords, db.taskSessions, async () => {
+        await db.dailyClassRecords.add(record);
+        if (exceptionalSessionMode === "rescheduled" && selectedSession) {
+          await db.taskSessions.put({
+            ...selectedSession,
+            date: record.date,
+            scheduleSlotId: record.scheduleSlotId,
+            status: "moved"
+          });
+        }
+      });
+      const [savedRecords, savedSessions] = await Promise.all([
+        db.dailyClassRecords.toArray(),
+        db.taskSessions.toArray()
+      ]);
+      setDailyClassRecords(savedRecords);
+      setTaskSessions(savedSessions);
+      setExceptionalSessionMode(null);
+      setSelectedDate(record.date);
+      setSelectedSlotKey(
+        `${record.classId}:${record.subjectId}:${record.scheduleSlotId}`
+      );
+      setNotice(
+        exceptionalSessionMode === "adHoc"
+          ? "Sesión puntual creada."
+          : "Esta clase se ha reprogramado solo para la fecha elegida."
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Error desconocido";
+      setNotice(`No se pudo crear la sesión: ${message}`);
+    } finally {
+      setIsCreatingExceptionalSession(false);
+    }
   };
 
   const planDetails = [
@@ -738,17 +836,17 @@ export function TodayPage() {
   const studentWorkCommentCount = Array.from(studentCommentDraft.values()).filter((comment) => comment.trim()).length;
   const generalRecordLength = generalCommentDraft.trim().length;
   const sessionStatus = selectedSession?.status ?? "planned";
-  const editingNoteValue = editingNoteStudent
-    ? noteDraft.get(editingNoteStudent.id) ?? attendanceByStudent.get(editingNoteStudent.id)?.note ?? ""
+  const editingNoteValue = editingStudentDetails
+    ? noteDraft.get(editingStudentDetails.id) ?? attendanceByStudent.get(editingStudentDetails.id)?.note ?? ""
     : "";
-  const editingAttendanceEntry = editingNoteStudent
-    ? attendanceByStudent.get(editingNoteStudent.id)
+  const editingAttendanceEntry = editingStudentDetails
+    ? attendanceByStudent.get(editingStudentDetails.id)
     : undefined;
-  const editingAttendanceStatus = editingNoteStudent
-    ? statusDraft.get(editingNoteStudent.id) ?? editingAttendanceEntry?.status ?? "present"
+  const editingAttendanceStatus = editingStudentDetails
+    ? statusDraft.get(editingStudentDetails.id) ?? editingAttendanceEntry?.status ?? "present"
     : "present";
-  const editingAttendanceDetails = editingNoteStudent
-    ? attendanceDetailsDraft.get(editingNoteStudent.id) ?? {
+  const editingAttendanceDetails = editingStudentDetails
+    ? attendanceDetailsDraft.get(editingStudentDetails.id) ?? {
         absenceJustified: Boolean(editingAttendanceEntry?.absenceJustified),
         lateMinutes: editingAttendanceEntry?.lateMinutes
           ? String(editingAttendanceEntry.lateMinutes)
@@ -758,7 +856,7 @@ export function TodayPage() {
           : ""
       }
     : { absenceJustified: false, lateMinutes: "", earlyDepartureMinutes: "" };
-  const editingWorkValue = editingWorkStudent ? studentCommentDraft.get(editingWorkStudent.id) ?? "" : "";
+  const editingWorkValue = editingStudentDetails ? studentCommentDraft.get(editingStudentDetails.id) ?? "" : "";
   const selectedSessionLabel = selectedSlot ? `${selectedSlot.className} · ${selectedSlot.subjectName}` : "";
   const todayDate = toIsoDate(new Date());
   const selectedDateLabel = formatDateLabel(selectedDate);
@@ -779,17 +877,23 @@ export function TodayPage() {
 
   return (
     <section className="module-card today-page" aria-labelledby="today-title">
+      <DraftRecoveryNotice {...classDraftRecovery} />
       <header className="today-header">
         <div>
           <h1 id="today-title">Hoy</h1>
           <p>Agenda, asistencia y registro rápido.</p>
         </div>
+      </header>
+
+      <div className="today-layout">
+        <aside className="courses-list-panel today-slot-rail" aria-label="Clases del día">
         <div className="today-header-controls">
           <div className="today-date-navigation" role="group" aria-label="Navegación por fecha">
             <button
               type="button"
               className="icon-btn today-date-step"
               aria-label="Día anterior"
+              disabled={isSaving}
               onClick={() => void runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, -1)))}
             >
               {"<"}
@@ -801,6 +905,7 @@ export function TodayPage() {
                 type="date"
                 aria-label="Seleccionar fecha"
                 value={selectedDate}
+                disabled={isSaving}
                 onChange={(event) => void runWithContextGuard(() => setSelectedDate(event.target.value))}
               />
             </label>
@@ -808,6 +913,7 @@ export function TodayPage() {
               type="button"
               className="icon-btn today-date-step"
               aria-label="Día siguiente"
+              disabled={isSaving}
               onClick={() => void runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, 1)))}
             >
               {">"}
@@ -815,30 +921,41 @@ export function TodayPage() {
             <button
               type="button"
               className="btn secondary today-date-today"
-              disabled={selectedDate === todayDate}
+              disabled={selectedDate === todayDate || isSaving}
               onClick={() => void runWithContextGuard(() => setSelectedDate(todayDate))}
             >
               Hoy
             </button>
           </div>
         </div>
-      </header>
-
-      <div className="today-layout">
-        <aside className="courses-list-panel today-slot-rail" aria-label="Clases del día">
-          <div className="courses-list-header">
-            <strong>Clases del día</strong>
-            <span className="inline-form tight">
-              <span className="pill">{todaySlots.length}</span>
-              <button
-                type="button"
-                className="btn secondary compact-link"
-                disabled={classGroups.length === 0 || subjectCourseLinks.length === 0}
-                onClick={() => void runWithContextGuard(openAdHocSessionModal)}
+          <ClassGroupSelect
+            groups={classGroups}
+            value={selectedClassId}
+            disabled={isSaving}
+            onChange={(classId) => runWithContextGuard(() => {
+              deepLinkAppliedRef.current = true;
+              dispatch(setSelectedClass(classId));
+            })}
+          />
+          <div className="context-sidebar-separator" aria-hidden="true" />
+          <div className="courses-list-header today-slot-header">
+            <div className="today-slot-heading">
+              <strong>Clases del día</strong>
+              <span
+                className="today-slot-count"
+                aria-label={`${todaySlots.length} ${todaySlots.length === 1 ? "clase" : "clases"}`}
               >
-                Añadir puntual
-              </button>
-            </span>
+                {todaySlots.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn secondary compact-link today-add-session"
+              disabled={classGroups.length === 0 || subjectCourseLinks.length === 0 || isSaving}
+              onClick={() => void runWithContextGuard(openAdHocSessionModal)}
+            >
+              Añadir clase puntual
+            </button>
           </div>
           {todaySlots.length > 0 ? (
             <div className="courses-list section-tabs today-slot-list" role="group" aria-label="Clases del día">
@@ -848,14 +965,21 @@ export function TodayPage() {
                   type="button"
                   className={`section-tab ${slot.key === selectedSlotKey ? "active" : ""}`}
                   aria-pressed={slot.key === selectedSlotKey}
+                  disabled={isSaving}
                   onClick={() => void runWithContextGuard(() => setSelectedSlotKey(slot.key))}
                 >
-                  <span>{slot.subjectName}</span>
-                  <small>{slot.className}</small>
-                  <small>{slot.startTime} - {slot.endTime}</small>
-                  {slot.kind !== "recurring" ? (
-                    <small>{slot.kind === "adHoc" ? "Sesión puntual" : "Reprogramada"}</small>
-                  ) : null}
+                  <span className="today-slot-meta">
+                    <span className="today-slot-time">
+                      {slot.startTime}<span aria-hidden="true">–</span>{slot.endTime}
+                    </span>
+                    {slot.kind !== "recurring" ? (
+                      <small className="today-slot-kind">
+                        {slot.kind === "adHoc" ? "Puntual" : "Reprogramada"}
+                      </small>
+                    ) : null}
+                  </span>
+                  <span className="today-slot-subject">{slot.subjectName}</span>
+                  <small className="today-slot-class">{slot.className}</small>
                 </button>
               ))}
             </div>
@@ -967,8 +1091,8 @@ export function TodayPage() {
                 <div id="today-students" className="today-panel students-panel">
                   <div className="today-panel-heading">
                     <div>
-                      <h2>Alumnos en clase</h2>
-                      <p>{students.length} alumnos · asistencia y trabajo</p>
+                      <h2>Alumnado en clase</h2>
+                      <p>{students.length} alumnos · registra solo retrasos y ausencias</p>
                     </div>
                     <div className="today-attendance-summary" aria-label="Resumen de asistencia">
                       <span>{attendanceSummary.present} presentes</span>
@@ -976,19 +1100,31 @@ export function TodayPage() {
                       <span>{attendanceSummary.absent} ausentes</span>
                     </div>
                   </div>
-                  <div className="today-status-legend" aria-label="Leyenda de asistencia">
-                    <span><strong>P</strong> Presente</span>
-                    <span><strong>R</strong> Retraso</span>
-                    <span><strong>A</strong> Ausente</span>
+                  <div className="today-attendance-toolbar">
+                    <p>Todo el grupo parte como presente. Marca únicamente las excepciones.</p>
+                    <div>
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        disabled={students.length === 0 || attendanceSummary.present === students.length}
+                        onClick={markAllStudentsPresent}
+                      >
+                        Marcar todos presentes
+                      </button>
+                      {bulkAttendanceUndo ? (
+                        <button type="button" className="btn secondary" onClick={undoBulkAttendanceChange}>
+                          Deshacer
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
 
                   <div className="today-student-list">
                     {students.length > 0 ? (
-                      <div className="today-student-row today-student-row-header with-work" aria-hidden="true">
+                      <div className="today-student-row today-student-row-header exception-flow" aria-hidden="true">
                         <span>Alumno</span>
                         <span>Asistencia</span>
-                        <span>Observación</span>
-                        <span>Trabajo</span>
+                        <span>Detalles</span>
                       </div>
                     ) : null}
                     {students.map((student) => {
@@ -1006,12 +1142,22 @@ export function TodayPage() {
                       const hasAttendanceDetail =
                         (currentStatus === "absent" && currentDetails.absenceJustified) ||
                         (currentStatus === "late" && Boolean(currentDetails.lateMinutes)) ||
-                        Boolean(currentDetails.earlyDepartureMinutes);
+                         Boolean(currentDetails.earlyDepartureMinutes);
+                      const hasStudentDetails = Boolean(
+                        currentNote.trim() || currentWorkComment.trim() || hasAttendanceDetail
+                      );
+                      const availableStatuses: AttendanceEntry["status"][] = currentStatus === "present"
+                        ? ["late", "absent"]
+                        : ["present", "late", "absent"];
                       return (
-                        <div key={student.id} className="today-student-row with-work">
+                        <div key={student.id} className="today-student-row exception-flow">
                           <strong>{formatName(student)}</strong>
-                          <div className="today-status-control" aria-label={`Asistencia de ${formatName(student)}`}>
-                            {(Object.keys(STATUS_LABELS) as AttendanceEntry["status"][]).map((status) => (
+                          <div className="today-exception-control">
+                            <span className={`today-current-status ${currentStatus}`}>
+                              {STATUS_LABELS[currentStatus]}
+                            </span>
+                            <div className="today-status-control" aria-label={`Cambiar asistencia de ${formatName(student)}`}>
+                              {availableStatuses.map((status) => (
                               <button
                                 key={status}
                                 type="button"
@@ -1022,33 +1168,16 @@ export function TodayPage() {
                               >
                                 <span aria-hidden="true">{STATUS_SHORT_LABELS[status]}</span>
                               </button>
-                            ))}
+                              ))}
+                            </div>
                           </div>
                           <button
                             type="button"
-                            className={`today-note-button ${currentNote.trim() || hasAttendanceDetail ? "filled" : ""}`}
-                            aria-label={`Editar observación de asistencia de ${formatName(student)}`}
-                            onClick={() => setEditingNoteStudentId(student.id)}
+                            className={`today-note-button details ${hasStudentDetails ? "filled" : ""}`}
+                            aria-label={`Editar detalles de asistencia y trabajo de ${formatName(student)}`}
+                            onClick={() => setEditingStudentDetailsId(student.id)}
                           >
-                            <span>
-                              {currentStatus === "absent" && currentDetails.absenceJustified
-                                ? "Justificada"
-                                : currentStatus === "late" && currentDetails.lateMinutes
-                                  ? `${currentDetails.lateMinutes} min`
-                                  : currentDetails.earlyDepartureMinutes
-                                    ? `Sale ${currentDetails.earlyDepartureMinutes} min`
-                                    : currentNote.trim()
-                                      ? "Con obs."
-                                      : "Obs."}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`today-note-button work ${currentWorkComment.trim() ? "filled" : ""}`}
-                            aria-label={`Editar comentario de trabajo de ${formatName(student)}`}
-                            onClick={() => setEditingWorkStudentId(student.id)}
-                          >
-                            <span>{currentWorkComment.trim() ? "Con trabajo" : "Trabajo"}</span>
+                            <span>{hasStudentDetails ? "Con detalles" : "Añadir detalles"}</span>
                           </button>
                         </div>
                       );
@@ -1101,7 +1230,7 @@ export function TodayPage() {
         onClose={() => setExceptionalSessionMode(null)}
       >
         <div className="detail-grid">
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Grupo</span>
             <select
               className="input"
@@ -1126,7 +1255,7 @@ export function TodayPage() {
               ))}
             </select>
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Asignatura</span>
             <select
               className="input"
@@ -1147,7 +1276,7 @@ export function TodayPage() {
               ))}
             </select>
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Fecha</span>
             <input
               className="input"
@@ -1161,7 +1290,7 @@ export function TodayPage() {
               }
             />
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Descripción</span>
             <input
               className="input"
@@ -1175,7 +1304,7 @@ export function TodayPage() {
               }
             />
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Inicio</span>
             <input
               className="input"
@@ -1189,7 +1318,7 @@ export function TodayPage() {
               }
             />
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Fin</span>
             <input
               className="input"
@@ -1213,6 +1342,7 @@ export function TodayPage() {
             type="button"
             className="btn primary"
             disabled={
+              isCreatingExceptionalSession ||
               !exceptionalSessionDraft.classId ||
               !exceptionalSessionDraft.subjectId ||
               !exceptionalSessionDraft.date ||
@@ -1228,133 +1358,126 @@ export function TodayPage() {
       </Modal>
 
       <Modal
-        open={Boolean(editingNoteStudent)}
-        title={editingNoteStudent ? `Observación · ${formatName(editingNoteStudent)}` : "Observación"}
-        subtitle={selectedSessionLabel}
-        onClose={() => setEditingNoteStudentId("")}
-      >
-        {editingNoteStudent ? (
-          <div className="today-note-modal">
-            <div className="today-note-modal-summary">
-              <span className="today-note-kind attendance">Asistencia</span>
-              <span>{editingNoteValue.trim() ? "Con observación" : "Sin observación"}</span>
-            </div>
-            {editingAttendanceStatus === "absent" ? (
-              <label className="chip-toggle">
-                <input
-                  type="checkbox"
-                  checked={editingAttendanceDetails.absenceJustified}
-                  onChange={(event) =>
-                    setStudentAttendanceDetails(editingNoteStudent.id, {
-                      absenceJustified: event.target.checked
-                    })
-                  }
-                />
-                <span>Ausencia justificada</span>
-              </label>
-            ) : null}
-            {editingAttendanceStatus === "late" ? (
-              <label className="field">
-                <span>Minutos de retraso</span>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={720}
-                  inputMode="numeric"
-                  value={editingAttendanceDetails.lateMinutes}
-                  onChange={(event) =>
-                    setStudentAttendanceDetails(editingNoteStudent.id, {
-                      lateMinutes: event.target.value
-                    })
-                  }
-                />
-              </label>
-            ) : null}
-            {editingAttendanceStatus !== "absent" ? (
-              <label className="field">
-                <span>Salida anticipada (minutos)</span>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={720}
-                  inputMode="numeric"
-                  placeholder="Dejar vacío si no salió antes"
-                  value={editingAttendanceDetails.earlyDepartureMinutes}
-                  onChange={(event) =>
-                    setStudentAttendanceDetails(editingNoteStudent.id, {
-                      earlyDepartureMinutes: event.target.value
-                    })
-                  }
-                />
-              </label>
-            ) : null}
-            <label className="field">
-              <span>Observación de asistencia</span>
-              <textarea
-                className="input textarea"
-                value={editingNoteValue}
-                onChange={(event) => setStudentNote(editingNoteStudent.id, event.target.value)}
-                placeholder="Retraso justificado, sale antes, comentario breve..."
-              />
-            </label>
-            <FeedbackCommentPicker
-              category="attendance"
-              value={editingNoteValue}
-              onChange={(value) => setStudentNote(editingNoteStudent.id, value)}
-            />
-            <div className="today-note-modal-meta">
-              <span>{editingNoteValue.trim().length} caracteres</span>
-              <span>Quedará pendiente hasta guardar la clase.</span>
-            </div>
-            <div className="today-modal-actions">
-              <button type="button" className="btn secondary" onClick={() => setStudentNote(editingNoteStudent.id, "")}>
-                Limpiar
-              </button>
-              <button type="button" className="btn primary" onClick={() => setEditingNoteStudentId("")}>
-                Aplicar al borrador
-              </button>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
-
-      <Modal
-        open={Boolean(editingWorkStudent)}
-        title={editingWorkStudent ? `Trabajo · ${formatName(editingWorkStudent)}` : "Trabajo"}
+        open={Boolean(editingStudentDetails)}
+        title={editingStudentDetails ? `Detalles · ${formatName(editingStudentDetails)}` : "Detalles del alumno"}
         subtitle={selectedTask ? `${selectedSessionLabel} · ${selectedTask.title}` : selectedSessionLabel}
-        onClose={() => setEditingWorkStudentId("")}
+        onClose={() => setEditingStudentDetailsId("")}
       >
-        {editingWorkStudent ? (
+        {editingStudentDetails ? (
           <div className="today-note-modal">
-            <div className="today-note-modal-summary">
-              <span className="today-note-kind work">Trabajo</span>
-              <span>{editingWorkValue.trim() ? "Con comentario" : "Sin comentario"}</span>
-            </div>
-            <label className="field">
-              <span>Comentario de trabajo en clase</span>
-              <textarea
-                className="input textarea"
-                value={editingWorkValue}
-                onChange={(event) => setStudentWorkComment(editingWorkStudent.id, event.target.value)}
-                placeholder="No termina, participa bien, necesita apoyo, entrega pendiente..."
+            <section className="today-detail-group" aria-labelledby="today-attendance-detail-title">
+              <div className="today-note-modal-summary">
+                <h3 id="today-attendance-detail-title">Asistencia</h3>
+                <span>{STATUS_LABELS[editingAttendanceStatus]}</span>
+              </div>
+              {editingAttendanceStatus === "absent" ? (
+                <label className="chip-toggle">
+                  <input
+                    type="checkbox"
+                    checked={editingAttendanceDetails.absenceJustified}
+                    onChange={(event) =>
+                      setStudentAttendanceDetails(editingStudentDetails.id, {
+                        absenceJustified: event.target.checked
+                      })
+                    }
+                  />
+                  <span>Ausencia justificada</span>
+                </label>
+              ) : null}
+              {editingAttendanceStatus === "late" ? (
+                <label className="field compact-field">
+                  <span>Minutos de retraso</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    max={720}
+                    inputMode="numeric"
+                    value={editingAttendanceDetails.lateMinutes}
+                    onChange={(event) =>
+                      setStudentAttendanceDetails(editingStudentDetails.id, {
+                        lateMinutes: event.target.value
+                      })
+                    }
+                  />
+                </label>
+              ) : null}
+              {editingAttendanceStatus !== "absent" ? (
+                <label className="field compact-field">
+                  <span>Salida anticipada (minutos)</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    max={720}
+                    inputMode="numeric"
+                    placeholder="Dejar vacío si no salió antes"
+                    value={editingAttendanceDetails.earlyDepartureMinutes}
+                    onChange={(event) =>
+                      setStudentAttendanceDetails(editingStudentDetails.id, {
+                        earlyDepartureMinutes: event.target.value
+                      })
+                    }
+                  />
+                </label>
+              ) : null}
+              <label className="field">
+                <span>Observación de asistencia</span>
+                <textarea
+                  className="input textarea"
+                  value={editingNoteValue}
+                  onChange={(event) => setStudentNote(editingStudentDetails.id, event.target.value)}
+                  placeholder="Retraso justificado, salida anticipada o comentario breve..."
+                />
+              </label>
+              <FeedbackCommentPicker
+                category="attendance"
+                value={editingNoteValue}
+                onChange={(value) => setStudentNote(editingStudentDetails.id, value)}
               />
-            </label>
-            <FeedbackCommentPicker
-              category="work"
-              value={editingWorkValue}
-              onChange={(value) => setStudentWorkComment(editingWorkStudent.id, value)}
-            />
+            </section>
+
+            <section className="today-detail-group" aria-labelledby="today-work-detail-title">
+              <div className="today-note-modal-summary">
+                <h3 id="today-work-detail-title">Trabajo en clase</h3>
+                <span>{editingWorkValue.trim() ? "Con comentario" : "Sin comentario"}</span>
+              </div>
+              <label className="field">
+                <span>Comentario de trabajo</span>
+                <textarea
+                  className="input textarea"
+                  value={editingWorkValue}
+                  onChange={(event) => setStudentWorkComment(editingStudentDetails.id, event.target.value)}
+                  placeholder="Participación, apoyo necesario o entrega pendiente..."
+                />
+              </label>
+              <FeedbackCommentPicker
+                category="work"
+                value={editingWorkValue}
+                onChange={(value) => setStudentWorkComment(editingStudentDetails.id, value)}
+              />
+            </section>
             <div className="today-note-modal-meta">
-              <span>{editingWorkValue.trim().length} caracteres</span>
+              <span>{editingNoteValue.trim().length + editingWorkValue.trim().length} caracteres</span>
               <span>Quedará pendiente hasta guardar la clase.</span>
             </div>
             <div className="today-modal-actions">
-              <button type="button" className="btn secondary" onClick={() => setStudentWorkComment(editingWorkStudent.id, "")}>
-                Limpiar
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => {
+                  setStudentNote(editingStudentDetails.id, "");
+                  setStudentWorkComment(editingStudentDetails.id, "");
+                  setStudentAttendanceDetails(editingStudentDetails.id, {
+                    absenceJustified: false,
+                    lateMinutes: "",
+                    earlyDepartureMinutes: ""
+                  });
+                }}
+              >
+                Limpiar detalles
               </button>
-              <button type="button" className="btn primary" onClick={() => setEditingWorkStudentId("")}>
+              <button type="button" className="btn primary" onClick={() => setEditingStudentDetailsId("")}>
                 Aplicar al borrador
               </button>
             </div>

@@ -3,13 +3,13 @@ import { useManagement } from "./ManagementContext";
 import { useAppSelector } from "../../app/hooks";
 import { db } from "../../shared/db/database";
 import type { ChecklistItem, ChecklistTemplate, RubricCriterion, RubricTemplate, TaskGradebookConfig } from "../../shared/db/types";
-import { generateAiText } from "../../shared/ai/extensionRuntime";
+import { generateAiText, getAiErrorMessage } from "../../shared/ai/runtime";
 import { ContextSidebarTabs } from "../../shared/ui/ContextSidebarTabs";
 import { IconButton } from "../../shared/ui/IconButton";
 import { Modal } from "../../shared/ui/Modal";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
 import { ResourceManager } from "../../shared/resources/ResourceManager";
-import { useSearchParams } from "react-router-dom";
+import { NavLink, useSearchParams } from "react-router-dom";
 import {
   defaultChecklist,
   defaultRubric,
@@ -59,7 +59,6 @@ export function ManagementTasksPage() {
   const [checklistDescription, setChecklistDescription] = useState("");
   const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [instrumentDirty, setInstrumentDirty] = useState(false);
-  useUnsavedChangesGuard(taskDirty || instrumentDirty, "Hay cambios de la tarea o su instrumento sin guardar.");
   const [evaluationDataCount, setEvaluationDataCount] = useState(0);
   const [aiInstrumentKind, setAiInstrumentKind] = useState<InstrumentKind>("rubric");
   const [aiPrompt, setAiPrompt] = useState("");
@@ -266,7 +265,7 @@ export function ManagementTasksPage() {
     setEvaluationDataCount(count);
     if (activeInstrumentKind && count > 0) {
       setNotice(
-        `No se puede cambiar el metodo de evaluacion porque tiene ${count} registros. Borra primero los datos de evaluacion.`
+        `No se puede cambiar el método de evaluación porque tiene ${count} registros. Borra primero los datos de evaluación.`
       );
       return false;
     }
@@ -518,11 +517,11 @@ export function ManagementTasksPage() {
     const count = await getEvaluationDataCount(currentTaskConfig);
     setEvaluationDataCount(count);
     if (count === 0) {
-      setNotice("No hay datos de evaluacion que borrar.");
+      setNotice("No hay datos de evaluación que borrar.");
       return;
     }
     const confirmed = window.confirm(
-      `Se borraran ${count} registros de evaluacion de esta tarea. Esta accion no se puede deshacer.`
+      `Se borrarán ${count} registros de evaluación de esta tarea. Esta acción no se puede deshacer.`
     );
     if (!confirmed) {
       return;
@@ -562,7 +561,7 @@ export function ManagementTasksPage() {
     );
 
     setEvaluationDataCount(0);
-    setNotice("Datos de evaluacion borrados. Ahora puedes cambiar o eliminar el metodo.");
+    setNotice("Datos de evaluación borrados. Ahora puedes cambiar o eliminar el método.");
   };
 
   const deleteAssignedRubric = async (): Promise<void> => {
@@ -614,7 +613,7 @@ export function ManagementTasksPage() {
     setEvaluationDataCount(count);
     if (count > 0) {
       setNotice(
-        `No se puede eliminar el metodo de evaluacion porque tiene ${count} registros. Borra primero los datos de evaluacion.`
+        `No se puede eliminar el método de evaluación porque tiene ${count} registros. Borra primero los datos de evaluación.`
       );
       return;
     }
@@ -651,7 +650,7 @@ export function ManagementTasksPage() {
     setChecklistDescription("");
     setChecklistItems([]);
     setEvaluationDataCount(0);
-    setNotice("Metodo de evaluacion eliminado.");
+    setNotice("Método de evaluación eliminado.");
     await loadInstrumentData();
   };
 
@@ -740,6 +739,8 @@ export function ManagementTasksPage() {
     checklistDescription,
     checklistItems
   ]);
+
+  useUnsavedChangesGuard(taskDirty || instrumentDirty, "Hay cambios de la tarea o su instrumento sin guardar.", saveIfDirty);
 
   const openAiInstrumentModal = (kind: InstrumentKind): void => {
     const basePrompt = [
@@ -923,7 +924,7 @@ export function ManagementTasksPage() {
       }
       setIsAIModalOpen(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Error desconocido";
+      const message = getAiErrorMessage(error);
       setAiStatus(`No se pudo generar (${message}).`);
     } finally {
       setIsGeneratingAI(false);
@@ -986,6 +987,7 @@ export function ManagementTasksPage() {
             <IconButton
               icon="add"
               label="Crear tarea"
+              showLabel
               disabled={!selectedSubjectId}
               onClick={async () => {
                 if (!selectedSubjectId) {
@@ -1008,7 +1010,7 @@ export function ManagementTasksPage() {
 
           {selectedSubjectId && reusableTasks.length > 0 ? (
             <div className="sidebar-reuse-panel">
-              <label className="detail-field">
+              <label className="detail-field compact-field">
                 <span>Reutilizar tarea existente</span>
                 <select
                   className="input"
@@ -1052,7 +1054,7 @@ export function ManagementTasksPage() {
                     }}
                   >
                     <span>{task.title || "Sin título"}</span>
-                    <small>{unitName} · {task.sessionCount ?? 1} sesiones</small>
+                    <small>{unitName} · {task.sessionCount ?? 1} {(task.sessionCount ?? 1) === 1 ? "sesión" : "sesiones"}</small>
                   </button>
                   <IconButton
                     icon="delete"
@@ -1068,7 +1070,7 @@ export function ManagementTasksPage() {
             }) : null}
             {selectedSubjectId && tasksForUnitFilter.length === 0 && (
               <p className="empty-state">
-                {tasksForSubject.length === 0 ? "No hay tareas. Crea una con el botón +." : "No hay tareas en esta sección."}
+                {tasksForSubject.length === 0 ? "No hay tareas. Usa Crear tarea para preparar la primera." : "No hay tareas en esta sección."}
               </p>
             )}
           </div>
@@ -1079,13 +1081,15 @@ export function ManagementTasksPage() {
             <>
               <div className="course-detail-header">
                 <h2>Ficha de tarea</h2>
+                <span role="status" className="hint">{taskDirty ? "Cambios pendientes de guardar" : instrumentDirty ? "Instrumento pendiente de guardar" : "Guardado"}</span>
               </div>
 
               <section className="detail-section">
                 <div className="detail-grid">
-                  <div className="detail-field full">
-                    <label>Título</label>
+                  <div className="detail-field full compact-field">
+                    <label htmlFor="task-title">Título</label>
                     <input
+                      id="task-title"
                       className="input"
                       placeholder="Título de la tarea"
                       value={detailTitle}
@@ -1094,8 +1098,9 @@ export function ManagementTasksPage() {
                   </div>
 
                   <div className="detail-field full">
-                    <label>Descripción</label>
+                    <label htmlFor="task-description">Descripción</label>
                     <textarea
+                      id="task-description"
                       className="input"
                       rows={3}
                       placeholder="Descripción o instrucciones"
@@ -1114,9 +1119,10 @@ export function ManagementTasksPage() {
                     </div>
                   </div>
 
-                  <div className="detail-field">
-                    <label>Sesiones</label>
+                  <div className="detail-field compact-field">
+                    <label htmlFor="task-session-count">Sesiones</label>
                     <input
+                      id="task-session-count"
                       className="input"
                       type="number"
                       min={1}
@@ -1130,9 +1136,10 @@ export function ManagementTasksPage() {
                   </div>
 
                   <div className="detail-field">
-                    <label>Incluir en cuaderno</label>
+                    <label htmlFor="task-send-to-gradebook">Incluir en cuaderno</label>
                     <label className="chip-toggle">
                       <input
+                        id="task-send-to-gradebook"
                         type="checkbox"
                         checked={detailSendToGradebook}
                         onChange={(e) => { setDetailSendToGradebook(e.target.checked); setTaskDirty(true); }}
@@ -1159,7 +1166,7 @@ export function ManagementTasksPage() {
                             ? "Nota directa asignada a esta tarea."
                             : "Sin instrumento de evaluación asignado."}
                       {evaluationDataCount > 0
-                        ? ` Tiene ${evaluationDataCount} registros de evaluacion.`
+                        ? ` Tiene ${evaluationDataCount} registros de evaluación.`
                         : ""}
                     </p>
                   </div>
@@ -1168,6 +1175,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="rubric"
                         label="Crear rúbrica"
+                        showLabel
                         className="instrument-rubric"
                         onClick={() => void createTaskRubric()}
                       />
@@ -1176,6 +1184,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="checklist"
                         label="Crear lista de cotejo"
+                        showLabel
                         className="instrument-checklist"
                         onClick={() => void createTaskChecklist()}
                       />
@@ -1184,6 +1193,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="assign"
                         label="Usar nota directa"
+                        showLabel
                         onClick={() => void assignDirectGrade()}
                       />
                     ) : null}
@@ -1191,6 +1201,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="ai"
                         label="Generar rúbrica con IA"
+                        showLabel
                         className="instrument-rubric"
                         onClick={() => openAiInstrumentModal("rubric")}
                       />
@@ -1199,6 +1210,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="ai"
                         label="Generar lista de cotejo con IA"
+                        showLabel
                         className="instrument-checklist"
                         onClick={() => openAiInstrumentModal("checklist")}
                       />
@@ -1207,6 +1219,7 @@ export function ManagementTasksPage() {
                       <IconButton
                         icon="save"
                         label="Guardar instrumento"
+                        showLabel
                         className="save-attention"
                         onClick={() => void persistInstrument()}
                       />
@@ -1214,7 +1227,7 @@ export function ManagementTasksPage() {
                     {showDeleteEvaluationDataButton ? (
                       <IconButton
                         icon="remove"
-                        label="Borrar datos de evaluacion"
+                        label="Borrar datos de evaluación"
                         className="danger"
                         onClick={() => void deleteEvaluationData()}
                       />
@@ -1222,7 +1235,7 @@ export function ManagementTasksPage() {
                     {showDeleteInstrumentButton ? (
                       <IconButton
                         icon="delete"
-                        label="Eliminar metodo de evaluacion"
+                        label="Eliminar método de evaluación"
                         className="danger"
                         onClick={() => void deleteAssignedInstrument()}
                       />
@@ -1236,7 +1249,7 @@ export function ManagementTasksPage() {
 
                 {canChangeEvaluationMethod && (rubricTemplates.length > 0 || checklistTemplates.length > 0) ? (
                   <div className="instrument-reuse-panel">
-                    <label className="detail-field">
+                    <label className="detail-field compact-field">
                       <span>Copiar instrumento existente</span>
                       <select
                         className="input"
@@ -1274,7 +1287,7 @@ export function ManagementTasksPage() {
                 {selectedRubricTemplate ? (
                   <div className="planner-list">
                     <div className="detail-grid">
-                      <div className="detail-field full">
+                      <div className="detail-field full compact-field">
                     <label>Nombre de la rúbrica</label>
                         <input
                           className="input"
@@ -1436,7 +1449,7 @@ export function ManagementTasksPage() {
                 {selectedChecklistTemplate ? (
                   <div className="planner-list">
                     <div className="detail-grid">
-                      <div className="detail-field full">
+                      <div className="detail-field full compact-field">
                         <label>Nombre de la lista</label>
                         <input
                           className="input"
@@ -1537,6 +1550,9 @@ export function ManagementTasksPage() {
         </div>
         {aiStatus ? <p className="hint">{aiStatus}</p> : null}
         <div className="actions-cell">
+          <NavLink className="btn secondary" to="/config/ai" onClick={() => setIsAIModalOpen(false)}>
+            Configurar IA
+          </NavLink>
           <button
             type="button"
             className="btn secondary"

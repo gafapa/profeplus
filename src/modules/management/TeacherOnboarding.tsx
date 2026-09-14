@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { OnboardingChecklistItem } from "../../shared/onboarding/checklist";
 import {
   findCurrentOnboardingStep,
@@ -10,7 +10,7 @@ import {
 } from "../../shared/onboarding/state";
 import { Modal } from "../../shared/ui/Modal";
 
-type GuideView = "welcome" | "step" | "complete";
+type GuideView = "welcome" | "step";
 
 type TeacherOnboardingProps = {
   items: OnboardingChecklistItem[];
@@ -30,27 +30,20 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
   const [guideView, setGuideView] = useState<GuideView>("welcome");
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [initialized, setInitialized] = useState(false);
-  const previousCompletedCountRef = useRef(0);
 
   const completedCount = items.filter((item) => item.complete).length;
-  const remainingCount = items.length - completedCount;
   const isComplete = completedCount === items.length;
-  const completionPercent = Math.round((completedCount / items.length) * 100);
   const currentStep = useMemo(
     () => findCurrentOnboardingStep(items, persistedState?.currentStepId),
     [items, persistedState?.currentStepId]
   );
-  const currentStepNumber = currentStep
-    ? items.findIndex((item) => item.id === currentStep.id) + 1
-    : 1;
-
   const persist = (state: OnboardingState): void => {
     setPersistedState(state);
     writeOnboardingState(state, getBrowserStorage());
   };
 
   useEffect(() => {
-    if (!isReady || initialized) {
+    if (!isReady || (initialized && searchParams.get("onboarding") !== "1")) {
       return;
     }
 
@@ -68,12 +61,9 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
     } else if (explicitlyRequested) {
       setGuideView(persistedState?.status === "active" ? "step" : "welcome");
       setIsGuideOpen(true);
-    } else if (!persistedState && completedCount === 0) {
-      setGuideView("welcome");
-      setIsGuideOpen(true);
+
     }
 
-    previousCompletedCountRef.current = completedCount;
     setInitialized(true);
   }, [
     completedCount,
@@ -84,6 +74,13 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
     searchParams,
     setSearchParams
   ]);
+
+  useEffect(() => {
+    if (isReady && isComplete && persistedState?.status !== "completed") {
+      persist({ version: ONBOARDING_VERSION, status: "completed" });
+      setIsGuideOpen(false);
+    }
+  }, [isReady, isComplete, persistedState]);
 
   useEffect(() => {
     if (!initialized || !currentStep || persistedState?.status !== "active") {
@@ -98,64 +95,7 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
     }
   }, [currentStep, initialized, persistedState]);
 
-  useEffect(() => {
-    if (!initialized) {
-      return;
-    }
-
-    const justFinished =
-      isComplete &&
-      previousCompletedCountRef.current < items.length &&
-      persistedState?.status === "active";
-
-    if (justFinished) {
-      persist({ version: ONBOARDING_VERSION, status: "completed" });
-      setGuideView("complete");
-      setIsGuideOpen(true);
-    }
-    previousCompletedCountRef.current = completedCount;
-  }, [completedCount, initialized, isComplete, items.length, persistedState?.status]);
-
-  if (!isReady || isComplete) {
-    return (
-      <Modal
-        open={isGuideOpen && guideView === "complete"}
-        title="Todo listo para tu primera clase"
-        subtitle="La configuración esencial de ProfePlus está completa."
-        panelClassName="teacher-onboarding-modal"
-        onClose={() => setIsGuideOpen(false)}
-      >
-        <div className="onboarding-finish">
-          <div className="onboarding-finish-mark" aria-hidden="true">
-            ✓
-          </div>
-          <p>
-            Ya puedes abrir <strong>Hoy</strong>: aparecerán las clases de tu horario y
-            tendrás preparados el alumnado y las asignaturas para registrar el día.
-          </p>
-          <div className="onboarding-modal-actions">
-            <button
-              type="button"
-              className="btn secondary"
-              onClick={() => setIsGuideOpen(false)}
-            >
-              Seguir en Gestión
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                setIsGuideOpen(false);
-                navigate("/today");
-              }}
-            >
-              Abrir Hoy
-            </button>
-          </div>
-        </div>
-      </Modal>
-    );
-  }
+  if (!isReady || isComplete) return null;
 
   const openCurrentStep = (): void => {
     setGuideView(currentStep ? "step" : "welcome");
@@ -193,152 +133,15 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
     navigate(item.route);
   };
 
-  const compact = persistedState?.status !== "active";
-
   return (
     <>
-      <aside
-        className={`onboarding-coach${compact ? " compact" : ""}`}
-        aria-labelledby="onboarding-coach-title"
-      >
-        {compact ? (
-          <>
-            <div className="onboarding-compact-main">
-              <div>
-                <span className="onboarding-eyebrow">Configuración inicial</span>
-                <h2 id="onboarding-coach-title">
-                  {currentStep
-                    ? `${completedCount === 0 ? "Empieza por" : "Continúa con"} ${currentStep.shortLabel.toLocaleLowerCase("es")}`
-                    : "Revisa los pasos pendientes"}
-                </h2>
-                <p className="onboarding-compact-copy">
-                  {remainingCount} {remainingCount === 1 ? "paso pendiente" : "pasos pendientes"}
-                  .
-                </p>
-              </div>
-            </div>
-
-            <div className="onboarding-compact-progress">
-              <div className="onboarding-progress-meta">
-                <span>Tu avance</span>
-                <strong>
-                  {completedCount} de {items.length}
-                </strong>
-              </div>
-              <div
-                className="onboarding-progress-track"
-                role="progressbar"
-                aria-label="Progreso de la configuración inicial"
-                aria-valuemin={0}
-                aria-valuemax={items.length}
-                aria-valuenow={completedCount}
-                aria-valuetext={`${completedCount} de ${items.length} pasos completados`}
-              >
-                <span style={{ width: `${completionPercent}%` }} />
-              </div>
-            </div>
-
-            <div className="onboarding-compact-actions">
-              <button type="button" className="onboarding-text-action" onClick={openCurrentStep}>
-                Ver los pasos
-              </button>
-              <button
-                type="button"
-                className="btn"
-                aria-label={
-                  currentStep
-                    ? `${completedCount === 0 ? "Configurar" : "Continuar"}: ${currentStep.label}`
-                    : "Abrir la guía de configuración"
-                }
-                onClick={() => {
-                  if (currentStep) {
-                    configureStep(currentStep);
-                  } else {
-                    openCurrentStep();
-                  }
-                }}
-              >
-                {completedCount === 0 ? "Configurar" : "Continuar"}
-              </button>
-            </div>
-
-            <p className="sr-only" role="status" aria-live="polite">
-              {completedCount} de {items.length} pasos de configuración completados.
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="onboarding-coach-heading">
-              <div>
-                <span className="onboarding-eyebrow">Configuración inicial</span>
-                <h2 id="onboarding-coach-title">Configuración inicial, paso a paso</h2>
-              </div>
-              <span className="onboarding-count" aria-label={`${completedCount} de ${items.length}`}>
-                {completedCount} de {items.length}
-              </span>
-            </div>
-
-            <div className="onboarding-progress-line">
-              <div
-                className="onboarding-progress-track"
-                role="progressbar"
-                aria-label="Progreso de la configuración inicial"
-                aria-valuemin={0}
-                aria-valuemax={items.length}
-                aria-valuenow={completedCount}
-                aria-valuetext={`${completedCount} de ${items.length} pasos completados`}
-              >
-                <span style={{ width: `${completionPercent}%` }} />
-              </div>
-              <span>{completionPercent}%</span>
-            </div>
-
-            <p className="sr-only" role="status" aria-live="polite">
-              {completedCount} de {items.length} pasos de configuración completados.
-            </p>
-
-            {currentStep ? (
-              <>
-                <div className="onboarding-current-step">
-                  <span className="onboarding-step-number">{currentStepNumber}</span>
-                  <div>
-                    <small>Siguiente paso</small>
-                    <strong>{currentStep.label}</strong>
-                    <p>{currentStep.description}</p>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn onboarding-primary-action"
-                    onClick={() => configureStep(currentStep)}
-                  >
-                    Ir al paso
-                  </button>
-                </div>
-                <ol className="onboarding-step-rail" aria-label="Pasos de configuración">
-                  {items.map((item, index) => (
-                    <li key={item.id} className={item.complete ? "complete" : ""}>
-                      <span aria-hidden="true">{item.complete ? "✓" : index + 1}</span>
-                      <NavLink to={item.route}>
-                        {item.shortLabel}
-                        <small>{item.complete ? "Completado" : "Pendiente"}</small>
-                      </NavLink>
-                    </li>
-                  ))}
-                </ol>
-              </>
-            ) : null}
-
-            <div className="onboarding-coach-actions">
-              <button type="button" className="btn secondary" onClick={openCurrentStep}>
-                Ver detalles
-              </button>
-              <button type="button" className="onboarding-text-action" onClick={dismissGuide}>
-                Ocultar por ahora
-              </button>
-            </div>
-          </>
-        )}
-      </aside>
+      <button type="button" className="onboarding-status-button" onClick={openCurrentStep}
+        aria-label={`Configuración inicial: ${completedCount} de ${items.length} pasos completados`}
+        title={currentStep ? `Siguiente paso: ${currentStep.label}` : "Configuración inicial"}>
+        <span className="onboarding-status-label">Configuración inicial</span>
+        <span className="onboarding-status-short" aria-hidden="true">Inicio</span>
+        <span>{completedCount}/{items.length}</span>
+      </button>
 
       <Modal
         open={isGuideOpen}
@@ -349,7 +152,7 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
         }
         subtitle={
           guideView === "welcome"
-            ? "Cuatro pasos breves. Tú introduces los datos; ProfePlus comprueba el avance."
+            ? "Cinco pasos hasta tu primera clase. Tú introduces los datos; Edunoza comprueba el avance."
             : `Paso ${currentStep ? items.findIndex((item) => item.id === currentStep.id) + 1 : 1} de ${items.length}`
         }
         panelClassName="teacher-onboarding-modal"
@@ -360,11 +163,11 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
             <div className="onboarding-welcome-visual" aria-hidden="true">
               <span>HOY</span>
               <i />
-              <b>4 pasos</b>
+              <b>{items.length} pasos</b>
             </div>
             <div className="onboarding-welcome-copy">
               <p>
-                Vamos a conectar tu grupo, alumnado, horario y asignaturas para que la
+                Vamos a conectar tu grupo, alumnado, horario, asignaturas y primera tarea para que la
                 pantalla <strong>Hoy</strong> refleje tu jornada real.
               </p>
               <ol>
@@ -387,8 +190,12 @@ export function TeacherOnboarding({ items, isReady }: TeacherOnboardingProps) {
               <button type="button" className="btn secondary" onClick={dismissGuide}>
                 Ahora no
               </button>
-              <button type="button" className="btn" onClick={startGuide}>
-                Iniciar configuración
+              <button
+                type="button"
+                className="btn"
+                onClick={() => currentStep ? configureStep(currentStep) : startGuide()}
+              >
+                {currentStep?.id === "course" ? "Crear el primer grupo" : "Iniciar configuración"}
               </button>
             </div>
           </div>

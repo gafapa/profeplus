@@ -110,27 +110,35 @@ export function ManagementCoursesPage() {
     });
   };
 
+  const openCreateGroup = (): void => {
+    void saveIfDirty().then((saved) => {
+      if (!saved) return;
+      setNewCourseName("");
+      setNewCourseLevel("");
+      setShowCreateCourseModal(true);
+    });
+  };
+
   return (
     <article className="management-card">
-      <h1 className="sr-only">Cursos</h1>
+      <h1 className="management-page-title">Grupos</h1>
+      {courses.length === 0 ? (
+        <section className="management-first-group" aria-labelledby="first-group-title">
+          <span className="management-first-group-mark" aria-hidden="true">01</span>
+          <div>
+            <h2 id="first-group-title">Aún no hay grupos</h2>
+            <p>Crea el grupo de tu clase para añadir alumnado, asignaturas y horario.</p>
+            <button type="button" className="btn" onClick={openCreateGroup}>Crear el primer grupo</button>
+          </div>
+        </section>
+      ) : (
       <div className="courses-layout">
         <aside className="courses-list-panel">
           <div className="courses-list-header">
-            <strong>Listado</strong>
-            <IconButton
-              icon="add"
-              label="Crear curso"
-              onClick={() => {
-                void saveIfDirty().then((saved) => {
-                  if (!saved) return;
-                  setNewCourseName("");
-                  setNewCourseLevel("");
-                  setShowCreateCourseModal(true);
-                });
-              }}
-            />
+            <strong>Grupos</strong>
+            <button type="button" className="btn secondary" onClick={openCreateGroup}>Nuevo grupo</button>
           </div>
-          <div className="courses-list section-tabs" role="group" aria-label="Secciones de cursos">
+          <div className="courses-list section-tabs" role="group" aria-label="Grupos">
             {courses.map((course) => (
               <div key={course.id} className="courses-list-row">
                 <button
@@ -158,7 +166,7 @@ export function ManagementCoursesPage() {
                 </button>
                 <IconButton
                   icon="delete"
-                  label={`Eliminar ${course.name || "curso"}`}
+                  label={`Eliminar ${course.name || "grupo"}`}
                   onClick={async () => {
                     if (!(await saveIfDirty())) return;
                     await deleteCourse(course.id);
@@ -174,19 +182,19 @@ export function ManagementCoursesPage() {
             <>
               <div className="course-detail-header">
                 <div>
-                  <h2>Detalle del curso</h2>
+                  <h2>Detalle del grupo</h2>
                 </div>
               </div>
 
               <div className="detail-summary">
-                <span className="pill">{selectedStudents.length} alumnos</span>
+                <span className="pill">{selectedStudents.length} de alumnado</span>
                 <span className="pill">{detailCourseYear || "Sin curso escolar"}</span>
               </div>
 
               <section className="detail-section">
-                <h3>Datos del curso</h3>
+                <h3>Datos del grupo</h3>
                 <div className="detail-grid">
-                  <div className="detail-field">
+                  <div className="detail-field compact-field">
                     <label>Nombre</label>
                     <input
                       className="input"
@@ -230,7 +238,7 @@ export function ManagementCoursesPage() {
                     <label>Comentarios</label>
                     <textarea
                       className="input"
-                      placeholder="Comentarios del curso (opcional)"
+                      placeholder="Comentarios del grupo (opcional)"
                       value={detailCourseComments}
                       onChange={(event) => {
                         setDetailCourseComments(event.target.value);
@@ -242,16 +250,16 @@ export function ManagementCoursesPage() {
               </section>
 
               <section className="detail-section">
-                <h3>Alumnos del curso</h3>
+                <h3>Alumnado del grupo</h3>
                 <p className="notice compact">
-                  Usa “Mover a” o arrastra un alumno hacia otro curso. Los movimientos con datos registrados se bloquean.
+                  Usa “Mover a” o arrastra una ficha hacia otro grupo. Los movimientos con datos registrados se bloquean.
                 </p>
                 <div className="table-scroll">
                   <table>
                     <thead>
                       <tr>
                         <th>Foto</th>
-                        <th>Alumno</th>
+                        <th>Alumno o alumna</th>
                         <th>Mover a</th>
                       </tr>
                     </thead>
@@ -288,7 +296,7 @@ export function ManagementCoursesPage() {
                                 <select
                                   className="input"
                                   value={moveTargetByStudentId[student.id] ?? ""}
-                                  aria-label={`Curso de destino para ${formatName(student)}`}
+                                  aria-label={`Grupo de destino para ${formatName(student)}`}
                                   onChange={(event) =>
                                     setMoveTargetByStudentId((current) => ({
                                       ...current,
@@ -323,11 +331,10 @@ export function ManagementCoursesPage() {
                 </div>
               </section>
             </>
-          ) : (
-            <p className="empty-state">Selecciona un curso para ver sus opciones y alumnado.</p>
-          )}
+          ) : null}
         </section>
       </div>
+      )}
       <Modal
         open={showCreateCourseModal}
         title="Crear grupo"
@@ -335,7 +342,7 @@ export function ManagementCoursesPage() {
         onClose={() => setShowCreateCourseModal(false)}
       >
         <div className="detail-grid">
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Nombre del grupo</span>
             <input
               className="input"
@@ -345,7 +352,7 @@ export function ManagementCoursesPage() {
               onChange={(event) => setNewCourseName(event.target.value)}
             />
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Nivel</span>
             <input
               className="input"
@@ -354,7 +361,7 @@ export function ManagementCoursesPage() {
               onChange={(event) => setNewCourseLevel(event.target.value)}
             />
           </label>
-          <label className="detail-field">
+          <label className="detail-field compact-field">
             <span>Curso escolar</span>
             <input
               className="input"

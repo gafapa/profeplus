@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Removed redundant visible introductions from Agenda, Classroom and Search while retaining accessible page headings. Moved initial setup to a compact global status-bar entry with live progress and an on-demand guide.
+- Aligned workflow submenu icons and labels horizontally at every viewport; narrow menus wrap complete links rather than hiding icons or stacking them above labels.
+- Routed Ollama model discovery and generation through the Proxy extension with explicit loopback access and no direct fallback. Replaced CORS setup instructions and corrected the connection probe token budget and thinking behavior.
+- Simplified local backups to prioritize creation and restoration; moved diagnostics, recovery guidance and destructive tools into disclosures without changing safeguards. Nextcloud installation guidance now appears only when Proxy cannot be detected.
+- Moved the comment bank from Preferences into its own configuration tab, preserving existing stored comments and editing actions.
+- Applied shared compact label/control rows across management, planning, assessment, reports, classroom, agenda and configuration forms. Desktop fields use bounded content-appropriate widths; narrow screens stack, while narrative editors and compact checkbox/assessment controls retain their layout.
+- Combined local database tools and Nextcloud backup settings under one Data and backups navigation entry. Added visible Proxy installation and permission guidance with its download website, preserving the old Nextcloud route as a redirect.
+- Renamed the product from ProfePlus to Edunoza and set `https://edunoza.com` as the production domain.
+- Kept legacy ProfePlus backup identifiers and the IndexedDB database name readable for migration compatibility.
+- Replaced persistent analytics deduplication flags with runtime-only memory so product analytics does not use browser storage.
+- Standardized the workspace vocabulary on groups and alumnado, aligned all public shells to the same content grid, and unified landing-page workspace calls to action.
+- Simplified first-run management and report states so unavailable controls stay hidden until the required group and alumnado exist.
+- Added explicit local-versus-AI report disclosure, neutral workflow navigation colors, natural Spanish planner dates, persistent dismissible management notices, and a 44-pixel interaction floor.
+- Reflowed legal navigation and data tables for narrow screens and improved explanatory-text contrast.
+- Replaced the AI Proxy Bridge dependency with a built-in browser runtime for OpenRouter, OpenAI, Anthropic, Ollama, and LM Studio.
+- Added provider credentials, model discovery, session-only credentials by default, optional device persistence, direct connection testing, and provider-specific recovery messages.
+- Expanded model discovery into a refreshable provider catalog with normalized names, token limits, pricing, capabilities, ownership, architecture, quantization, and local file sizes whenever the provider publishes them.
+- Added contextual Ollama setup and recovery guidance for operating-system origins, full restarts, browser local-network permission, model installation, and connection checks.
+- Restricted direct AI network access through the application content security policy and limited local endpoints to loopback addresses.
+
+### Added
+
+- Added direct Nextcloud restoration with decrypted preview, explicit replacement confirmation, a verified encrypted preventive snapshot, atomic database replacement and concurrent-change detection. Removed the redundant Nextcloud file-download action from the application.
+- Added manual encrypted Nextcloud backups through the Proxy extension, including BoxAbalar setup guidance, overwrite-safe uploads with readback verification, validated downloads, and memory-only credentials. Restoration reuses the existing preventive-backup workflow; this is not automatic synchronization.
+- Added public legal notice, privacy, browser-storage, and terms-of-use pages for the free, advertising-free service, with direct links from the landing page and workspace.
+
 ## [0.3.0] - 2026-08-20
 
 ### Added

@@ -32,7 +32,7 @@ export function NoContextBanner({ noClass, noSubject }: NoContextBannerProps) {
         ) : (
           <>
             <strong>Este curso necesita una asignatura activa.</strong>
-            <span>Selecciona, añade o vincula una asignatura al curso para empezar a trabajar.</span>
+            <span>Selecciona, añade o vincula una asignatura al grupo para empezar a trabajar.</span>
           </>
         )}
       </div>
