@@ -18,6 +18,21 @@ it("isolates tokens by normalized installation and account", () => {
   expect(readMoodleToken("https://school.example/aula")).toBeNull();
 });
 
+it("migrates a token saved under the pre-account-scoped key and then removes it", () => {
+  localStorage.setItem("edunoza.moodle.token:https://school.example/aula/", JSON.stringify({ token: "legacyToken1", userId: 9 }));
+  expect(readMoodleToken("https://school.example/aula", 9)?.token).toBe("legacyToken1");
+  // Migrated into the new per-account key; the legacy entry is gone.
+  expect(localStorage.getItem("edunoza.moodle.token:https://school.example/aula/")).toBeNull();
+  expect(readMoodleToken("https://school.example/aula", 9)?.token).toBe("legacyToken1");
+});
+
+it("migrates a legacy token when looked up without an account id, then leaves it removed", () => {
+  localStorage.setItem("edunoza.moodle.token:https://school.example/aula/", JSON.stringify({ token: "legacyToken2", userId: 7 }));
+  expect(readMoodleToken("https://school.example/aula")?.token).toBe("legacyToken2");
+  expect(localStorage.getItem("edunoza.moodle.token:https://school.example/aula/")).toBeNull();
+  expect(readMoodleToken("https://school.example/aula", 8)).toBeNull();
+});
+
 it("rejects unsafe URLs and invalid tokens", () => {
   expect(saveMoodleToken("https://user:secret@school.example/", "token123", 9)).toBe(false);
   expect(saveMoodleToken("https://school.example/", "<token>", 9)).toBe(false);
