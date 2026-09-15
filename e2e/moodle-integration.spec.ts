@@ -180,13 +180,13 @@ test("suggests an exact accent-insensitive name match but never links it automat
   })).toBe(0);
 
   const row = page.locator(".moodle-mapping-row", { hasText: "Moodle Pupil" });
-  await expect(row.getByText("Coincidencia exacta: Moodle Púpil", { exact: false })).toBeVisible();
-  await row.getByRole("button", { name: "Usar esta coincidencia" }).click();
+  await expect(row.getByText("Coincidencia: Moodle Púpil", { exact: false })).toBeVisible();
+  await row.getByRole("button", { name: "Usar la coincidencia Moodle Púpil para Moodle Pupil", exact: true }).click();
   await expect(row.getByRole("combobox").nth(1)).toHaveValue("exact-match-student");
 
   // Reset the manual choice, then confirm the bulk shortcut reaches the same result.
   await row.getByRole("combobox").first().selectOption("ignore");
-  await page.getByRole("button", { name: "Vincular coincidencias exactas", exact: true }).click();
+  await page.getByRole("button", { name: /^Vincular \d+ coincidencias? exactas?$/ }).click();
   await expect(row.getByRole("combobox").nth(1)).toHaveValue("exact-match-student");
 
   await page.getByRole("button", { name: "Comprobar asociaciones", exact: true }).click();

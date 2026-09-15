@@ -390,13 +390,12 @@
 }
 
 .moodle-mapping-suggestion {
-  grid-column: 1 / -1;
   color: #17643c;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
 .moodle-mapping-suggestion .moodle-text-button {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
 .moodle-resolution-list fieldset,
