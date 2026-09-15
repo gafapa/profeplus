@@ -5,6 +5,7 @@ import type {
   ScheduleDay,
   Subject,
   SubjectCourseLink,
+  Task,
   TaskSession
 } from "../../shared/db/types";
 import { buildTodaySlots } from "./todaySlots";
@@ -53,6 +54,11 @@ function taskSession(overrides: Partial<TaskSession> = {}): TaskSession {
   };
 }
 
+const tasks: Task[] = [
+  { id: "task-1", title: "Calentamiento", description: "", sessionCount: 1, sendToGradebook: false },
+  { id: "task-2", title: "Tarea principal", description: "", sessionCount: 1, sendToGradebook: true }
+];
+
 function exceptionalRecord(overrides: Partial<DailyClassRecord> = {}): DailyClassRecord {
   return {
     id: "record-1",
@@ -100,6 +106,26 @@ describe("buildTodaySlots", () => {
 
     expect(slots).toHaveLength(1);
     expect(slots[0].classId).toBe("class-b");
+  });
+
+  it("emits one slot per task when several tasks share the same period", () => {
+    const slots = buildTodaySlots({
+      selectedDate: "2026-07-06",
+      classGroups,
+      subjects,
+      subjectCourseLinks,
+      scheduleDays,
+      taskSessions: [
+        taskSession({ id: "session-1", taskId: "task-1" }),
+        taskSession({ id: "session-2", taskId: "task-2" })
+      ],
+      tasks
+    });
+
+    expect(slots).toHaveLength(2);
+    expect(slots.every((slot) => slot.classId === "class-a")).toBe(true);
+    expect(slots.map((slot) => slot.taskId).sort()).toEqual(["task-1", "task-2"]);
+    expect(slots.map((slot) => slot.taskTitle).sort()).toEqual(["Calentamiento", "Tarea principal"]);
   });
 
   it("falls back to all linked classes when the day has no planned session", () => {

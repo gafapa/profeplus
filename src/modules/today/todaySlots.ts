@@ -4,6 +4,7 @@ import type {
   ScheduleDay,
   Subject,
   SubjectCourseLink,
+  Task,
   TaskSession
 } from "../../shared/db/types";
 
@@ -19,6 +20,9 @@ export type TodaySlot = {
   kind: "recurring" | "adHoc" | "rescheduled";
   title?: string;
   recordId?: string;
+  /** Set when a recurring slot has one or more planned sessions: one TodaySlot per task. */
+  taskId?: string;
+  taskTitle?: string;
 };
 
 type BuildTodaySlotsInput = {
@@ -28,6 +32,7 @@ type BuildTodaySlotsInput = {
   subjectCourseLinks: SubjectCourseLink[];
   scheduleDays: ScheduleDay[];
   taskSessions: TaskSession[];
+  tasks?: Task[];
   dailyClassRecords?: DailyClassRecord[];
 };
 
@@ -44,6 +49,7 @@ export function buildTodaySlots({
   subjectCourseLinks,
   scheduleDays,
   taskSessions,
+  tasks = [],
   dailyClassRecords = []
 }: BuildTodaySlotsInput): TodaySlot[] {
   const day = scheduleDays.find(
@@ -51,6 +57,7 @@ export function buildTodaySlots({
   );
   const classGroupById = new Map(classGroups.map((classGroup) => [classGroup.id, classGroup]));
   const subjectById = new Map(subjects.map((subject) => [subject.id, subject]));
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
   const linksBySubjectId = new Map<string, SubjectCourseLink[]>();
   for (const link of subjectCourseLinks) {
     const links = linksBySubjectId.get(link.subjectId) ?? [];
@@ -58,13 +65,13 @@ export function buildTodaySlots({
     linksBySubjectId.set(link.subjectId, links);
   }
 
-  const sessionsBySubjectSlot = new Map<string, Set<string>>();
+  const sessionsBySubjectSlot = new Map<string, TaskSession[]>();
   for (const session of taskSessions) {
     if (session.date !== selectedDate) continue;
     const key = session.subjectId + ":" + session.scheduleSlotId;
-    const classIds = sessionsBySubjectSlot.get(key) ?? new Set<string>();
-    classIds.add(session.classId);
-    sessionsBySubjectSlot.set(key, classIds);
+    const sessions = sessionsBySubjectSlot.get(key) ?? [];
+    sessions.push(session);
+    sessionsBySubjectSlot.set(key, sessions);
   }
 
   const slots: TodaySlot[] = [];
@@ -91,27 +98,50 @@ export function buildTodaySlots({
         if (!(subject.scheduleSlotIds ?? []).includes(block.id)) continue;
 
         const links = linksBySubjectId.get(subject.id) ?? [];
-        const plannedClassIds = sessionsBySubjectSlot.get(subject.id + ":" + block.id);
-        const matchingLinks = plannedClassIds?.size
+        const plannedSessions = sessionsBySubjectSlot.get(subject.id + ":" + block.id) ?? [];
+        const plannedClassIds = new Set(plannedSessions.map((session) => session.classId));
+        const matchingLinks = plannedClassIds.size
           ? links.filter((link) => plannedClassIds.has(link.classId))
           : links;
 
         for (const link of matchingLinks) {
-          const key = link.classId + ":" + subject.id + ":" + block.id;
-          if (addedKeys.has(key) || suppressedRecurringKeys.has(key)) continue;
-          addedKeys.add(key);
+          const baseKey = link.classId + ":" + subject.id + ":" + block.id;
+          if (addedKeys.has(baseKey) || suppressedRecurringKeys.has(baseKey)) continue;
+          addedKeys.add(baseKey);
 
-          slots.push({
-            key,
-            classId: link.classId,
-            className: classGroupById.get(link.classId)?.name ?? "Curso sin nombre",
-            subjectId: subject.id,
-            subjectName: subject.name,
-            slotId: block.id,
-            startTime: block.startTime,
-            endTime: block.endTime,
-            kind: "recurring"
-          });
+          const sessionsForClass = plannedSessions.filter(
+            (session) => session.classId === link.classId
+          );
+
+          if (sessionsForClass.length > 0) {
+            for (const session of sessionsForClass) {
+              slots.push({
+                key: baseKey + ":" + session.taskId,
+                classId: link.classId,
+                className: classGroupById.get(link.classId)?.name ?? "Curso sin nombre",
+                subjectId: subject.id,
+                subjectName: subject.name,
+                slotId: block.id,
+                startTime: block.startTime,
+                endTime: block.endTime,
+                kind: "recurring",
+                taskId: session.taskId,
+                taskTitle: taskById.get(session.taskId)?.title
+              });
+            }
+          } else {
+            slots.push({
+              key: baseKey,
+              classId: link.classId,
+              className: classGroupById.get(link.classId)?.name ?? "Curso sin nombre",
+              subjectId: subject.id,
+              subjectName: subject.name,
+              slotId: block.id,
+              startTime: block.startTime,
+              endTime: block.endTime,
+              kind: "recurring"
+            });
+          }
         }
       }
     }

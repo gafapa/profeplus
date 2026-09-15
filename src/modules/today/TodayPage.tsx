@@ -214,9 +214,10 @@ export function TodayPage() {
         subjectCourseLinks,
         scheduleDays,
         taskSessions,
+        tasks,
         dailyClassRecords
       }),
-    [classGroups, dailyClassRecords, scheduleDays, selectedDate, subjectCourseLinks, subjects, taskSessions]
+    [classGroups, dailyClassRecords, scheduleDays, selectedDate, subjectCourseLinks, subjects, taskSessions, tasks]
   );
 
   const todaySlots = useMemo(
@@ -297,7 +298,8 @@ export function TodayPage() {
           session.subjectId === selectedSlot.subjectId &&
           session.date === selectedDate &&
           session.scheduleSlotId === selectedSlot.slotId &&
-          session.status !== "cancelled"
+          session.status !== "cancelled" &&
+          (!selectedSlot.taskId || session.taskId === selectedSlot.taskId)
       ) ?? null
     );
   }, [selectedDate, selectedSlot, taskSessions]);
@@ -980,6 +982,7 @@ export function TodayPage() {
                   </span>
                   <span className="today-slot-subject">{slot.subjectName}</span>
                   <small className="today-slot-class">{slot.className}</small>
+                  {slot.taskTitle ? <small className="today-slot-task">{slot.taskTitle}</small> : null}
                 </button>
               ))}
             </div>

@@ -1,9 +1,11 @@
+// A cell can hold several tasks (one per subject conflict-free slot), so this only
+// blocks assigning the *same* task twice into one cell - not any occupied cell.
 export function canQuickAssignTask(
   selectedSubjectId: string | undefined,
   cellSubjectId: string,
-  hasSession: boolean
+  hasSessionForTask: boolean
 ): boolean {
-  return Boolean(selectedSubjectId) && selectedSubjectId === cellSubjectId && !hasSession;
+  return Boolean(selectedSubjectId) && selectedSubjectId === cellSubjectId && !hasSessionForTask;
 }
 
 export function completesTaskWithNextSession(planned: number, expected: number): boolean {

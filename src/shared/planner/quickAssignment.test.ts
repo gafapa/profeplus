@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { canQuickAssignTask, completesTaskWithNextSession, countsAsPlannedSession } from "./quickAssignment";
 
 describe("quick planner assignment", () => {
-  it("only enables empty cells for the selected subject", () => {
+  it("enables matching-subject cells, blocking only the same task twice", () => {
+    // hasSessionForTask reflects whether *this* task is already in the cell,
+    // not whether the cell is occupied - a different task may already be there.
     expect(canQuickAssignTask("math", "math", false)).toBe(true);
     expect(canQuickAssignTask("math", "language", false)).toBe(false);
     expect(canQuickAssignTask("math", "math", true)).toBe(false);

@@ -38,7 +38,7 @@ type PlannerCell = {
   block: ScheduleBlock;
   subject: Subject;
   classGroup: ClassGroup;
-  session?: TaskSession;
+  sessions: TaskSession[];
 };
 
 type SessionDataCounts = {
@@ -105,6 +105,7 @@ export function PlannerPage() {
   const [units, setUnits] = useState<UnitBlock[]>([]);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), weekStartsOn));
   const [selectedCell, setSelectedCell] = useState<PlannerCell | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [sessionPlanDraft, setSessionPlanDraft] = useState<SessionPlanDraft>(() => sessionPlanDraftFromSession());
@@ -114,7 +115,9 @@ export function PlannerPage() {
   const [isBusy, setIsBusy] = useState(false);
   const [undoAction, setUndoAction] = useState<PlannerUndoAction | null>(null);
   const [sessionPendingRemoval, setSessionPendingRemoval] = useState<TaskSession | null>(null);
+  const [sessionPendingRemovalCounts, setSessionPendingRemovalCounts] = useState<SessionDataCounts | null>(null);
   const [sessionPendingReschedule, setSessionPendingReschedule] = useState<TaskSession | null>(null);
+  const [sessionPendingRescheduleCounts, setSessionPendingRescheduleCounts] = useState<SessionDataCounts | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
   const [rescheduleSlotId, setRescheduleSlotId] = useState("");
   const contextLinkAppliedRef = useRef(false);
@@ -287,20 +290,37 @@ export function PlannerPage() {
   }, [scheduleDayBySlotId, subjectById, taskSessions]);
 
   const sessionsByCellKey = useMemo(() => {
-    const map = new Map<string, TaskSession>();
+    const map = new Map<string, TaskSession[]>();
     for (const session of taskSessions) {
-      map.set(cellKey(session.classId, session.subjectId, session.date, session.scheduleSlotId), session);
+      const key = cellKey(session.classId, session.subjectId, session.date, session.scheduleSlotId);
+      const sessions = map.get(key) ?? [];
+      sessions.push(session);
+      map.set(key, sessions);
     }
     return map;
   }, [taskSessions]);
 
   const sessionsByClassSlotKey = useMemo(() => {
-    const map = new Map<string, TaskSession>();
+    const map = new Map<string, TaskSession[]>();
     for (const session of taskSessions) {
-      map.set(classSlotKey(session.classId, session.date, session.scheduleSlotId), session);
+      const key = classSlotKey(session.classId, session.date, session.scheduleSlotId);
+      const sessions = map.get(key) ?? [];
+      sessions.push(session);
+      map.set(key, sessions);
     }
     return map;
   }, [taskSessions]);
+
+  const hasConflictingSubjectInSlot = (
+    classId: string,
+    date: string,
+    slotId: string,
+    subjectId: string,
+    excludeSessionId?: string
+  ): boolean => {
+    const occupants = sessionsByClassSlotKey.get(classSlotKey(classId, date, slotId)) ?? [];
+    return occupants.some((session) => session.id !== excludeSessionId && session.subjectId !== subjectId);
+  };
 
   const draggedSession = useMemo(
     () => taskSessions.find((session) => session.id === draggedSessionId) ?? null,
@@ -331,7 +351,7 @@ export function PlannerPage() {
             block,
             subject,
             classGroup: selectedClass,
-            session: sessionsByCellKey.get(key)
+            sessions: sessionsByCellKey.get(key) ?? []
           });
         }
       }
@@ -363,6 +383,7 @@ export function PlannerPage() {
     );
     if (!requestedCell) return;
     setSelectedCell(requestedCell);
+    setEditingSessionId(requestedCell.sessions[0]?.id ?? null);
     contextLinkAppliedRef.current = true;
   }, [plannerCellsByDate, searchParams, selectedClassId, selectedSubjectId]);
 
@@ -464,38 +485,56 @@ export function PlannerPage() {
       .sort((a, b) => a.unitName.localeCompare(b.unitName) || a.task.title.localeCompare(b.task.title));
   }, [selectedCell, taskById, taskLinksBySubject, taskSessionCountByTaskSubject, unitById]);
 
+  const editingSession = useMemo(() => {
+    if (!selectedCell || !editingSessionId) return null;
+    return selectedCell.sessions.find((item) => item.id === editingSessionId) ?? null;
+  }, [editingSessionId, selectedCell]);
+
+  const availableTasksForCell = useMemo(() => {
+    if (!selectedCell) return [];
+    return selectableTasksForCell.filter(
+      (item) =>
+        editingSession?.taskId === item.task.id ||
+        !selectedCell.sessions.some((session) => session.taskId === item.task.id)
+    );
+  }, [editingSession, selectableTasksForCell, selectedCell]);
+
   useEffect(() => {
     setNewTaskTitle("");
     if (!selectedCell) {
       setSelectedTaskId("");
       return;
     }
-    if (selectedCell.session) {
-      setSelectedTaskId(selectedCell.session.taskId);
-      setSessionPlanDraft(sessionPlanDraftFromSession(selectedCell.session));
+    if (editingSession) {
+      setSelectedTaskId(editingSession.taskId);
+      setSessionPlanDraft(sessionPlanDraftFromSession(editingSession));
       return;
     }
-    setSelectedTaskId(selectableTasksForCell[0]?.task.id ?? "");
+    setSelectedTaskId(availableTasksForCell[0]?.task.id ?? "");
     setSessionPlanDraft(sessionPlanDraftFromSession());
-  }, [selectedCell, selectableTasksForCell]);
+  }, [availableTasksForCell, editingSession, selectedCell]);
 
   const plannerDraftDirty = useMemo(() => {
     if (!selectedCell) return false;
-    const originalTaskId = selectedCell.session?.taskId ?? selectableTasksForCell[0]?.task.id ?? "";
-    const originalDraft = sessionPlanDraftFromSession(selectedCell.session);
+    const originalTaskId = editingSession?.taskId ?? availableTasksForCell[0]?.task.id ?? "";
+    const originalDraft = sessionPlanDraftFromSession(editingSession ?? undefined);
     return newTaskTitle.length > 0 || selectedTaskId !== originalTaskId || JSON.stringify(sessionPlanDraft) !== JSON.stringify(originalDraft);
-  }, [newTaskTitle, selectableTasksForCell, selectedCell, selectedTaskId, sessionPlanDraft]);
+  }, [availableTasksForCell, editingSession, newTaskTitle, selectedCell, selectedTaskId, sessionPlanDraft]);
   useUnsavedChangesGuard(plannerDraftDirty, "Hay cambios sin guardar en la sesión del Planificador.");
 
   const closePlannerModal = async (): Promise<void> => {
     if (!plannerDraftDirty) {
       setSelectedCell(null);
+      setEditingSessionId(null);
       return;
     }
     const shouldDiscard = unsavedChangesDialog
       ? await unsavedChangesDialog.confirmLeave("Hay cambios sin guardar en esta sesión. ¿Quieres descartarlos?")
       : window.confirm("Hay cambios sin guardar en esta sesión. ¿Quieres descartarlos?");
-    if (shouldDiscard) setSelectedCell(null);
+    if (shouldDiscard) {
+      setSelectedCell(null);
+      setEditingSessionId(null);
+    }
   };
 
   const countSessionData = async (session: TaskSession): Promise<SessionDataCounts> => {
@@ -527,7 +566,7 @@ export function PlannerPage() {
 
   const assignTaskToCell = async (): Promise<void> => {
     if (!selectedCell || isBusy) return;
-    if (!selectedTaskId && selectableTasksForCell.length === 0) {
+    if (!selectedTaskId && availableTasksForCell.length === 0) {
       const title = newTaskTitle.trim();
       if (title.length < 2) return;
       setIsBusy(true);
@@ -535,8 +574,12 @@ export function PlannerPage() {
         const taskId = crypto.randomUUID();
         await db.transaction("rw", db.tasks, db.taskSubjectLinks, db.taskSessions, async () => {
           const occupied = await db.taskSessions.where("classId").equals(selectedCell.classGroup.id)
-            .filter((session) => session.date === selectedCell.date && session.scheduleSlotId === selectedCell.block.id).first();
-          if (occupied) throw new Error("Esta clase ya tiene una tarea. Cierra el formulario y revisa la sesión.");
+            .filter((session) =>
+              session.date === selectedCell.date &&
+              session.scheduleSlotId === selectedCell.block.id &&
+              session.subjectId !== selectedCell.subject.id
+            ).first();
+          if (occupied) throw new Error("Ese bloque ya tiene una tarea de otra asignatura. Cierra el formulario y revisa la sesión.");
           await db.tasks.add({ id: taskId, title, description: "", sessionCount: 1, sendToGradebook: false });
           await db.taskSubjectLinks.add({ id: crypto.randomUUID(), taskId, subjectId: selectedCell.subject.id });
           await db.taskSessions.add({
@@ -546,6 +589,7 @@ export function PlannerPage() {
           });
         });
         setSelectedCell(null);
+        setEditingSessionId(null);
         await refreshAfterAction("Primera sesión guardada. La tarea está disponible en Tareas y la clase en Hoy.");
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "No se pudo guardar la sesión. Tus datos siguen en el formulario; inténtalo de nuevo.");
@@ -558,27 +602,43 @@ export function PlannerPage() {
     const task = taskById.get(selectedTaskId);
     if (!task) return;
 
+    const duplicateSession = selectedCell.sessions.find(
+      (item) => item.taskId === selectedTaskId && item.id !== editingSessionId
+    );
+    if (duplicateSession) {
+      setNotice("Esa tarea ya está programada en esta franja.");
+      return;
+    }
+
+    if (
+      hasConflictingSubjectInSlot(
+        selectedCell.classGroup.id,
+        selectedCell.date,
+        selectedCell.block.id,
+        selectedCell.subject.id,
+        editingSessionId ?? undefined
+      )
+    ) {
+      setNotice("Ese bloque ya tiene una tarea de otra asignatura programada.");
+      return;
+    }
+
     setIsBusy(true);
     try {
       const planFields = normalizeSessionPlanDraft(sessionPlanDraft);
-      const occupiedClassSlot = sessionsByClassSlotKey.get(
-        classSlotKey(selectedCell.classGroup.id, selectedCell.date, selectedCell.block.id)
-      );
-      if (occupiedClassSlot && occupiedClassSlot.id !== selectedCell.session?.id) {
-        setNotice("Ese bloque ya tiene una tarea programada para el curso.");
-        return;
-      }
 
-      if (selectedCell.session && selectedCell.session.taskId !== selectedTaskId) {
-        const counts = await countSessionData(selectedCell.session);
+      if (editingSession && editingSession.taskId !== selectedTaskId) {
+        const counts = await countSessionData(editingSession);
         if (sessionDataTotal(counts) > 0) {
-          setNotice("No se puede cambiar una sesión que ya tiene comentarios o evaluación.");
-          return;
+          const confirmed = window.confirm(
+            "Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada. ¿Quieres continuar?"
+          );
+          if (!confirmed) return;
         }
-        await db.taskSessions.delete(selectedCell.session.id);
+        await db.taskSessions.delete(editingSession.id);
       }
 
-      if (!selectedCell.session || selectedCell.session.taskId !== selectedTaskId) {
+      if (!editingSession || editingSession.taskId !== selectedTaskId) {
         await db.taskSessions.add({
           id: crypto.randomUUID(),
           taskId: selectedTaskId,
@@ -590,12 +650,13 @@ export function PlannerPage() {
         });
       } else {
         await db.taskSessions.put({
-          ...selectedCell.session,
+          ...editingSession,
           ...planFields
         });
       }
 
       setSelectedCell(null);
+      setEditingSessionId(null);
       await refreshAfterAction("Sesión guardada.");
     } finally {
       setIsBusy(false);
@@ -603,12 +664,10 @@ export function PlannerPage() {
   };
 
   const assignQuickTaskToCell = async (cell: PlannerCell): Promise<void> => {
-    if (!selectedQuickTask || selectedQuickTask.subject.id !== cell.subject.id || cell.session) return;
-    const occupiedClassSlot = sessionsByClassSlotKey.get(
-      classSlotKey(cell.classGroup.id, cell.date, cell.block.id)
-    );
-    if (occupiedClassSlot) {
-      setNotice("Ese bloque ya tiene una tarea programada para el curso.");
+    if (!selectedQuickTask || selectedQuickTask.subject.id !== cell.subject.id) return;
+    if (cell.sessions.some((session) => session.taskId === selectedQuickTask.task.id)) return;
+    if (hasConflictingSubjectInSlot(cell.classGroup.id, cell.date, cell.block.id, cell.subject.id)) {
+      setNotice("Ese bloque ya tiene una tarea de otra asignatura programada.");
       return;
     }
 
@@ -636,14 +695,10 @@ export function PlannerPage() {
   const removeSession = async (session: TaskSession): Promise<void> => {
     setIsBusy(true);
     try {
-      const counts = await countSessionData(session);
-      if (sessionDataTotal(counts) > 0) {
-        setNotice("No se puede quitar una sesión que ya tiene comentarios o evaluación.");
-        return;
-      }
       await db.taskSessions.delete(session.id);
       setUndoAction({ kind: "remove", session });
       setSelectedCell(null);
+      setEditingSessionId(null);
       setSessionPendingRemoval(null);
       await refreshAfterAction("Sesión eliminada.");
     } finally {
@@ -666,9 +721,8 @@ export function PlannerPage() {
       setNotice("Selecciona una fecha y una franja activa de la misma asignatura.");
       return;
     }
-    const occupiedClassSlot = sessionsByClassSlotKey.get(classSlotKey(session.classId, targetDate, targetSlotId));
-    if (occupiedClassSlot && occupiedClassSlot.id !== session.id) {
-      setNotice("El bloque destino ya tiene una tarea programada.");
+    if (hasConflictingSubjectInSlot(session.classId, targetDate, targetSlotId, session.subjectId, session.id)) {
+      setNotice("El bloque destino ya tiene una tarea de otra asignatura programada.");
       return;
     }
     if (session.date === targetDate && session.scheduleSlotId === targetSlotId) {
@@ -680,9 +734,11 @@ export function PlannerPage() {
     setIsBusy(true);
     try {
       const counts = await countSessionData(session);
-      if (sessionDataTotal(counts) > 0) {
-        setNotice("No se puede mover una sesión que ya tiene comentarios o evaluación.");
-        return;
+      if (sessionDataTotal(counts) > 0 && sessionPendingReschedule?.id !== session.id) {
+        const confirmed = window.confirm(
+          "Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada en la fecha original. ¿Quieres continuar?"
+        );
+        if (!confirmed) return;
       }
       await db.taskSessions.put({
         ...session,
@@ -692,6 +748,7 @@ export function PlannerPage() {
       });
       setUndoAction({ kind: "move", session });
       setSelectedCell(null);
+      setEditingSessionId(null);
       setSessionPendingReschedule(null);
       setWeekStart(startOfWeek(new Date(`${targetDate}T12:00:00`), weekStartsOn));
       await refreshAfterAction("Sesión reprogramada.");
@@ -716,6 +773,7 @@ export function PlannerPage() {
     setRescheduleDate(session.date);
     setRescheduleSlotId(session.scheduleSlotId);
     setSelectedCell(null);
+    setEditingSessionId(null);
     setNotice("");
   };
 
@@ -735,8 +793,37 @@ export function PlannerPage() {
     }
   };
 
-  const openCellModal = (cell: PlannerCell): void => {
+  useEffect(() => {
+    let active = true;
+    if (!sessionPendingRemoval) {
+      setSessionPendingRemovalCounts(null);
+      return;
+    }
+    void countSessionData(sessionPendingRemoval).then((counts) => {
+      if (active) setSessionPendingRemovalCounts(counts);
+    });
+    return () => {
+      active = false;
+    };
+  }, [sessionPendingRemoval]);
+
+  useEffect(() => {
+    let active = true;
+    if (!sessionPendingReschedule) {
+      setSessionPendingRescheduleCounts(null);
+      return;
+    }
+    void countSessionData(sessionPendingReschedule).then((counts) => {
+      if (active) setSessionPendingRescheduleCounts(counts);
+    });
+    return () => {
+      active = false;
+    };
+  }, [sessionPendingReschedule]);
+
+  const openCellModal = (cell: PlannerCell, sessionId: string | null = null): void => {
     setSelectedCell(cell);
+    setEditingSessionId(sessionId);
     setNotice("");
   };
 
@@ -891,36 +978,40 @@ export function PlannerPage() {
                     </header>
                     <div className="planner-day-slots">
                       {cells.map((cell) => {
-                        const session = cell.session;
-                        const task = session ? taskById.get(session.taskId) : null;
-                        const unitName = session
-                          ? unitNameByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id))
-                          : "";
-                        const planned = session
-                          ? taskSessionCountByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id)) ?? 0
-                          : 0;
-                        const expected = Math.max(1, Math.round(task?.sessionCount ?? 1));
-                        const statusLabel = session ? sessionStatusLabel(session.status) : "";
+                        const hasConflict = hasConflictingSubjectInSlot(
+                          cell.classGroup.id,
+                          cell.date,
+                          cell.block.id,
+                          cell.subject.id
+                        );
+                        const hasSessionForQuickTask = selectedQuickTask
+                          ? cell.sessions.some((session) => session.taskId === selectedQuickTask.task.id)
+                          : false;
                         const isQuickTarget = canQuickAssignTask(
                           selectedQuickTask?.subject.id,
                           cell.subject.id,
-                          Boolean(session)
+                          hasSessionForQuickTask
+                        );
+                        const canDropSession = Boolean(
+                          draggedSession &&
+                            cell.subject.id === draggedSession.subjectId &&
+                            !cell.sessions.some(
+                              (item) => item.taskId === draggedSession.taskId && item.id !== draggedSession.id
+                            )
                         );
                         return (
                           <article
                             key={cell.key}
-                            className={`planner-slot-card ${session ? "filled" : ""} ${
-                              draggedSession && !session && cell.subject.id === draggedSession.subjectId
-                                ? "drop-ready"
-                                : ""
+                            className={`planner-slot-card ${cell.sessions.length > 0 ? "filled" : ""} ${
+                              canDropSession ? "drop-ready" : ""
                             } ${isQuickTarget ? "quick-ready" : ""}`}
                             onDragOver={(event) => {
-                              if (!draggedSessionId || session) return;
+                              if (!canDropSession) return;
                               event.preventDefault();
                             }}
                             onDrop={(event) => {
                               event.preventDefault();
-                              if (!draggedSessionId || session) return;
+                              if (!draggedSessionId || !canDropSession) return;
                               void moveSessionToCell(draggedSessionId, cell);
                             }}
                           >
@@ -928,20 +1019,30 @@ export function PlannerPage() {
                               <span>{formatBlockTime(cell.block)}</span>
                               <strong>{cell.subject.name}</strong>
                             </div>
-                            {session && task ? (
-                              <button
-                                type="button"
-                                className="planner-session-card"
-                                draggable
-                                onDragStart={() => setDraggedSessionId(session.id)}
-                                onDragEnd={() => setDraggedSessionId("")}
-                                onClick={() => openCellModal(cell)}
-                              >
-                                <span>{task.title || "Tarea sin título"}</span>
-                                <small>{unitName || "Sin unidad"}</small>
-                                <small>{planned}/{expected} sesiones · {statusLabel}</small>
-                              </button>
-                            ) : (
+                            {cell.sessions.map((session) => {
+                              const task = taskById.get(session.taskId);
+                              if (!task) return null;
+                              const unitName = unitNameByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id));
+                              const planned = taskSessionCountByTaskSubject.get(taskSubjectKey(session.taskId, cell.subject.id)) ?? 0;
+                              const expected = Math.max(1, Math.round(task.sessionCount ?? 1));
+                              const statusLabel = sessionStatusLabel(session.status);
+                              return (
+                                <button
+                                  key={session.id}
+                                  type="button"
+                                  className="planner-session-card"
+                                  draggable
+                                  onDragStart={() => setDraggedSessionId(session.id)}
+                                  onDragEnd={() => setDraggedSessionId("")}
+                                  onClick={() => openCellModal(cell, session.id)}
+                                >
+                                  <span>{task.title || "Tarea sin título"}</span>
+                                  <small>{unitName || "Sin unidad"}</small>
+                                  <small>{planned}/{expected} sesiones · {statusLabel}</small>
+                                </button>
+                              );
+                            })}
+                            {!hasConflict ? (
                               <button
                                 type="button"
                                 className="planner-empty-slot"
@@ -949,19 +1050,27 @@ export function PlannerPage() {
                                 aria-label={
                                   isQuickTarget
                                     ? `Asignar ${selectedQuickTask?.task.title || "tarea"} al ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
-                                    : `Programar tarea el ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
+                                    : cell.sessions.length > 0
+                                      ? `Añadir otra tarea el ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
+                                      : `Programar tarea el ${formatPlannerDate(cell.date)}, ${formatBlockTime(cell.block)}`
                                 }
                                 onClick={() => {
                                   if (isQuickTarget) {
                                     void assignQuickTaskToCell(cell);
                                   } else {
-                                    openCellModal(cell);
+                                    openCellModal(cell, null);
                                   }
                                 }}
                               >
-                                {isQuickTarget ? "Asignar seleccionada" : "Programar tarea"}
+                                {isQuickTarget
+                                  ? "Asignar seleccionada"
+                                  : cell.sessions.length > 0
+                                    ? "+ Añadir tarea"
+                                    : "Programar tarea"}
                               </button>
-                            )}
+                            ) : cell.sessions.length === 0 ? (
+                              <p className="hint compact">Bloqueado por otra asignatura en esta franja.</p>
+                            ) : null}
                           </article>
                         );
                       })}
@@ -979,7 +1088,7 @@ export function PlannerPage() {
 
       <Modal
         open={Boolean(selectedCell)}
-        title={selectedCell?.session ? "Editar sesión" : "Programar sesión"}
+        title={editingSession ? "Editar sesión" : "Programar sesión"}
         onClose={() => void closePlannerModal()}
       >
         {selectedCell ? (
@@ -987,7 +1096,7 @@ export function PlannerPage() {
             <p className="hint">
               {selectedCell.dayName} {formatPlannerDate(selectedCell.date)} · {formatBlockTime(selectedCell.block)} · {selectedCell.subject.name}
             </p>
-            {selectableTasksForCell.length === 0 ? (
+            {availableTasksForCell.length === 0 ? (
               <div className="planner-first-task">
                 <p className="hint">Crea la tarea de esta clase sin salir del planificador. Conservaremos el grupo, la asignatura y la hora seleccionados. Podrás añadir una unidad o un instrumento de evaluación después, en Tareas.</p>
                 <label className="detail-field full compact-field">
@@ -1001,7 +1110,7 @@ export function PlannerPage() {
             <label className="detail-field full compact-field">
               <span>Tarea</span>
               <select className="input" value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value)}>
-                {selectableTasksForCell.map((item) => (
+                {availableTasksForCell.map((item) => (
                   <option key={item.task.id} value={item.task.id}>
                     {item.task.title || "Tarea sin título"} · {item.unitName} · {item.planned}/{item.expected}
                   </option>
@@ -1009,7 +1118,7 @@ export function PlannerPage() {
               </select>
             </label>
             )}
-            <details open={Boolean(selectedCell.session)}>
+            <details open={Boolean(editingSession)}>
               <summary>Objetivos y otros detalles de la sesión (opcional)</summary>
             <div className="detail-grid">
               <label className="detail-field compact-field">
@@ -1083,30 +1192,30 @@ export function PlannerPage() {
               <button type="button" className="btn secondary" onClick={() => void closePlannerModal()}>
                 Cancelar
               </button>
-              {selectedCell.session ? (
+              {editingSession ? (
                 <button
                   type="button"
                   className="btn secondary"
                   onClick={() => {
-                    if (selectedCell.session) openRescheduleModal(selectedCell.session);
+                    if (editingSession) openRescheduleModal(editingSession);
                   }}
                 >
                   Reprogramar
                 </button>
               ) : null}
-              {selectedCell.session ? (
+              {editingSession ? (
                 <button
                   type="button"
                   className="btn secondary management-danger-btn"
-                  onClick={() => setSessionPendingRemoval(selectedCell.session ?? null)}
+                  onClick={() => setSessionPendingRemoval(editingSession)}
                 >
                   Quitar
                 </button>
               ) : null}
               <button type="button" className="btn primary" disabled={isBusy || (!selectedTaskId && newTaskTitle.trim().length < 2)} onClick={() => void assignTaskToCell()}>
-                {isBusy ? "Guardando…" : selectedCell.session ? "Guardar sesión" : selectableTasksForCell.length === 0 ? "Crear tarea y programar sesión" : "Programar sesión"}
+                {isBusy ? "Guardando…" : editingSession ? "Guardar sesión" : availableTasksForCell.length === 0 ? "Crear tarea y programar sesión" : "Programar sesión"}
               </button>
-              {selectedCell.session ? (
+              {editingSession ? (
                 <>
                   <NavLink
                     className="btn secondary"
@@ -1116,7 +1225,7 @@ export function PlannerPage() {
                   </NavLink>
                   <NavLink
                     className="btn secondary"
-                    to={`/journal/work?classId=${encodeURIComponent(selectedCell.classGroup.id)}&subjectId=${encodeURIComponent(selectedCell.subject.id)}&taskId=${encodeURIComponent(selectedCell.session.taskId)}&date=${selectedCell.date}&slotId=${encodeURIComponent(selectedCell.block.id)}`}
+                    to={`/journal/work?classId=${encodeURIComponent(selectedCell.classGroup.id)}&subjectId=${encodeURIComponent(selectedCell.subject.id)}&taskId=${encodeURIComponent(editingSession.taskId)}&date=${selectedCell.date}&slotId=${encodeURIComponent(selectedCell.block.id)}`}
                   >
                     Evaluar tarea
                   </NavLink>
@@ -1168,6 +1277,11 @@ export function PlannerPage() {
                 Ese día no tiene una clase activa para esta asignatura.
               </p>
             ) : null}
+            {sessionPendingRescheduleCounts && sessionDataTotal(sessionPendingRescheduleCounts) > 0 ? (
+              <p className="notice compact" role="status">
+                Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada en la fecha original.
+              </p>
+            ) : null}
             {notice ? <p className="notice compact" role="status" aria-live="polite">{notice}</p> : null}
             <div className="inline-form">
               <button type="button" className="btn secondary" disabled={isBusy} onClick={() => setSessionPendingReschedule(null)}>
@@ -1193,6 +1307,11 @@ export function PlannerPage() {
         }}
       >
         <p>La sesión dejará de estar programada. Podrás recuperar inmediatamente la acción con Deshacer.</p>
+        {sessionPendingRemovalCounts && sessionDataTotal(sessionPendingRemovalCounts) > 0 ? (
+          <p className="notice compact" role="status">
+            Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada.
+          </p>
+        ) : null}
         <div className="inline-form">
           <button type="button" className="btn secondary" disabled={isBusy} onClick={() => setSessionPendingRemoval(null)}>
             Cancelar

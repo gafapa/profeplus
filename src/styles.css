@@ -1177,6 +1177,14 @@ input, textarea, select, button, a {
   line-height: 1.25;
 }
 
+.today-slot-task {
+  overflow-wrap: anywhere;
+  color: #587096;
+  font-size: 0.7rem;
+  font-style: italic;
+  line-height: 1.2;
+}
+
 .today-panel h2 {
   margin: 0;
   color: #1d4278;
