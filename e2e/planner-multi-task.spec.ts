@@ -127,6 +127,11 @@ test("removing a session with recorded data shows a warning and proceeds without
   });
   expect(records.sessions).toHaveLength(0);
   expect(records.settings).toHaveLength(1);
+
+  await page.goto("/config/database");
+  await page.locator("summary").filter({ hasText: "Comprobaciones" }).click();
+  await page.getByRole("button", { name: "Verificar datos actuales", exact: true }).click();
+  await expect(page.getByText("Integridad verificada: no se han encontrado referencias rotas.", { exact: true })).toBeVisible();
 });
 
 test("rescheduling a session with recorded data warns inline and proceeds without a second prompt", async ({ page }) => {

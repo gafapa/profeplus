@@ -731,12 +731,6 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
   const taskSubjectKeys = new Set(
     rows("taskSubjectLinks").map((row) => `${row.taskId as string}:${row.subjectId as string}`)
   );
-  const taskSessionScopedKeys = new Set(
-    rows("taskSessions").map(
-      (row) =>
-        `${row.taskId as string}:${row.classId as string}:${row.subjectId as string}:${row.date as string}:${row.scheduleSlotId as string}`
-    )
-  );
   const exceptionalDailyRecordKeys = new Set(
     rows("dailyClassRecords")
       .filter((row) => typeof row.scheduleSlotId === "string" && row.scheduleSlotId.startsWith("exception-"))
@@ -1353,9 +1347,6 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     if (!hasExceptionalDailyRecord(classId, subjectId, date, scheduleSlotId)) {
       requireReference(scheduleSlotId, scheduleSlotIds, "taskStudentComments", "scheduleSlotId");
     }
-    if (!taskSessionScopedKeys.has(`${taskId}:${classId}:${subjectId}:${date}:${scheduleSlotId}`)) {
-      throw new Error("La tabla 'taskStudentComments' usa una fecha/hora sin sesion de tarea para su curso y asignatura.");
-    }
   }
   requireUniqueLogicalRows(
     rows("taskStudentComments"),
@@ -1388,9 +1379,6 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     }
     if (!taskSubjectKeys.has(`${taskId}:${subjectId}`)) {
       throw new Error("La tabla 'taskDailyEvaluationSettings' usa una tarea no vinculada a la asignatura.");
-    }
-    if (!taskSessionScopedKeys.has(`${taskId}:${classId}:${subjectId}:${date}:${scheduleSlotId}`)) {
-      throw new Error("La tabla 'taskDailyEvaluationSettings' usa una fecha/hora sin sesion de tarea.");
     }
     const rubricTemplate = rubricTemplateId ? rubricTemplateById.get(rubricTemplateId) : null;
     const checklistTemplate = checklistTemplateId ? checklistTemplateById.get(checklistTemplateId) : null;
@@ -1438,9 +1426,6 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     }
     if (!taskSubjectKeys.has(`${taskId}:${subjectId}`)) {
       throw new Error("La tabla 'taskRubricAssessments' usa una tarea no vinculada a la asignatura.");
-    }
-    if (!taskSessionScopedKeys.has(`${taskId}:${classId}:${subjectId}:${date}:${scheduleSlotId}`)) {
-      throw new Error("La tabla 'taskRubricAssessments' usa una fecha/hora sin sesion de tarea para su curso y asignatura.");
     }
     const template = rubricTemplateById.get(rubricTemplateId);
     if (template?.taskId && template.taskId !== taskId) {
@@ -1502,9 +1487,6 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     }
     if (!taskSubjectKeys.has(`${taskId}:${subjectId}`)) {
       throw new Error("La tabla 'taskChecklistAssessments' usa una tarea no vinculada a la asignatura.");
-    }
-    if (!taskSessionScopedKeys.has(`${taskId}:${classId}:${subjectId}:${date}:${scheduleSlotId}`)) {
-      throw new Error("La tabla 'taskChecklistAssessments' usa una fecha/hora sin sesion de tarea para su curso y asignatura.");
     }
     const template = checklistTemplateById.get(checklistTemplateId);
     if (template?.taskId && template.taskId !== taskId) {

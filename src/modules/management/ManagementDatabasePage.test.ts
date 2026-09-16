@@ -1493,6 +1493,66 @@ describe("database payload validation", () => {
     expect(() => validateDatabasePayload(payload)).toThrow(/classId/i);
   });
 
+  it("accepts evaluation data left behind after its planner session was reassigned, moved or removed", () => {
+    const payload = validPayload({
+      taskSessions: [],
+      taskStudentComments: [
+        {
+          id: "comment-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          studentId: "student-1",
+          comment: "Comentario de una sesion ya movida"
+        }
+      ],
+      taskDailyEvaluationSettings: [
+        {
+          id: "setting-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          generalComment: "Buen trabajo"
+        }
+      ],
+      taskRubricAssessments: [
+        {
+          id: "rubric-assessment-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          studentId: "student-1",
+          rubricTemplateId: "rubric-1",
+          criterionId: "criterion-1",
+          levelId: "level-1",
+          score: 2
+        }
+      ],
+      taskChecklistAssessments: [
+        {
+          id: "checklist-assessment-1",
+          taskId: "task-1",
+          subjectId: "subject-1",
+          classId: "class-1",
+          date: "2026-05-22",
+          scheduleSlotId: "slot-1",
+          studentId: "student-1",
+          checklistTemplateId: "checklist-1",
+          itemId: "item-1",
+          checked: true
+        }
+      ]
+    });
+
+    expect(() => validateDatabasePayload(payload)).not.toThrow();
+  });
+
   it("accepts manual grade observations without numeric grades", () => {
     const payload = validPayload({
       assessments: [
