@@ -2,9 +2,8 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { NavLink, useSearchParams } from "react-router-dom";
 import { db } from "../../shared/db/database";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
-import { setSelectedClass, setSelectedSubject, type WeekStartsOn } from "../../app/store";
+import { setSelectedClass, setSelectedSubject } from "../../app/store";
 import type {
-  AttendanceEntry,
   ChecklistTemplate,
   ClassGroup,
   RubricTemplate,
@@ -24,11 +23,6 @@ import type {
   TaskSubjectLink,
   UnitBlock
 } from "../../shared/db/types";
-import {
-  matchesAttendanceScope,
-  normalizeAttendanceNote,
-  resolveAttendanceNoteForSave
-} from "../../shared/attendance/attendance";
 import { matchesTaskScope } from "../../shared/gradebook/calculations";
 import { useStudentDisplay } from "../../shared/hooks/useStudentDisplay";
 import { useUnsavedChangesGuard } from "../../shared/hooks/useUnsavedChangesGuard";
@@ -40,120 +34,6 @@ import {
   selectTaskSessionByDateAndSlot
 } from "./taskSessionScope";
 
-const MONDAY_FIRST_WEEKDAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
-const SUNDAY_FIRST_WEEKDAY_LABELS = ["D", "L", "M", "X", "J", "V", "S"];
-const MONTH_LABELS = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre"
-];
-const DAY_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
-
-type SubjectSlot = {
-  key: string;
-  classId: string;
-  className: string;
-  subjectId: string;
-  subjectName: string;
-  slotId: string;
-  dayOfWeek: number;
-  dayName: string;
-  startTime: string;
-  endTime: string;
-};
-
-function toMinutes(value: string): number {
-  const [hourRaw, minuteRaw] = value.split(":");
-  const hour = Number(hourRaw);
-  const minute = Number(minuteRaw);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) {
-    return 0;
-  }
-  return hour * 60 + minute;
-}
-
-function toIsoDate(value: Date): string {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function weekStartIndex(value: Date, weekStartsOn: WeekStartsOn): number {
-  if (weekStartsOn === "sunday") {
-    return value.getDay();
-  }
-  return (value.getDay() + 6) % 7;
-}
-
-function weekdayLabels(weekStartsOn: WeekStartsOn): string[] {
-  return weekStartsOn === "sunday" ? SUNDAY_FIRST_WEEKDAY_LABELS : MONDAY_FIRST_WEEKDAY_LABELS;
-}
-
-function monthStart(value: Date): Date {
-  return new Date(value.getFullYear(), value.getMonth(), 1);
-}
-
-function addMonths(value: Date, delta: number): Date {
-  return new Date(value.getFullYear(), value.getMonth() + delta, 1);
-}
-
-function shiftIsoDate(value: string, deltaDays: number): string {
-  const [year, month, day] = value.split("-").map((item) => Number(item));
-  if (!year || !month || !day) {
-    return value;
-  }
-  const date = new Date(year, month - 1, day);
-  date.setDate(date.getDate() + deltaDays);
-  return toIsoDate(date);
-}
-
-function monthGrid(value: Date, weekStartsOn: WeekStartsOn): { date: Date; inMonth: boolean }[] {
-  const start = monthStart(value);
-  const startOffset = weekStartIndex(start, weekStartsOn);
-  const gridStart = new Date(start);
-  gridStart.setDate(start.getDate() - startOffset);
-
-  const items: { date: Date; inMonth: boolean }[] = [];
-  for (let index = 0; index < 42; index += 1) {
-    const current = new Date(gridStart);
-    current.setDate(gridStart.getDate() + index);
-    items.push({
-      date: current,
-      inMonth: current.getMonth() === value.getMonth()
-    });
-  }
-  return items;
-}
-
-function getNearestSlotKey(slots: SubjectSlot[]): string {
-  if (slots.length === 0) {
-    return "";
-  }
-  const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  let best = slots[0];
-  let bestDistance = Math.abs(toMinutes(best.startTime) - nowMinutes);
-  for (let index = 1; index < slots.length; index += 1) {
-    const current = slots[index];
-    const distance = Math.abs(toMinutes(current.startTime) - nowMinutes);
-    if (distance < bestDistance) {
-      best = current;
-      bestDistance = distance;
-    }
-  }
-  return best.key;
-}
-
 function rubricDraftKey(studentId: string, criterionId: string): string {
   return `${studentId}:${criterionId}`;
 }
@@ -162,17 +42,12 @@ function checklistDraftKey(studentId: string, itemId: string): string {
   return `${studentId}:${itemId}`;
 }
 
-type AttendancePageProps = {
-  mode: "attendance" | "work";
-};
-
-export function AttendancePage({ mode }: AttendancePageProps) {
+export function AttendancePage() {
   const { formatName, compareFn } = useStudentDisplay();
   const [searchParams] = useSearchParams();
   const dispatch = useAppDispatch();
   const selectedClassId = useAppSelector((state) => state.app.selectedClassId);
   const selectedSubjectId = useAppSelector((state) => state.app.selectedSubjectId);
-  const weekStartsOn = useAppSelector((state) => state.app.weekStartsOn);
   const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectCourseLinks, setSubjectCourseLinks] = useState<SubjectCourseLink[]>([]);
@@ -195,11 +70,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const [selectedDate, setSelectedDate] = useState(
     /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? requestedDate : toLocalIsoDate()
   );
-  const [selectedSlotKey, setSelectedSlotKey] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [selectedWorkUnitId, setSelectedWorkUnitId] = useState("");
-  const [selectedUnitToAssignId, setSelectedUnitToAssignId] = useState("");
-  const [selectedTaskToAssignId, setSelectedTaskToAssignId] = useState("");
   const [selectedTaskSessionSlotId, setSelectedTaskSessionSlotId] = useState("");
   const [taskGeneralCommentDraft, setTaskGeneralCommentDraft] = useState("");
   const [taskStudentCommentDraft, setTaskStudentCommentDraft] = useState<Map<string, string>>(new Map());
@@ -211,19 +83,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   const [taskDirty, setTaskDirty] = useState(false);
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [taskNotice, setTaskNotice] = useState("");
-  const [calendarMonth, setCalendarMonth] = useState(() => monthStart(new Date()));
-  const [students, setStudents] = useState<Student[]>([]);
-  const [attendanceEntries, setAttendanceEntries] = useState<AttendanceEntry[]>([]);
-  const [draftStatusByStudent, setDraftStatusByStudent] = useState<Map<string, AttendanceEntry["status"]>>(
-    new Map()
-  );
-  const [isSavingAttendance, setIsSavingAttendance] = useState(false);
-  const [draftNoteByStudent, setDraftNoteByStudent] = useState<Map<string, string>>(new Map());
-  const [attendanceNotice, setAttendanceNotice] = useState("");
-  const attendanceAutoSaveTimerRef = useRef<number | null>(null);
   const taskAutoSaveTimerRef = useRef<number | null>(null);
   const taskEditVersionRef = useRef(0);
-  const taskPickerContextRef = useRef("");
   const deepLinkAppliedRef = useRef(false);
 
   const loadMetadata = async (): Promise<void> => {
@@ -287,88 +148,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     setTaskDirectGrades(taskDirectGradesData);
   };
 
-  const dayOfWeek = useMemo(() => {
-    const date = new Date(`${selectedDate}T00:00:00`);
-    const jsDay = date.getDay();
-    return jsDay === 0 ? 7 : jsDay;
-  }, [selectedDate]);
-  const selectedDayName = DAY_LABELS[Math.max(0, Math.min(6, dayOfWeek - 1))] ?? "";
-
-  const subjectSlotsForDate = useMemo(() => {
-    const slots: SubjectSlot[] = [];
-    const day = scheduleDays.find((item) => item.enabled && item.dayOfWeek === dayOfWeek);
-    if (!day) {
-      return slots;
-    }
-    const classGroupById = new Map(classGroups.map((item) => [item.id, item]));
-    const linksBySubjectId = new Map<string, SubjectCourseLink[]>();
-    for (const link of subjectCourseLinks) {
-      const links = linksBySubjectId.get(link.subjectId) ?? [];
-      links.push(link);
-      linksBySubjectId.set(link.subjectId, links);
-    }
-
-    for (const block of day.blocks) {
-      if (block.isBreak) {
-        continue;
-      }
-      for (const subject of subjects) {
-        const subjectSlotIds = new Set(subject.scheduleSlotIds ?? []);
-        if (!subjectSlotIds.has(block.id)) {
-          continue;
-        }
-        const links = linksBySubjectId.get(subject.id) ?? [];
-        for (const link of links) {
-          const classGroup = classGroupById.get(link.classId);
-          slots.push({
-            key: `${link.classId}:${subject.id}:${block.id}`,
-            classId: link.classId,
-            className: classGroup?.name ?? "Grupo sin nombre",
-            subjectId: subject.id,
-            subjectName: subject.name,
-            slotId: block.id,
-            dayOfWeek: day.dayOfWeek,
-            dayName: day.dayName,
-            startTime: block.startTime,
-            endTime: block.endTime
-          });
-        }
-      }
-    }
-
-    return slots.sort((a, b) => {
-      const byStart = a.startTime.localeCompare(b.startTime);
-      if (byStart !== 0) {
-        return byStart;
-      }
-      return (
-        a.className.localeCompare(b.className) ||
-        a.subjectName.localeCompare(b.subjectName) ||
-        a.slotId.localeCompare(b.slotId)
-      );
-    });
-  }, [classGroups, dayOfWeek, scheduleDays, subjectCourseLinks, subjects]);
-
-  useEffect(() => {
-    if (subjectSlotsForDate.length === 0) {
-      if (selectedSlotKey) {
-        setSelectedSlotKey("");
-      }
-      return;
-    }
-    const exists = subjectSlotsForDate.some((slot) => slot.key === selectedSlotKey);
-    if (exists) {
-      return;
-    }
-    setSelectedSlotKey(getNearestSlotKey(subjectSlotsForDate));
-  }, [selectedSlotKey, subjectSlotsForDate]);
-
-  const selectedSubjectSlot = useMemo(
-    () => subjectSlotsForDate.find((slot) => slot.key === selectedSlotKey) ?? null,
-    [selectedSlotKey, subjectSlotsForDate]
-  );
-  const activeClassId = mode === "work" ? selectedClassId : (selectedSubjectSlot?.classId ?? "");
-  const activeSubjectId = mode === "work" ? selectedSubjectId : (selectedSubjectSlot?.subjectId ?? "");
   const workSubjects = useMemo(() => {
     if (!selectedClassId) {
       return [];
@@ -390,57 +169,13 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       .filter((unit) => unit.subjectId === selectedSubjectId)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   }, [selectedSubjectId, unitBlocks]);
-  useEffect(() => {
-    const [year, month] = selectedDate.split("-").map((item) => Number(item));
-    if (!year || !month) {
-      return;
-    }
-    setCalendarMonth(new Date(year, month - 1, 1));
-  }, [selectedDate]);
-
-  const loadData = async (isCurrent: () => boolean = () => true) => {
-    if (!selectedSubjectSlot) {
-      if (isCurrent()) {
-        setStudents([]);
-        setAttendanceEntries([]);
-      }
-      return;
-    }
-
-    const links = await db.subjectStudentLinks.where("subjectId").equals(selectedSubjectSlot.subjectId).toArray();
-    const studentIds = links.map((link) => link.studentId);
-    if (studentIds.length === 0) {
-      if (isCurrent()) {
-        setStudents([]);
-        setAttendanceEntries([]);
-      }
-      return;
-    }
-
-    const [studentsData, attendanceData] = await Promise.all([
-      db.students.where("id").anyOf(studentIds).toArray(),
-      db.attendanceEntries.where("studentId").anyOf(studentIds).toArray()
-    ]);
-    if (!isCurrent()) return;
-
-    setStudents(studentsData.filter((student) => student.classId === selectedSubjectSlot.classId).sort(compareFn));
-    setAttendanceEntries(
-      attendanceData.filter((entry) => matchesAttendanceScope(entry, {
-        classId: selectedSubjectSlot.classId,
-        subjectId: selectedSubjectSlot.subjectId,
-        date: selectedDate,
-        scheduleSlotId: selectedSubjectSlot.slotId
-      }))
-    );
-  };
-  const loadDataForEffect = useEffectEvent(loadData);
 
   useEffect(() => {
     void loadMetadata();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (mode !== "work" || deepLinkAppliedRef.current || classGroups.length === 0) return;
+    if (deepLinkAppliedRef.current || classGroups.length === 0) return;
     const requestedClassId = searchParams.get("classId") ?? "";
     const requestedSubjectId = searchParams.get("subjectId") ?? "";
     const requestedTaskId = searchParams.get("taskId") ?? "";
@@ -488,7 +223,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   }, [
     classGroups,
     dispatch,
-    mode,
     searchParams,
     selectedClassId,
     selectedDate,
@@ -503,9 +237,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   ]);
 
   useEffect(() => {
-    if (mode !== "work") {
-      return;
-    }
     if (workSubjects.length === 0) {
       if (selectedSubjectId) {
         dispatch(setSelectedSubject(""));
@@ -515,12 +246,9 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     if (!workSubjects.some((subject) => subject.id === selectedSubjectId)) {
       dispatch(setSelectedSubject(workSubjects[0].id));
     }
-  }, [dispatch, mode, selectedSubjectId, workSubjects]);
+  }, [dispatch, selectedSubjectId, workSubjects]);
 
   useEffect(() => {
-    if (mode !== "work") {
-      return;
-    }
     if (workUnits.length === 0) {
       setSelectedWorkUnitId("");
       return;
@@ -528,69 +256,12 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     if (!workUnits.some((unit) => unit.id === selectedWorkUnitId)) {
       setSelectedWorkUnitId(workUnits[0].id);
     }
-  }, [mode, selectedWorkUnitId, workUnits]);
-
-  useEffect(() => {
-    if (mode !== "attendance") {
-      return;
-    }
-    if (!selectedSubjectSlot) {
-      return;
-    }
-    if (selectedClassId !== selectedSubjectSlot.classId) {
-      dispatch(setSelectedClass(selectedSubjectSlot.classId));
-    }
-    if (selectedSubjectId !== selectedSubjectSlot.subjectId) {
-      dispatch(setSelectedSubject(selectedSubjectSlot.subjectId));
-    }
-  }, [dispatch, mode, selectedClassId, selectedSubjectId, selectedSubjectSlot]);
+  }, [selectedWorkUnitId, workUnits]);
 
   // Reorder students when the preference changes without reloading IndexedDB.
   useEffect(() => {
     setAllStudents((prev) => [...prev].sort(compareFn));
-    setStudents((prev) => [...prev].sort(compareFn));
   }, [compareFn]);
-
-  useEffect(() => {
-    let active = true;
-    void loadDataForEffect(() => active).catch((error: unknown) => {
-      if (!active) return;
-      const message = error instanceof Error ? error.message : "Error desconocido";
-      setAttendanceNotice(`No se pudo cargar la asistencia: ${message}`);
-    });
-    return () => {
-      active = false;
-    };
-  }, [selectedDate, selectedSubjectSlot?.slotId, selectedSubjectSlot?.subjectId]);
-
-  useEffect(() => {
-    setDraftStatusByStudent(new Map());
-    setAttendanceNotice("");
-  }, [selectedDate, selectedSubjectSlot?.key, students.length, attendanceEntries.length]);
-
-  const attendanceByStudent = useMemo(() => {
-    const map = new Map<string, AttendanceEntry>();
-    for (const entry of attendanceEntries) {
-      map.set(entry.studentId, entry);
-    }
-    return map;
-  }, [attendanceEntries]);
-
-  const studentsById = useMemo(() => {
-    const map = new Map<string, Student>();
-    for (const student of students) {
-      map.set(student.id, student);
-    }
-    return map;
-  }, [students]);
-
-  const baseStatusByStudent = useMemo(() => {
-    const map = new Map<string, AttendanceEntry["status"]>();
-    for (const student of students) {
-      map.set(student.id, attendanceByStudent.get(student.id)?.status ?? "present");
-    }
-    return map;
-  }, [attendanceByStudent, students]);
 
   // Task id to subject id map (first match per task).
   const slotTimeLabelById = useMemo(() => {
@@ -624,162 +295,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     }
     return map;
   }, [scheduleDays]);
-
-  const tasksForSelectedDate = useMemo(() => {
-    if (!selectedSubjectSlot) {
-      return [];
-    }
-    const sessionRows = filterTaskSessionsByAcademicContext(taskSessions, {
-      classId: selectedSubjectSlot.classId,
-      subjectId: selectedSubjectSlot.subjectId
-    }).filter((item) => item.date === selectedDate);
-    const sessionsByTask = new Map<string, TaskSession[]>();
-    for (const session of sessionRows) {
-      if (!sessionsByTask.has(session.taskId)) {
-        sessionsByTask.set(session.taskId, []);
-      }
-      sessionsByTask.get(session.taskId)?.push(session);
-    }
-    const taskIdsForSubject = new Set(
-      taskSubjectLinks
-        .filter((link) => link.subjectId === selectedSubjectSlot.subjectId)
-        .map((link) => link.taskId)
-    );
-
-    const visible = tasks
-      .filter((task) => taskIdsForSubject.has(task.id))
-      .filter((task) => sessionsByTask.has(task.id))
-      .map((task) => ({
-        task,
-        sessions: (sessionsByTask.get(task.id) ?? []).sort((a, b) => {
-          const orderA = slotOrderById.get(a.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
-          const orderB = slotOrderById.get(b.scheduleSlotId) ?? Number.MAX_SAFE_INTEGER;
-          if (orderA !== orderB) {
-            return orderA - orderB;
-          }
-          return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
-        })
-      }))
-      .sort((a, b) => {
-        const firstA = a.sessions[0]?.scheduleSlotId ?? "";
-        const firstB = b.sessions[0]?.scheduleSlotId ?? "";
-        const orderA = slotOrderById.get(firstA) ?? Number.MAX_SAFE_INTEGER;
-        const orderB = slotOrderById.get(firstB) ?? Number.MAX_SAFE_INTEGER;
-        if (orderA !== orderB) {
-          return orderA - orderB;
-        }
-        const labelA = slotTimeLabelById.get(firstA) ?? firstA;
-        const labelB = slotTimeLabelById.get(firstB) ?? firstB;
-        return labelA.localeCompare(labelB) || a.task.title.localeCompare(b.task.title);
-      });
-
-    return visible;
-  }, [selectedDate, selectedSubjectSlot, slotOrderById, slotTimeLabelById, taskSessions, taskSubjectLinks, tasks]);
-
-  const unitsForSelectedSubject = useMemo(() => {
-    if (!selectedSubjectSlot) {
-      return [];
-    }
-    return unitBlocks
-      .filter((unit) => unit.subjectId === selectedSubjectSlot.subjectId)
-      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-  }, [selectedSubjectSlot, unitBlocks]);
-
-  const tasksForSelectedUnit = useMemo(() => {
-    if (!selectedSubjectSlot || !selectedUnitToAssignId) {
-      return [];
-    }
-    const linkedTaskIds = new Set(
-      taskSubjectLinks
-        .filter(
-          (link) =>
-            link.subjectId === selectedSubjectSlot.subjectId &&
-            (link.unitId ?? "") === selectedUnitToAssignId
-        )
-        .map((link) => link.taskId)
-    );
-    return tasks
-      .filter((task) => linkedTaskIds.has(task.id))
-      .sort((a, b) => a.title.localeCompare(b.title));
-  }, [selectedSubjectSlot, selectedUnitToAssignId, taskSubjectLinks, tasks]);
-
-  const slotSessionsForSelectedSlot = useMemo(() => {
-    if (!selectedSubjectSlot) {
-      return [];
-    }
-    return filterTaskSessionsByAcademicContext(taskSessions, {
-      classId: selectedSubjectSlot.classId,
-      subjectId: selectedSubjectSlot.subjectId
-    }).filter(
-      (session) => session.date === selectedDate && session.scheduleSlotId === selectedSubjectSlot.slotId
-    );
-  }, [selectedDate, selectedSubjectSlot, taskSessions]);
-
-  const availableTasksToAssign = useMemo(() => {
-    if (!selectedSubjectSlot || !selectedUnitToAssignId) {
-      return [];
-    }
-    const linkedTaskIds = new Set(
-      taskSubjectLinks
-        .filter(
-          (link) =>
-            link.subjectId === selectedSubjectSlot.subjectId &&
-            (link.unitId ?? "") === selectedUnitToAssignId
-        )
-        .map((link) => link.taskId)
-    );
-    // Every linked task is selectable, even one already assigned elsewhere in this slot -
-    // a period can now hold several tasks at once, and picking an assigned one just switches to it.
-    return tasks
-      .filter((task) => linkedTaskIds.has(task.id))
-      .sort((a, b) => a.title.localeCompare(b.title));
-  }, [selectedSubjectSlot, selectedUnitToAssignId, taskSubjectLinks, tasks]);
-
-  const taskSessionForSelectedSlot = useMemo(() => {
-    if (slotSessionsForSelectedSlot.length === 0) {
-      return null;
-    }
-    return (
-      slotSessionsForSelectedSlot.find((session) => session.taskId === selectedTaskToAssignId) ??
-      slotSessionsForSelectedSlot[0]
-    );
-  }, [selectedTaskToAssignId, slotSessionsForSelectedSlot]);
-
-  const taskForSelectedSlot = useMemo(
-    () => tasks.find((task) => task.id === taskSessionForSelectedSlot?.taskId) ?? null,
-    [taskSessionForSelectedSlot?.taskId, tasks]
-  );
-
-  const taskTitleByClassSlot = useMemo(() => {
-    const taskById = new Map(tasks.map((task) => [task.id, task]));
-    const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
-    const subjectLinksByTaskId = new Map<string, TaskSubjectLink[]>();
-    for (const link of taskSubjectLinks) {
-      if (!subjectLinksByTaskId.has(link.taskId)) {
-        subjectLinksByTaskId.set(link.taskId, []);
-      }
-      subjectLinksByTaskId.get(link.taskId)?.push(link);
-    }
-    const map = new Map<string, string>();
-    for (const session of taskSessions) {
-      if (session.date !== selectedDate) {
-        continue;
-      }
-      const task = taskById.get(session.taskId);
-      if (!task) {
-        continue;
-      }
-      const links = subjectLinksByTaskId.get(session.taskId) ?? [];
-      const link = links.find((item) => item.subjectId === session.subjectId) ?? links[0];
-      const unit = link?.unitId ? unitById.get(link.unitId) : null;
-      const unitName = unit?.name || "Sin unidad";
-      const taskTitle = task.title || "Tarea sin título";
-      map.set(`${session.classId}:${session.subjectId}:${session.scheduleSlotId}`, `${unitName} / ${taskTitle}`);
-    }
-    return map;
-  }, [selectedDate, taskSessions, taskSubjectLinks, tasks, unitBlocks]);
-
-  const taskPickerOptions = mode === "work" ? tasksForSelectedUnit : availableTasksToAssign;
 
   const unitNameByTaskId = useMemo(() => {
     const unitById = new Map(unitBlocks.map((unit) => [unit.id, unit]));
@@ -831,15 +346,13 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       });
   }, [selectedClassId, selectedSubjectId, selectedWorkUnitId, taskSessions, taskSubjectLinks, tasks, unitNameByTaskId]);
 
-  const selectedTaskForDay = useMemo(() => {
-    if (mode === "work") {
-      return workTaskOptions.find((item) => item.task.id === selectedTaskId)?.task ?? null;
-    }
-    return tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.task ?? null;
-  }, [mode, selectedTaskId, tasksForSelectedDate, workTaskOptions]);
+  const selectedTaskForDay = useMemo(
+    () => workTaskOptions.find((item) => item.task.id === selectedTaskId)?.task ?? null,
+    [selectedTaskId, workTaskOptions]
+  );
 
   const workTaskSessions = useMemo(() => {
-    if (mode !== "work" || !selectedTaskForDay || !selectedClassId || !selectedSubjectId) {
+    if (!selectedTaskForDay || !selectedClassId || !selectedSubjectId) {
       return [];
     }
     return filterTaskSessionsForEvaluation(taskSessions, {
@@ -860,7 +373,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         return a.scheduleSlotId.localeCompare(b.scheduleSlotId);
       });
   }, [
-    mode,
     selectedClassId,
     selectedSubjectId,
     selectedTaskForDay,
@@ -868,34 +380,23 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     taskSessions
   ]);
 
-  const selectedTaskSessionsForDay = useMemo(() => {
-    if (mode === "work") {
-      return workTaskSessions;
-    }
-    return tasksForSelectedDate.find((item) => item.task.id === selectedTaskId)?.sessions ?? [];
-  }, [
-    mode,
-    selectedTaskId,
-    tasksForSelectedDate,
-    workTaskSessions
-  ]);
   const selectedTaskSessionForDay = useMemo(
-    () => selectTaskSessionByDateAndSlot(selectedTaskSessionsForDay, selectedDate, selectedTaskSessionSlotId),
-    [selectedDate, selectedTaskSessionSlotId, selectedTaskSessionsForDay]
+    () => selectTaskSessionByDateAndSlot(workTaskSessions, selectedDate, selectedTaskSessionSlotId),
+    [selectedDate, selectedTaskSessionSlotId, workTaskSessions]
   );
   const selectedTaskGradebookConfig = useMemo(() => {
-    if (!selectedTaskForDay || !activeClassId || !activeSubjectId) {
+    if (!selectedTaskForDay || !selectedClassId || !selectedSubjectId) {
       return null;
     }
     return (
       taskGradebookConfigs.find(
         (config) =>
           config.taskId === selectedTaskForDay.id &&
-          config.subjectId === activeSubjectId &&
-          config.classId === activeClassId
+          config.subjectId === selectedSubjectId &&
+          config.classId === selectedClassId
       ) ?? null
     );
-  }, [activeClassId, activeSubjectId, selectedTaskForDay, taskGradebookConfigs]);
+  }, [selectedClassId, selectedSubjectId, selectedTaskForDay, taskGradebookConfigs]);
 
   const taskStudents = useMemo(() => {
     if (!selectedTaskForDay) {
@@ -903,13 +404,13 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     }
     const studentSet = new Set(
       subjectStudentLinks
-        .filter((link) => link.subjectId === activeSubjectId)
+        .filter((link) => link.subjectId === selectedSubjectId)
         .map((link) => link.studentId)
     );
     return allStudents
       .filter((student) => studentSet.has(student.id))
-      .filter((student) => student.classId === activeClassId);
-  }, [activeClassId, activeSubjectId, allStudents, selectedTaskForDay, subjectStudentLinks]);
+      .filter((student) => student.classId === selectedClassId);
+  }, [selectedClassId, selectedSubjectId, allStudents, selectedTaskForDay, subjectStudentLinks]);
 
   const selectedRubricTemplate = useMemo(
     () => rubricTemplates.find((item) => item.id === selectedRubricTemplateId) ?? null,
@@ -919,11 +420,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     () => checklistTemplates.find((item) => item.id === selectedChecklistTemplateId) ?? null,
     [checklistTemplates, selectedChecklistTemplateId]
   );
-  const taskHasFixedRubric = Boolean(selectedTaskGradebookConfig?.rubricTemplateId);
-  const taskHasFixedChecklist = !taskHasFixedRubric && Boolean(selectedTaskGradebookConfig?.checklistTemplateId);
   const taskHasDirectGrade = Boolean(selectedTaskGradebookConfig?.directGradeEnabled);
-  const diaryRubricTemplates = selectedRubricTemplate ? [selectedRubricTemplate] : [];
-  const diaryChecklistTemplates = selectedChecklistTemplate ? [selectedChecklistTemplate] : [];
   const taskHasAssignedInstrument = Boolean(
     selectedTaskGradebookConfig?.rubricTemplateId ||
       selectedTaskGradebookConfig?.checklistTemplateId ||
@@ -931,28 +428,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
   );
 
   useEffect(() => {
-    if (mode !== "attendance") {
-      return;
-    }
-    if (taskForSelectedSlot?.id) {
-      if (selectedTaskId !== taskForSelectedSlot.id) {
-        setSelectedTaskId(taskForSelectedSlot.id);
-      }
-      return;
-    }
-    if (tasksForSelectedDate.length === 0 || !taskForSelectedSlot) {
-      setSelectedTaskId("");
-      return;
-    }
-    if (!tasksForSelectedDate.some((item) => item.task.id === selectedTaskId)) {
-      setSelectedTaskId(tasksForSelectedDate[0].task.id);
-    }
-  }, [mode, selectedTaskId, taskForSelectedSlot, tasksForSelectedDate]);
-
-  useEffect(() => {
-    if (mode !== "work") {
-      return;
-    }
     if (workTaskOptions.length === 0) {
       setSelectedTaskId("");
       return;
@@ -960,122 +435,30 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     if (!workTaskOptions.some((item) => item.task.id === selectedTaskId)) {
       setSelectedTaskId(workTaskOptions[0].task.id);
     }
-  }, [mode, selectedTaskId, workTaskOptions]);
+  }, [selectedTaskId, workTaskOptions]);
 
   useEffect(() => {
-    if (mode !== "attendance") {
+    if (!deepLinkAppliedRef.current && searchParams.has("taskId")) {
       return;
     }
-    const contextKey = `${selectedDate}:${selectedSubjectSlot?.key ?? ""}:${taskForSelectedSlot?.id ?? ""}`;
-    if (taskPickerContextRef.current === contextKey) {
-      return;
-    }
-    taskPickerContextRef.current = contextKey;
-
-    const currentTaskUnitId =
-      taskSubjectLinks.find(
-        (link) =>
-          link.subjectId === selectedSubjectSlot?.subjectId &&
-          link.taskId === taskForSelectedSlot?.id
-      )?.unitId ?? "";
-    const hasCurrentTaskUnit = unitsForSelectedSubject.some((unit) => unit.id === currentTaskUnitId);
-
-    setSelectedUnitToAssignId(hasCurrentTaskUnit ? currentTaskUnitId : "");
-    setSelectedTaskToAssignId(taskForSelectedSlot?.id ?? "");
-  }, [
-    mode,
-    selectedDate,
-    selectedSubjectSlot?.key,
-    selectedSubjectSlot?.subjectId,
-    taskForSelectedSlot?.id,
-    taskSubjectLinks,
-    unitsForSelectedSubject
-  ]);
-
-  useEffect(() => {
-    if (unitsForSelectedSubject.length === 0) {
-      setSelectedUnitToAssignId("");
-      return;
-    }
-    if (mode === "attendance" && !taskForSelectedSlot) {
-      const selectedUnitExists = unitsForSelectedSubject.some((unit) => unit.id === selectedUnitToAssignId);
-      if (selectedUnitToAssignId && !selectedUnitExists) {
-        setSelectedUnitToAssignId("");
-      }
-      return;
-    }
-    const currentTaskUnitId = taskSubjectLinks.find(
-      (link) =>
-        link.subjectId === selectedSubjectSlot?.subjectId &&
-        link.taskId === taskForSelectedSlot?.id
-    )?.unitId;
-    const hasCurrentTaskUnit = Boolean(
-      currentTaskUnitId && unitsForSelectedSubject.some((unit) => unit.id === currentTaskUnitId)
-    );
-    if (
-      !unitsForSelectedSubject.some((unit) => unit.id === selectedUnitToAssignId) ||
-      (hasCurrentTaskUnit && selectedUnitToAssignId !== currentTaskUnitId)
-    ) {
-      const preferredUnitId = hasCurrentTaskUnit && currentTaskUnitId ? currentTaskUnitId : unitsForSelectedSubject[0].id;
-      setSelectedUnitToAssignId(preferredUnitId);
-    }
-  }, [
-    mode,
-    selectedSubjectSlot?.subjectId,
-    selectedUnitToAssignId,
-    taskForSelectedSlot,
-    taskSubjectLinks,
-    unitsForSelectedSubject
-  ]);
-
-  useEffect(() => {
-    if (mode !== "attendance") {
-      return;
-    }
-    if (taskPickerOptions.length === 0) {
-      setSelectedTaskToAssignId("");
-      return;
-    }
-    const currentTaskId = taskForSelectedSlot?.id;
-    if (mode === "attendance" && currentTaskId && taskPickerOptions.some((task) => task.id === currentTaskId)) {
-      setSelectedTaskToAssignId(currentTaskId);
-      return;
-    }
-    if (mode === "attendance" && !currentTaskId) {
-      if (selectedTaskToAssignId && !taskPickerOptions.some((task) => task.id === selectedTaskToAssignId)) {
-        setSelectedTaskToAssignId("");
-      }
-      return;
-    }
-    if (!taskPickerOptions.some((task) => task.id === selectedTaskToAssignId)) {
-      setSelectedTaskToAssignId(taskPickerOptions[0].id);
-    }
-  }, [mode, selectedTaskToAssignId, taskForSelectedSlot?.id, taskPickerOptions]);
-
-  useEffect(() => {
-    if (mode === "work" && !deepLinkAppliedRef.current && searchParams.has("taskId")) {
-      return;
-    }
-    if (selectedTaskSessionsForDay.length === 0) {
+    if (workTaskSessions.length === 0) {
       setSelectedTaskSessionSlotId("");
       return;
     }
-    const exists = selectedTaskSessionsForDay.some(
-      (item) =>
-        item.scheduleSlotId === selectedTaskSessionSlotId &&
-        (mode !== "work" || item.date === selectedDate)
+    const exists = workTaskSessions.some(
+      (item) => item.scheduleSlotId === selectedTaskSessionSlotId && item.date === selectedDate
     );
     if (!exists) {
-      const firstSession = selectedTaskSessionsForDay[0];
+      const firstSession = workTaskSessions[0];
       setSelectedTaskSessionSlotId(firstSession.scheduleSlotId);
-      if (mode === "work" && selectedDate !== firstSession.date) {
+      if (selectedDate !== firstSession.date) {
         setSelectedDate(firstSession.date);
       }
     }
-  }, [mode, searchParams, selectedDate, selectedTaskSessionSlotId, selectedTaskSessionsForDay]);
+  }, [searchParams, selectedDate, selectedTaskSessionSlotId, workTaskSessions]);
 
   useEffect(() => {
-    if (!selectedTaskForDay || !selectedTaskSessionForDay || !activeClassId || !activeSubjectId) {
+    if (!selectedTaskForDay || !selectedTaskSessionForDay || !selectedClassId || !selectedSubjectId) {
       setTaskGeneralCommentDraft("");
       setTaskStudentCommentDraft(new Map());
       setSelectedRubricTemplateId("");
@@ -1095,7 +478,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
           item.taskId === selectedTaskForDay.id &&
           item.date === diaryDate &&
           item.scheduleSlotId === slotId &&
-          matchesTaskScope(item, activeClassId, activeSubjectId)
+          matchesTaskScope(item, selectedClassId, selectedSubjectId)
       ) ?? null;
     setTaskGeneralCommentDraft(setting?.generalComment ?? "");
     const commentsMap = new Map<string, string>();
@@ -1104,7 +487,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         row.taskId === selectedTaskForDay.id &&
         row.date === diaryDate &&
         row.scheduleSlotId === slotId &&
-        matchesTaskScope(row, activeClassId, activeSubjectId)
+        matchesTaskScope(row, selectedClassId, selectedSubjectId)
       ) {
         commentsMap.set(row.studentId, row.comment);
       }
@@ -1130,7 +513,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         row.taskId !== selectedTaskForDay.id ||
         row.date !== diaryDate ||
         row.scheduleSlotId !== slotId ||
-        !matchesTaskScope(row, activeClassId, activeSubjectId)
+        !matchesTaskScope(row, selectedClassId, selectedSubjectId)
       ) {
         continue;
       }
@@ -1144,7 +527,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         row.taskId !== selectedTaskForDay.id ||
         row.date !== diaryDate ||
         row.scheduleSlotId !== slotId ||
-        !matchesTaskScope(row, activeClassId, activeSubjectId)
+        !matchesTaskScope(row, selectedClassId, selectedSubjectId)
       ) {
         continue;
       }
@@ -1156,8 +539,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     for (const row of taskDirectGrades) {
       if (
         row.taskId !== selectedTaskForDay.id ||
-        row.classId !== activeClassId ||
-        row.subjectId !== activeSubjectId
+        row.classId !== selectedClassId ||
+        row.subjectId !== selectedSubjectId
       ) {
         continue;
       }
@@ -1167,8 +550,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     setTaskNotice("");
     setTaskDirty(false);
   }, [
-    activeClassId,
-    activeSubjectId,
+    selectedClassId,
+    selectedSubjectId,
     selectedDate,
     selectedTaskGradebookConfig,
     selectedTaskForDay,
@@ -1177,116 +560,16 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     taskDailyEvaluationSettings,
     taskDirectGrades,
     taskRubricAssessments,
-    taskStudentComments,
-    mode
+    taskStudentComments
   ]);
-
-  const attendanceDirty = draftStatusByStudent.size > 0 || draftNoteByStudent.size > 0;
 
   const markTaskDirty = (): void => {
     taskEditVersionRef.current += 1;
     setTaskDirty(true);
   };
 
-  const setDraftNote = (studentId: string, note: string): void => {
-    const existingNote = normalizeAttendanceNote(attendanceByStudent.get(studentId)?.note) ?? "";
-    const normalizedNote = normalizeAttendanceNote(note) ?? "";
-    setDraftNoteByStudent((prev) => {
-      const next = new Map(prev);
-      if (normalizedNote === existingNote) {
-        next.delete(studentId);
-      } else {
-        next.set(studentId, note);
-      }
-      return next;
-    });
-    setAttendanceNotice("");
-  };
-
-  const setDraftStatus = (studentId: string, status: AttendanceEntry["status"]): void => {
-    const baseStatus = baseStatusByStudent.get(studentId) ?? "present";
-    setDraftStatusByStudent((prev) => {
-      const next = new Map(prev);
-      if (status === baseStatus) {
-        next.delete(studentId);
-      } else {
-        next.set(studentId, status);
-      }
-      return next;
-    });
-    setAttendanceNotice("");
-  };
-
-  const saveAttendance = async (): Promise<boolean> => {
-    if (!selectedSubjectSlot) {
-      return false;
-    }
-    if (attendanceAutoSaveTimerRef.current !== null) {
-      window.clearTimeout(attendanceAutoSaveTimerRef.current);
-      attendanceAutoSaveTimerRef.current = null;
-    }
-    const statusDraftSnapshot = new Map(draftStatusByStudent);
-    const noteDraftSnapshot = new Map(draftNoteByStudent);
-    setIsSavingAttendance(true);
-    try {
-      const now = new Date().toISOString();
-      const rows = students.flatMap((student) => {
-        const studentId = student.id;
-        if (!studentsById.has(studentId)) return [];
-        const existing = attendanceByStudent.get(studentId);
-        return [{
-          id: existing?.id ?? `att-${selectedSubjectSlot.subjectId}-${studentId}-${selectedDate}-${selectedSubjectSlot.slotId}`,
-          classId: selectedSubjectSlot.classId,
-          subjectId: selectedSubjectSlot.subjectId,
-          studentId,
-          date: selectedDate,
-          scheduleSlotId: selectedSubjectSlot.slotId,
-          startTime: selectedSubjectSlot.startTime,
-          endTime: selectedSubjectSlot.endTime,
-          status: statusDraftSnapshot.get(studentId) ?? existing?.status ?? "present",
-          absenceJustified: existing?.absenceJustified,
-          lateMinutes: existing?.lateMinutes,
-          earlyDepartureMinutes: existing?.earlyDepartureMinutes,
-          note: resolveAttendanceNoteForSave(studentId, noteDraftSnapshot, existing?.note),
-          createdAt: existing?.createdAt ?? now,
-          updatedAt: now
-        } satisfies AttendanceEntry];
-      });
-      await db.transaction("rw", db.attendanceEntries, async () => {
-        await db.attendanceEntries.bulkPut(rows);
-      });
-      setDraftStatusByStudent((current) => {
-        const next = new Map(current);
-        for (const [studentId, status] of statusDraftSnapshot) {
-          if (next.get(studentId) === status) {
-            next.delete(studentId);
-          }
-        }
-        return next;
-      });
-      setDraftNoteByStudent((current) => {
-        const next = new Map(current);
-        for (const [studentId, note] of noteDraftSnapshot) {
-          if (next.get(studentId) === note) {
-            next.delete(studentId);
-          }
-        }
-        return next;
-      });
-      setAttendanceNotice("Asistencia guardada automaticamente.");
-      await loadData();
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Error desconocido";
-      setAttendanceNotice(`No se pudo guardar la asistencia: ${message}.`);
-      return false;
-    } finally {
-      setIsSavingAttendance(false);
-    }
-  };
-
   const saveTaskDiary = async (): Promise<boolean> => {
-    if (!selectedTaskForDay || !activeClassId || !activeSubjectId || !selectedTaskSessionForDay) {
+    if (!selectedTaskForDay || !selectedClassId || !selectedSubjectId || !selectedTaskSessionForDay) {
       return false;
     }
     if (taskAutoSaveTimerRef.current !== null) {
@@ -1324,10 +607,10 @@ export function AttendancePage({ mode }: AttendancePageProps) {
           return false;
         }
         normalizedDirectGrades.push({
-          id: `task-direct-${taskId}-${activeSubjectId}-${activeClassId}-${student.id}`,
+          id: `task-direct-${taskId}-${selectedSubjectId}-${selectedClassId}-${student.id}`,
           taskId,
-          subjectId: activeSubjectId,
-          classId: activeClassId,
+          subjectId: selectedSubjectId,
+          classId: selectedClassId,
           studentId: student.id,
           score: Number(score.toFixed(2))
         });
@@ -1337,8 +620,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       .map((student) => ({
         id: crypto.randomUUID(),
         taskId,
-        subjectId: activeSubjectId,
-        classId: activeClassId,
+        subjectId: selectedSubjectId,
+        classId: selectedClassId,
         date: diaryDate,
         scheduleSlotId,
         studentId: student.id,
@@ -1358,7 +641,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         async () => {
           const commentIds = (await db.taskStudentComments
             .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .equals([taskId, selectedClassId, selectedSubjectId, diaryDate, scheduleSlotId])
             .primaryKeys()) as string[];
           await db.taskStudentComments.bulkDelete(commentIds);
           if (normalizedComments.length > 0) {
@@ -1367,15 +650,15 @@ export function AttendancePage({ mode }: AttendancePageProps) {
 
           const settingIds = (await db.taskDailyEvaluationSettings
             .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .equals([taskId, selectedClassId, selectedSubjectId, diaryDate, scheduleSlotId])
             .primaryKeys()) as string[];
           await db.taskDailyEvaluationSettings.bulkDelete(settingIds);
           if (normalizedGeneralComment || effectiveRubricTemplateId || effectiveChecklistTemplateId) {
             await db.taskDailyEvaluationSettings.add({
-              id: `task-eval-${taskId}-${activeSubjectId}-${activeClassId}-${diaryDate}-${scheduleSlotId}`,
+              id: `task-eval-${taskId}-${selectedSubjectId}-${selectedClassId}-${diaryDate}-${scheduleSlotId}`,
               taskId,
-              subjectId: activeSubjectId,
-              classId: activeClassId,
+              subjectId: selectedSubjectId,
+              classId: selectedClassId,
               date: diaryDate,
               scheduleSlotId,
               generalComment: normalizedGeneralComment || undefined,
@@ -1386,7 +669,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
 
           const rubricIds = (await db.taskRubricAssessments
             .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .equals([taskId, selectedClassId, selectedSubjectId, diaryDate, scheduleSlotId])
             .primaryKeys()) as string[];
           await db.taskRubricAssessments.bulkDelete(rubricIds);
           if (effectiveRubricTemplateId && selectedRubricTemplate) {
@@ -1402,8 +685,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                 rubricRows.push({
                   id: crypto.randomUUID(),
                   taskId,
-                  subjectId: activeSubjectId,
-                  classId: activeClassId,
+                  subjectId: selectedSubjectId,
+                  classId: selectedClassId,
                   date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
@@ -1421,7 +704,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
 
           const checklistIds = (await db.taskChecklistAssessments
             .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([taskId, activeClassId, activeSubjectId, diaryDate, scheduleSlotId])
+            .equals([taskId, selectedClassId, selectedSubjectId, diaryDate, scheduleSlotId])
             .primaryKeys()) as string[];
           await db.taskChecklistAssessments.bulkDelete(checklistIds);
           if (effectiveChecklistTemplateId && selectedChecklistTemplate) {
@@ -1434,8 +717,8 @@ export function AttendancePage({ mode }: AttendancePageProps) {
                 checklistRows.push({
                   id: crypto.randomUUID(),
                   taskId,
-                  subjectId: activeSubjectId,
-                  classId: activeClassId,
+                  subjectId: selectedSubjectId,
+                  classId: selectedClassId,
                   date: diaryDate,
                   scheduleSlotId,
                   studentId: student.id,
@@ -1453,7 +736,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
           if (usesDirectGrade) {
             await db.taskDirectGrades
               .where("[taskId+subjectId+classId]")
-              .equals([taskId, activeSubjectId, activeClassId])
+              .equals([taskId, selectedSubjectId, selectedClassId])
               .delete();
             if (normalizedDirectGrades.length > 0) {
               await db.taskDirectGrades.bulkAdd(normalizedDirectGrades);
@@ -1473,88 +756,9 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     }
   };
 
-  const assignTaskToSelectedClass = async (taskId = selectedTaskToAssignId): Promise<void> => {
-    if (!selectedSubjectSlot || !taskId) {
-      return;
-    }
-    // A slot can now hold several tasks at once. Check first whether `taskId` already has its
-    // own session here - if so, just switch to it; never delete a different stacked task's data.
-    const existingForTask = slotSessionsForSelectedSlot.find((session) => session.taskId === taskId);
-    if (existingForTask) {
-      setSelectedTaskId(taskId);
-      setSelectedTaskToAssignId(taskId);
-      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
-      return;
-    }
-
-    // Only replace the session for the task currently shown in the picker - not an arbitrary
-    // other session stacked in this same slot.
-    const occupied = slotSessionsForSelectedSlot.find((session) => session.taskId === selectedTaskToAssignId) ?? null;
-    if (occupied) {
-      await db.transaction(
-        "rw",
-        db.tables,
-        async () => {
-          await db.taskSessions.where("id").equals(occupied.id).delete();
-          const settingIds = (await db.taskDailyEvaluationSettings
-            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
-            .primaryKeys()) as string[];
-          await db.taskDailyEvaluationSettings.bulkDelete(settingIds);
-          const commentIds = (await db.taskStudentComments
-            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
-            .primaryKeys()) as string[];
-          await db.taskStudentComments.bulkDelete(commentIds);
-          const rubricIds = (await db.taskRubricAssessments
-            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
-            .primaryKeys()) as string[];
-          await db.taskRubricAssessments.bulkDelete(rubricIds);
-          const checklistIds = (await db.taskChecklistAssessments
-            .where("[taskId+classId+subjectId+date+scheduleSlotId]")
-            .equals([occupied.taskId, selectedSubjectSlot.classId, selectedSubjectSlot.subjectId, selectedDate, selectedSubjectSlot.slotId])
-            .primaryKeys()) as string[];
-          await db.taskChecklistAssessments.bulkDelete(checklistIds);
-          await db.taskSessions.add({
-            id: crypto.randomUUID(),
-            taskId,
-            subjectId: selectedSubjectSlot.subjectId,
-            classId: selectedSubjectSlot.classId,
-            date: selectedDate,
-            scheduleSlotId: selectedSubjectSlot.slotId,
-            status: "planned"
-          });
-        }
-      );
-      setSelectedTaskId(taskId);
-      setSelectedTaskToAssignId(taskId);
-      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
-      setTaskNotice("Tarea cambiada en esta hora.");
-      await loadMetadata();
-      return;
-    }
-
-    await db.taskSessions.add({
-      id: crypto.randomUUID(),
-      taskId,
-      subjectId: selectedSubjectSlot.subjectId,
-      classId: selectedSubjectSlot.classId,
-      date: selectedDate,
-      scheduleSlotId: selectedSubjectSlot.slotId,
-      status: "planned"
-    });
-    setSelectedTaskId(taskId);
-    setSelectedTaskToAssignId(taskId);
-    setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
-    setTaskNotice("Tarea asignada a la clase.");
-    await loadMetadata();
-  };
-
-  const saveAttendanceForEffect = useEffectEvent(saveAttendance);
   const saveTaskDiaryForEffect = useEffectEvent(saveTaskDiary);
 
-  const hasUnsavedChanges = attendanceDirty || taskDirty;
+  const hasUnsavedChanges = taskDirty;
 
   const runWithContextGuard = (action: () => void): void => {
     if (!hasUnsavedChanges) {
@@ -1562,43 +766,13 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       return;
     }
     void (async () => {
-      const attendanceSaved = attendanceDirty ? await saveAttendance() : true;
-      if (!attendanceSaved) {
-        return;
-      }
-      const taskSaved = taskDirty ? await saveTaskDiary() : true;
+      const taskSaved = await saveTaskDiary();
       if (!taskSaved) {
         return;
       }
       action();
     })();
   };
-
-  useEffect(() => {
-    if (!attendanceDirty || !selectedSubjectSlot || isSavingAttendance) {
-      return;
-    }
-    if (attendanceAutoSaveTimerRef.current !== null) {
-      window.clearTimeout(attendanceAutoSaveTimerRef.current);
-    }
-    attendanceAutoSaveTimerRef.current = window.setTimeout(() => {
-      attendanceAutoSaveTimerRef.current = null;
-      void saveAttendanceForEffect();
-    }, 600);
-    return () => {
-      if (attendanceAutoSaveTimerRef.current !== null) {
-        window.clearTimeout(attendanceAutoSaveTimerRef.current);
-        attendanceAutoSaveTimerRef.current = null;
-      }
-    };
-  }, [
-    attendanceDirty,
-    draftNoteByStudent,
-    draftStatusByStudent,
-    isSavingAttendance,
-    selectedDate,
-    selectedSubjectSlot
-  ]);
 
   useEffect(() => {
     if (!taskDirty || !selectedTaskForDay || !selectedTaskSessionForDay || isSavingTask) {
@@ -1619,7 +793,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     };
   }, [
     isSavingTask,
-    mode,
     selectedDate,
     selectedTaskForDay,
     selectedTaskSessionForDay,
@@ -1631,8 +804,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     taskStudentCommentDraft
   ]);
 
-  const calendarCells = useMemo(() => monthGrid(calendarMonth, weekStartsOn), [calendarMonth, weekStartsOn]);
-  const calendarWeekdayLabels = useMemo(() => weekdayLabels(weekStartsOn), [weekStartsOn]);
   const renderDirectGradeInput = (student: Student) => (
     <input
       className="input"
@@ -1659,7 +830,6 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     />
   );
   const savePendingWorkChanges = async (): Promise<boolean> => {
-    if (attendanceDirty && !(await saveAttendance())) return false;
     if (taskDirty && !(await saveTaskDiary())) return false;
     return true;
   };
@@ -1688,649 +858,311 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     <section className="module-card">
       <div className="courses-layout">
         <aside className="courses-list-panel">
-          {mode === "attendance" ? (
-            <>
-              <section className="attendance-calendar">
-                <div className="attendance-calendar-header">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Mes anterior"
-                    onClick={() => setCalendarMonth((current) => addMonths(current, -1))}
-                  >
-                    {"<"}
-                  </button>
-                  <strong>
-                    {MONTH_LABELS[calendarMonth.getMonth()]} {calendarMonth.getFullYear()}
-                  </strong>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Mes siguiente"
-                    onClick={() => setCalendarMonth((current) => addMonths(current, 1))}
-                  >
-                    {">"}
-                  </button>
+          <div className="context-sidebar-tabs">
+            <div className="context-sidebar-group">
+              <ClassGroupSelect
+                groups={classGroups}
+                value={selectedClassId}
+                onChange={async (classId) => {
+                  if (!(await savePendingWorkChanges())) return;
+                  dispatch(setSelectedClass(classId));
+                }}
+              />
+            </div>
+
+            {selectedClassId ? (
+              <>
+                <div className="context-sidebar-separator" aria-hidden="true" />
+                <div className="context-sidebar-group">
+                  <strong>Asignatura</strong>
+                  {workSubjects.length > 0 ? (
+                    <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Asignatura">
+                      {workSubjects.map((subject) => (
+                        <button
+                          key={subject.id}
+                          type="button"
+                          aria-pressed={selectedSubjectId === subject.id}
+                          className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
+                          onClick={async () => {
+                            if (!(await savePendingWorkChanges())) return;
+                            dispatch(setSelectedSubject(subject.id));
+                          }}
+                        >
+                          <span>{subject.name || "Asignatura sin nombre"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="hint">No hay asignaturas asociadas a este curso.</p>
+                  )}
                 </div>
-                <div className="attendance-calendar-grid" role="grid" aria-label="Calendario de asistencia">
-                  {calendarWeekdayLabels.map((item) => (
-                    <span key={item} className="attendance-calendar-weekday">
-                      {item}
-                    </span>
-                  ))}
-                  {calendarCells.map((cell) => {
-                    const iso = toIsoDate(cell.date);
-                    const isToday = iso === toLocalIsoDate();
-                    const isSelected = selectedDate === iso;
-                    return (
+              </>
+            ) : null}
+          </div>
+          {selectedSubjectId ? (
+            <div className="context-sidebar-tabs">
+              <div className="context-sidebar-separator" aria-hidden="true" />
+              <div className="context-sidebar-group">
+                <strong>Unidades</strong>
+                {workUnits.length > 0 ? (
+                  <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Unidades">
+                    {workUnits.map((unit) => (
                       <button
-                        key={iso}
+                        key={unit.id}
                         type="button"
-                        className={`attendance-calendar-day ${cell.inMonth ? "" : "outside"} ${
-                          isSelected ? "selected" : ""
-                        } ${isToday ? "today" : ""}`}
-                        onClick={() => {
-                          runWithContextGuard(() => setSelectedDate(iso));
+                        aria-pressed={selectedWorkUnitId === unit.id}
+                        className={`section-tab ${selectedWorkUnitId === unit.id ? "active" : ""}`}
+                        onClick={async () => {
+                          if (!(await savePendingWorkChanges())) return;
+                          setSelectedWorkUnitId(unit.id);
                         }}
                       >
-                        {cell.date.getDate()}
+                        <span>{unit.name || "Unidad sin nombre"}</span>
                       </button>
-                    );
-                  })}
-                </div>
-                <div className="attendance-calendar-legend">
-                  <span className="attendance-dot today">Hoy</span>
-                </div>
-              </section>
-              <div className="attendance-day-nav">
+                    ))}
+                  </div>
+                ) : (
+                  <p className="hint">No hay unidades creadas para esta asignatura.</p>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <div className="courses-list-header">
+            <strong>Tareas</strong>
+          </div>
+          <div className="courses-list section-tabs" role="group" aria-label="Listado de tareas">
+            {workTaskOptions.map(({ task, unitName, sessionCount }) => (
+              <div key={task.id} className="courses-list-row">
                 <button
                   type="button"
-                  className="icon-btn"
-                  aria-label="Día anterior"
+                  aria-pressed={selectedTaskId === task.id}
+                  className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
                   onClick={() => {
-                    runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, -1)));
+                    runWithContextGuard(() => setSelectedTaskId(task.id));
                   }}
                 >
-                  {"<"}
-                </button>
-                <div className="attendance-day-nav-center">
-                  <strong>{selectedDayName}</strong>
-                  <small>{selectedDate}</small>
-                </div>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label="Día siguiente"
-                  onClick={() => {
-                    runWithContextGuard(() => setSelectedDate((current) => shiftIsoDate(current, 1)));
-                  }}
-                >
-                  {">"}
+                  <span>{task.title || "Tarea sin título"}</span>
+                  <small>{unitName}</small>
+                  <small>{sessionCount} sesiones</small>
                 </button>
               </div>
-              <div className="courses-list-header">
-                <strong>Clases del día</strong>
-              </div>
-              <div className="courses-list section-tabs" role="group" aria-label="Clases del día">
-                {subjectSlotsForDate.map((slot) => (
-                  <button
-                    key={slot.key}
-                    type="button"
-                    aria-pressed={selectedSlotKey === slot.key}
-                    className={`section-tab ${selectedSlotKey === slot.key ? "active" : ""}`}
-                    onClick={() => {
-                      runWithContextGuard(() => {
-                        setSelectedSlotKey(slot.key);
-                      });
-                    }}
-                  >
-                    <span>{slot.subjectName}</span>
-                    <small>
-                      {taskTitleByClassSlot.get(`${slot.classId}:${slot.subjectId}:${slot.slotId}`) ?? "Sin unidad / Sin tarea"}
-                    </small>
-                    <small>
-                      {slot.className} · {slot.startTime} - {slot.endTime}
-                    </small>
-                  </button>
-                ))}
-                {subjectSlotsForDate.length === 0 ? (
-                  <p className="hint">No hay clases programadas para este día.</p>
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="context-sidebar-tabs">
-                <div className="context-sidebar-group">
-                  <ClassGroupSelect
-                    groups={classGroups}
-                    value={selectedClassId}
-                    onChange={async (classId) => {
-                      if (!(await savePendingWorkChanges())) return;
-                      dispatch(setSelectedClass(classId));
-                    }}
-                  />
-                </div>
-
-                {selectedClassId ? (
-                  <>
-                    <div className="context-sidebar-separator" aria-hidden="true" />
-                    <div className="context-sidebar-group">
-                      <strong>Asignatura</strong>
-                      {workSubjects.length > 0 ? (
-                        <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Asignatura">
-                          {workSubjects.map((subject) => (
-                            <button
-                              key={subject.id}
-                              type="button"
-                              aria-pressed={selectedSubjectId === subject.id}
-                              className={`section-tab ${selectedSubjectId === subject.id ? "active" : ""}`}
-                              onClick={async () => {
-                                if (!(await savePendingWorkChanges())) return;
-                                dispatch(setSelectedSubject(subject.id));
-                              }}
-                            >
-                              <span>{subject.name || "Asignatura sin nombre"}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="hint">No hay asignaturas asociadas a este curso.</p>
-                      )}
-                    </div>
-                  </>
-                ) : null}
-              </div>
-              {selectedSubjectId ? (
-                <div className="context-sidebar-tabs">
-                  <div className="context-sidebar-separator" aria-hidden="true" />
-                  <div className="context-sidebar-group">
-                    <strong>Unidades</strong>
-                    {workUnits.length > 0 ? (
-                      <div className="courses-list section-tabs context-sidebar-list" role="group" aria-label="Unidades">
-                        {workUnits.map((unit) => (
-                          <button
-                            key={unit.id}
-                            type="button"
-                            aria-pressed={selectedWorkUnitId === unit.id}
-                            className={`section-tab ${selectedWorkUnitId === unit.id ? "active" : ""}`}
-                            onClick={async () => {
-                              if (!(await savePendingWorkChanges())) return;
-                              setSelectedWorkUnitId(unit.id);
-                            }}
-                          >
-                            <span>{unit.name || "Unidad sin nombre"}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="hint">No hay unidades creadas para esta asignatura.</p>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-              <div className="courses-list-header">
-                <strong>Tareas</strong>
-              </div>
-              <div className="courses-list section-tabs" role="group" aria-label="Listado de tareas">
-                {workTaskOptions.map(({ task, unitName, sessionCount }) => (
-                  <div key={task.id} className="courses-list-row">
-                    <button
-                      type="button"
-                      aria-pressed={selectedTaskId === task.id}
-                      className={`section-tab ${selectedTaskId === task.id ? "active" : ""}`}
-                      onClick={() => {
-                        runWithContextGuard(() => setSelectedTaskId(task.id));
-                      }}
-                    >
-                      <span>{task.title || "Tarea sin título"}</span>
-                      <small>{unitName}</small>
-                      <small>{sessionCount} sesiones</small>
-                    </button>
-                  </div>
-                ))}
-                {workTaskOptions.length === 0 ? (
-                  <p className="hint">
-                    {selectedWorkUnitId ? "No hay tareas en esta unidad." : "Selecciona una unidad."}
-                  </p>
-                ) : null}
-              </div>
-            </>
-          )}
+            ))}
+            {workTaskOptions.length === 0 ? (
+              <p className="hint">
+                {selectedWorkUnitId ? "No hay tareas en esta unidad." : "Selecciona una unidad."}
+              </p>
+            ) : null}
+          </div>
         </aside>
 
         <section className="course-detail-panel">
-          {mode === "attendance" ? (
-            selectedSubjectSlot ? (
+          <header className="evaluation-page-header">
+            <div>
+              <h1>Evaluar tareas</h1>
+              <p>{[selectedWorkClassName, selectedWorkSubjectName].filter(Boolean).join(" · ") || "Selecciona un contexto"}</p>
+            </div>
+            {selectedTaskSessionForDay ? (
+              <NavLink className="btn secondary" to={selectedWorkTodayLink}>Abrir clase en Hoy</NavLink>
+            ) : null}
+          </header>
+          {!selectedClassId || !selectedSubjectId ? (
+            <p className="hint">Selecciona curso y asignatura para revisar el trabajo.</p>
+          ) : null}
+
+          {selectedClassId && selectedSubjectId && selectedTaskForDay ? (
             <>
-              <div className="course-detail-header compact-hour-header">
-                <div>
-                  <h4>{selectedSubjectSlot.subjectName}</h4>
-                  <p>
-                    {selectedSubjectSlot.className}{" · "}
-                    {selectedSubjectSlot.dayName} · {selectedSubjectSlot.startTime} - {selectedSubjectSlot.endTime}
-                  </p>
-                </div>
-              </div>
-
-              {isSavingAttendance ? (
+              {isSavingTask ? (
                 <p className="hint" role="status" aria-live="polite">
-                  Guardando asistencia...
+                  Guardando registro de tarea...
                 </p>
               ) : null}
-              {attendanceNotice ? (
+              {taskNotice ? (
                 <p className="hint" role="status" aria-live="polite">
-                  {attendanceNotice}
+                  {taskNotice}
                 </p>
               ) : null}
-              <section className="detail-section diary-work-section">
-                <h5>Trabajo realizado en esta hora</h5>
-                <div className="diary-task-picker">
-                  <label className="diary-inline-select compact-field">
-                    <span>Unidad:</span>
-                    <select
-                      className="input"
-                      value={selectedUnitToAssignId}
-                      disabled={unitsForSelectedSubject.length === 0}
-                      onChange={(event) => setSelectedUnitToAssignId(event.target.value)}
-                    >
-                      <option value="" />
-                      {unitsForSelectedSubject.map((unit) => (
-                        <option key={unit.id} value={unit.id}>
-                            {unit.name || "Unidad sin título"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="diary-inline-select compact-field">
-                    <span>Tarea:</span>
-                    <select
-                      className="input"
-                      value={selectedTaskToAssignId}
-                      disabled={availableTasksToAssign.length === 0}
-                      onChange={(event) => {
-                        const taskId = event.target.value;
-                        setSelectedTaskToAssignId(taskId);
-                        if (!taskId) {
-                          return;
-                        }
-                        runWithContextGuard(() => {
-                          void assignTaskToSelectedClass(taskId);
-                        });
-                      }}
-                    >
-                      <option value="" />
-                      {availableTasksToAssign.map((task) => (
-                        <option key={task.id} value={task.id}>
-                          {task.title || "Tarea sin título"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                {availableTasksToAssign.length === 0 ? (
-                  <p className="hint">
-                    {unitsForSelectedSubject.length === 0
-                      ? "No hay unidades para esta asignatura."
-                      : taskForSelectedSlot
-                      ? "No hay otras tareas disponibles para esta asignatura y hora."
-                      : "No hay tareas disponibles para esta asignatura y hora."}
-                  </p>
-                ) : null}
-                {taskForSelectedSlot ? (
-                  <div className="detail-field full">
-                    <label htmlFor="attendance-task-general-comment">Comentario general de la tarea en esta hora</label>
-                    <textarea
-                      id="attendance-task-general-comment"
-                      className="input observation-textarea"
-                      rows={4}
-                      value={taskGeneralCommentDraft}
-                      placeholder="Comentario general para esta tarea y esta hora"
-                      disabled={!selectedTaskSessionForDay}
-                      onChange={(event) => {
-                        setTaskGeneralCommentDraft(event.target.value);
-                        setTaskNotice("");
-                        markTaskDirty();
-                      }}
-                    />
-                  </div>
-                ) : null}
-              </section>
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Alumno</th>
-                      <th>Estado</th>
-                      <th>Observaciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {students.map((student) => {
-                      const entry = attendanceByStudent.get(student.id);
-                      const status = entry?.status ?? "present";
 
-                      return (
-                        <tr key={student.id}>
-                          <td>{formatName(student)}</td>
-                          <td>
-                            <select
-                              className="status-select"
-                              value={draftStatusByStudent.get(student.id) ?? status}
-                              onChange={(event) =>
-                                setDraftStatus(student.id, event.target.value as AttendanceEntry["status"])
-                              }
-                            >
-                              <option value="present">Presente</option>
-                              <option value="late">Retraso</option>
-                              <option value="absent">Ausente</option>
-                            </select>
-                          </td>
-                          <td>
-                            <textarea
-                              className="attendance-note-input observation-textarea"
-                              rows={2}
-                              value={
-                                draftNoteByStudent.has(student.id)
-                                  ? (draftNoteByStudent.get(student.id) ?? "")
-                                  : (entry?.note ?? "")
-                              }
-                              placeholder="Observaciones"
-                              onChange={(event) => setDraftNote(student.id, event.target.value)}
-                            />
-                          </td>
+              <section className="detail-section">
+                <h5>Horas de la tarea</h5>
+                {workTaskSessions.length > 0 ? (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Fecha</th>
+                          <th>Hora</th>
+                          <th>Acción</th>
                         </tr>
-                      );
-                    })}
-                    {students.length === 0 ? (
-                      <tr>
-                        <td colSpan={3}>No hay alumnos en esta asignatura.</td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          ) : (
-            <p>Selecciona una clase del día para pasar lista.</p>
-          )
-          ) : (
-            <>
-              <header className="evaluation-page-header">
-                <div>
-                  <h1>Evaluar tareas</h1>
-                  <p>{[selectedWorkClassName, selectedWorkSubjectName].filter(Boolean).join(" · ") || "Selecciona un contexto"}</p>
-                </div>
-                {selectedTaskSessionForDay ? (
-                  <NavLink className="btn secondary" to={selectedWorkTodayLink}>Abrir clase en Hoy</NavLink>
-                ) : null}
-              </header>
-              {!selectedClassId || !selectedSubjectId ? (
-                <p className="hint">Selecciona curso y asignatura para revisar el trabajo.</p>
+                      </thead>
+                      <tbody>
+                        {workTaskSessions.map((session) => (
+                          <tr key={session.id}>
+                            <td>{session.date}</td>
+                            <td>{slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className={`btn secondary ${selectedTaskSessionForDay?.id === session.id ? "active" : ""}`}
+                                onClick={() => void selectWorkTaskSession(session)}
+                                aria-pressed={selectedTaskSessionForDay?.id === session.id}
+                              >
+                                {selectedTaskSessionForDay?.id === session.id ? "Seleccionada" : "Seleccionar"}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="hint">No hay horas registradas para esta tarea.</p>
+                )}
+              </section>
+
+              {taskHasDirectGrade ? (
+                <section className="detail-section">
+                  <h5>Nota directa</h5>
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Alumno</th>
+                          <th>Nota</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {taskStudents.map((student) => (
+                          <tr key={student.id}>
+                            <td>{formatName(student)}</td>
+                            <td>{renderDirectGradeInput(student)}</td>
+                          </tr>
+                        ))}
+                        {taskStudents.length === 0 ? (
+                          <tr>
+                            <td colSpan={2}>No hay alumnos asociados a esta tarea.</td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : !selectedRubricTemplate && !selectedChecklistTemplate ? (
+                <section className="detail-section evaluation-empty-instrument">
+                  <h5>Sin instrumento de evaluación</h5>
+                  <NavLink className="btn secondary" to={selectedWorkTodayLink}>Registrar comentario en Hoy</NavLink>
+                </section>
               ) : null}
 
-              {selectedClassId && selectedSubjectId && selectedTaskForDay ? (
-                <>
-                  {isSavingTask ? (
-                    <p className="hint" role="status" aria-live="polite">
-                      Guardando registro de tarea...
-                    </p>
-                  ) : null}
-                  {taskNotice ? (
-                    <p className="hint" role="status" aria-live="polite">
-                      {taskNotice}
-                    </p>
-                  ) : null}
-
-                  <section className="detail-section">
-                    <h5>Horas de la tarea</h5>
-                    {workTaskSessions.length > 0 ? (
-                      <div className="table-scroll">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Fecha</th>
-                              <th>Hora</th>
-                              <th>Acción</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {workTaskSessions.map((session) => (
-                              <tr key={session.id}>
-                                <td>{session.date}</td>
-                                <td>{slotTimeLabelById.get(session.scheduleSlotId) ?? session.scheduleSlotId}</td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className={`btn secondary ${selectedTaskSessionForDay?.id === session.id ? "active" : ""}`}
-                                    onClick={() => void selectWorkTaskSession(session)}
-                                    aria-pressed={selectedTaskSessionForDay?.id === session.id}
-                                  >
-                                    {selectedTaskSessionForDay?.id === session.id ? "Seleccionada" : "Seleccionar"}
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <p className="hint">No hay horas registradas para esta tarea.</p>
-                    )}
-                  </section>
-
-                  {taskHasDirectGrade ? (
-                    <section className="detail-section">
-                      <h5>Nota directa</h5>
-                      <div className="table-scroll">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Alumno</th>
-                              <th>Nota</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {taskStudents.map((student) => (
-                              <tr key={student.id}>
-                                <td>{formatName(student)}</td>
-                                <td>{renderDirectGradeInput(student)}</td>
-                              </tr>
-                            ))}
-                            {taskStudents.length === 0 ? (
-                              <tr>
-                                <td colSpan={2}>No hay alumnos asociados a esta tarea.</td>
-                              </tr>
-                            ) : null}
-                          </tbody>
-                        </table>
-                      </div>
-                    </section>
-                  ) : !selectedRubricTemplate && !selectedChecklistTemplate ? (
-                    <section className="detail-section evaluation-empty-instrument">
-                      <h5>Sin instrumento de evaluación</h5>
-                      <NavLink className="btn secondary" to={selectedWorkTodayLink}>Registrar comentario en Hoy</NavLink>
-                    </section>
-                  ) : null}
-
-                  {selectedRubricTemplate ? (
-                    <section className="detail-section">
-                      <h5>Rúbrica</h5>
-                      {false ? (
-                      <div className="inline-form">
-                        <select
-                          className="input"
-                          value={selectedRubricTemplateId}
-                          disabled={taskHasFixedRubric}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setSelectedRubricTemplateId(value);
-                            if (value) {
-                              setSelectedChecklistTemplateId("");
-                            }
-                            setTaskNotice("");
-                            markTaskDirty();
-                          }}
-                        >
-                          <option value="">Sin rúbrica</option>
-                          {diaryRubricTemplates.map((template) => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
+              {selectedRubricTemplate ? (
+                <section className="detail-section">
+                  <h5>Rúbrica</h5>
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Alumno</th>
+                          {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
+                            <th key={criterion.id}>{criterion.name}</th>
                           ))}
-                        </select>
-                      </div>
-                      ) : null}
-                      {selectedRubricTemplate ? (
-                        <div className="table-scroll">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>Alumno</th>
-                                {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
-                                  <th key={criterion.id}>{criterion.name}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {taskStudents.map((student) => (
-                                <tr key={student.id}>
-                                  <td>{formatName(student)}</td>
-                                  {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
-                                    <td key={`${student.id}:${criterion.id}`}>
-                                      <select
-                                        className="input"
-                                        value={taskRubricDraft.get(rubricDraftKey(student.id, criterion.id)) ?? ""}
-                                        onChange={(event) => {
-                                          const value = event.target.value;
-                                          setTaskRubricDraft((current) => {
-                                            const next = new Map(current);
-                                            if (value) {
-                                              next.set(rubricDraftKey(student.id, criterion.id), value);
-                                            } else {
-                                              next.delete(rubricDraftKey(student.id, criterion.id));
-                                            }
-                                            return next;
-                                          });
-                                          setTaskNotice("");
-                                          markTaskDirty();
-                                        }}
-                                      >
-                                        <option value="">-</option>
-                                        {(criterion.levels ?? []).map((level) => (
-                                          <option key={level.id} value={level.id}>
-                                            {level.name} · {level.score} puntos
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </td>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {taskStudents.map((student) => (
+                          <tr key={student.id}>
+                            <td>{formatName(student)}</td>
+                            {(selectedRubricTemplate.criteria ?? []).map((criterion) => (
+                              <td key={`${student.id}:${criterion.id}`}>
+                                <select
+                                  className="input"
+                                  value={taskRubricDraft.get(rubricDraftKey(student.id, criterion.id)) ?? ""}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    setTaskRubricDraft((current) => {
+                                      const next = new Map(current);
+                                      if (value) {
+                                        next.set(rubricDraftKey(student.id, criterion.id), value);
+                                      } else {
+                                        next.delete(rubricDraftKey(student.id, criterion.id));
+                                      }
+                                      return next;
+                                    });
+                                    setTaskNotice("");
+                                    markTaskDirty();
+                                  }}
+                                >
+                                  <option value="">-</option>
+                                  {(criterion.levels ?? []).map((level) => (
+                                    <option key={level.id} value={level.id}>
+                                      {level.name} · {level.score} puntos
+                                    </option>
                                   ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <p className="hint">Selecciona una rúbrica para evaluarla en este día.</p>
-                      )}
-                    </section>
-                  ) : null}
+                                </select>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
 
-                  {selectedChecklistTemplate ? (
-                    <section className="detail-section">
-                      <h5>Lista de cotejo</h5>
-                      {false ? (
-                      <div className="inline-form">
-                        <select
-                          className="input"
-                          value={selectedChecklistTemplateId}
-                          disabled={taskHasFixedChecklist}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setSelectedChecklistTemplateId(value);
-                            if (value) {
-                              setSelectedRubricTemplateId("");
-                            }
-                            setTaskNotice("");
-                            markTaskDirty();
-                          }}
-                        >
-                          <option value="">Sin lista de cotejo</option>
-                          {diaryChecklistTemplates.map((template) => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
+              {selectedChecklistTemplate ? (
+                <section className="detail-section">
+                  <h5>Lista de cotejo</h5>
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Alumno</th>
+                          {(selectedChecklistTemplate.items ?? []).map((item) => (
+                            <th key={item.id}>{item.text}</th>
                           ))}
-                        </select>
-                      </div>
-                      ) : null}
-                      {selectedChecklistTemplate ? (
-                        <div className="table-scroll">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>Alumno</th>
-                                {(selectedChecklistTemplate.items ?? []).map((item) => (
-                                  <th key={item.id}>{item.text}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {taskStudents.map((student) => (
-                                <tr key={student.id}>
-                                  <td>{formatName(student)}</td>
-                                  {(selectedChecklistTemplate.items ?? []).map((item) => (
-                                    <td key={`${student.id}:${item.id}`}>
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(taskChecklistDraft.get(checklistDraftKey(student.id, item.id)))}
-                                        onChange={(event) => {
-                                          const checked = event.target.checked;
-                                          setTaskChecklistDraft((current) => {
-                                            const next = new Map(current);
-                                            if (checked) {
-                                              next.set(checklistDraftKey(student.id, item.id), true);
-                                            } else {
-                                              next.delete(checklistDraftKey(student.id, item.id));
-                                            }
-                                            return next;
-                                          });
-                                          setTaskNotice("");
-                                          markTaskDirty();
-                                        }}
-                                      />
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <p className="hint">Selecciona una lista de cotejo para cubrirla en este día.</p>
-                      )}
-                    </section>
-                  ) : null}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {taskStudents.map((student) => (
+                          <tr key={student.id}>
+                            <td>{formatName(student)}</td>
+                            {(selectedChecklistTemplate.items ?? []).map((item) => (
+                              <td key={`${student.id}:${item.id}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(taskChecklistDraft.get(checklistDraftKey(student.id, item.id)))}
+                                  onChange={(event) => {
+                                    const checked = event.target.checked;
+                                    setTaskChecklistDraft((current) => {
+                                      const next = new Map(current);
+                                      if (checked) {
+                                        next.set(checklistDraftKey(student.id, item.id), true);
+                                      } else {
+                                        next.delete(checklistDraftKey(student.id, item.id));
+                                      }
+                                      return next;
+                                    });
+                                    setTaskNotice("");
+                                    markTaskDirty();
+                                  }}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
 
-                  {!taskHasAssignedInstrument ? (
-                    <p className="hint">
-                      Esta tarea no tiene rúbrica ni lista de cotejo asignada. Asigna el instrumento en Tareas.
-                    </p>
-                  ) : null}
-
-                  {false && !taskHasAssignedInstrument ? (
-                    <p className="hint">
-            Esta tarea no tiene rúbrica ni lista de cotejo asignada. Asigna el instrumento en Tareas.
-                    </p>
-                  ) : null}
-
-                </>
-              ) : (
-                <p>Selecciona una tarea para registrar comentarios y evaluación.</p>
-              )}
+              {!taskHasAssignedInstrument ? (
+                <p className="hint">
+                  Esta tarea no tiene rúbrica ni lista de cotejo asignada. Asigna el instrumento en Tareas.
+                </p>
+              ) : null}
             </>
+          ) : (
+            <p>Selecciona una tarea para registrar comentarios y evaluación.</p>
           )}
-
         </section>
       </div>
     </section>

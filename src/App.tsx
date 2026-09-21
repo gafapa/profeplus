@@ -278,7 +278,7 @@ function WorkspaceApp() {
           <Route path="/gradebook" element={<GradebookPage />} />
           <Route path="/journal" element={<Navigate replace to="/journal/attendance" />} />
           <Route path="/journal/attendance" element={<AttendanceHistoryPage />} />
-          <Route path="/journal/work" element={<AttendancePage mode="work" />} />
+          <Route path="/journal/work" element={<AttendancePage />} />
           <Route path="/planner" element={<PlannerPage />} />
           <Route path="/reports" element={<ReportsPage />} />
             <Route path="*" element={<NotFoundPage />} />
