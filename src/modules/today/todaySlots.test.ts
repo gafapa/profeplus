@@ -128,6 +128,21 @@ describe("buildTodaySlots", () => {
     expect(slots.map((slot) => slot.taskTitle).sort()).toEqual(["Calentamiento", "Tarea principal"]);
   });
 
+  it("ignores a cancelled session instead of showing a ghost task row", () => {
+    const slots = buildTodaySlots({
+      selectedDate: "2026-07-06",
+      classGroups,
+      subjects,
+      subjectCourseLinks,
+      scheduleDays,
+      taskSessions: [taskSession({ status: "cancelled" })],
+      tasks
+    });
+
+    expect(slots.map((slot) => slot.classId)).toEqual(["class-a", "class-b"]);
+    expect(slots.every((slot) => !slot.taskId && !slot.taskTitle)).toBe(true);
+  });
+
   it("falls back to all linked classes when the day has no planned session", () => {
     const slots = buildTodaySlots({
       selectedDate: "2026-07-06",

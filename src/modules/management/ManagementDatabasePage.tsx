@@ -1347,6 +1347,10 @@ export function validateDatabasePayload(parsed: unknown): Record<string, unknown
     if (!hasExceptionalDailyRecord(classId, subjectId, date, scheduleSlotId)) {
       requireReference(scheduleSlotId, scheduleSlotIds, "taskStudentComments", "scheduleSlotId");
     }
+    // Intentionally not required: a matching taskSessions row for this exact date/slot, or even
+    // any taskSessions row for this task+class+subject at all. The planner can reassign, move or
+    // remove a session that already has comments/evaluation (with a warning), which leaves this
+    // row pointing at a session that no longer exists - by design, not corruption.
   }
   requireUniqueLogicalRows(
     rows("taskStudentComments"),

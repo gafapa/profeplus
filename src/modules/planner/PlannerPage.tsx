@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { NavLink, useSearchParams } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "../../app/hooks";
 import { setSelectedClass, setSelectedSubject } from "../../app/store";
@@ -65,6 +65,10 @@ function taskSubjectKey(taskId: string, subjectId: string): string {
   return `${taskId}:${subjectId}`;
 }
 
+function isConflictingSubjectSession(session: TaskSession, subjectId: string, excludeSessionId?: string): boolean {
+  return session.id !== excludeSessionId && session.subjectId !== subjectId;
+}
+
 function formatBlockTime(block: ScheduleBlock): string {
   return `${block.startTime} - ${block.endTime}`;
 }
@@ -120,6 +124,13 @@ export function PlannerPage() {
   const [sessionPendingRescheduleCounts, setSessionPendingRescheduleCounts] = useState<SessionDataCounts | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
   const [rescheduleSlotId, setRescheduleSlotId] = useState("");
+  const [sessionPendingDragMove, setSessionPendingDragMove] = useState<{
+    session: TaskSession;
+    targetDate: string;
+    targetSlotId: string;
+    counts: SessionDataCounts;
+  } | null>(null);
+  const [editingSessionDataCounts, setEditingSessionDataCounts] = useState<SessionDataCounts | null>(null);
   const contextLinkAppliedRef = useRef(false);
   const contextParametersAppliedRef = useRef(false);
 
@@ -311,16 +322,13 @@ export function PlannerPage() {
     return map;
   }, [taskSessions]);
 
-  const hasConflictingSubjectInSlot = (
-    classId: string,
-    date: string,
-    slotId: string,
-    subjectId: string,
-    excludeSessionId?: string
-  ): boolean => {
-    const occupants = sessionsByClassSlotKey.get(classSlotKey(classId, date, slotId)) ?? [];
-    return occupants.some((session) => session.id !== excludeSessionId && session.subjectId !== subjectId);
-  };
+  const hasConflictingSubjectInSlot = useCallback(
+    (classId: string, date: string, slotId: string, subjectId: string, excludeSessionId?: string): boolean => {
+      const occupants = sessionsByClassSlotKey.get(classSlotKey(classId, date, slotId)) ?? [];
+      return occupants.some((session) => isConflictingSubjectSession(session, subjectId, excludeSessionId));
+    },
+    [sessionsByClassSlotKey]
+  );
 
   const draggedSession = useMemo(
     () => taskSessions.find((session) => session.id === draggedSessionId) ?? null,
@@ -577,7 +585,7 @@ export function PlannerPage() {
             .filter((session) =>
               session.date === selectedCell.date &&
               session.scheduleSlotId === selectedCell.block.id &&
-              session.subjectId !== selectedCell.subject.id
+              isConflictingSubjectSession(session, selectedCell.subject.id)
             ).first();
           if (occupied) throw new Error("Ese bloque ya tiene una tarea de otra asignatura. Cierra el formulario y revisa la sesión.");
           await db.tasks.add({ id: taskId, title, description: "", sessionCount: 1, sendToGradebook: false });
@@ -628,13 +636,6 @@ export function PlannerPage() {
       const planFields = normalizeSessionPlanDraft(sessionPlanDraft);
 
       if (editingSession && editingSession.taskId !== selectedTaskId) {
-        const counts = await countSessionData(editingSession);
-        if (sessionDataTotal(counts) > 0) {
-          const confirmed = window.confirm(
-            "Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada. ¿Quieres continuar?"
-          );
-          if (!confirmed) return;
-        }
         await db.taskSessions.delete(editingSession.id);
       }
 
@@ -733,13 +734,6 @@ export function PlannerPage() {
 
     setIsBusy(true);
     try {
-      const counts = await countSessionData(session);
-      if (sessionDataTotal(counts) > 0 && sessionPendingReschedule?.id !== session.id) {
-        const confirmed = window.confirm(
-          "Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada en la fecha original. ¿Quieres continuar?"
-        );
-        if (!confirmed) return;
-      }
       await db.taskSessions.put({
         ...session,
         date: targetDate,
@@ -750,6 +744,7 @@ export function PlannerPage() {
       setSelectedCell(null);
       setEditingSessionId(null);
       setSessionPendingReschedule(null);
+      setSessionPendingDragMove(null);
       setWeekStart(startOfWeek(new Date(`${targetDate}T12:00:00`), weekStartsOn));
       await refreshAfterAction("Sesión reprogramada.");
     } finally {
@@ -763,6 +758,11 @@ export function PlannerPage() {
     if (!session) return;
     if (session.subjectId !== target.subject.id) {
       setNotice("Solo se puede mover a otro bloque de la misma asignatura.");
+      return;
+    }
+    const counts = await countSessionData(session);
+    if (sessionDataTotal(counts) > 0) {
+      setSessionPendingDragMove({ session, targetDate: target.date, targetSlotId: target.block.id, counts });
       return;
     }
     await moveSessionToTarget(sessionId, target.date, target.block.id);
@@ -820,6 +820,20 @@ export function PlannerPage() {
       active = false;
     };
   }, [sessionPendingReschedule]);
+
+  useEffect(() => {
+    let active = true;
+    if (!editingSession) {
+      setEditingSessionDataCounts(null);
+      return;
+    }
+    void countSessionData(editingSession).then((counts) => {
+      if (active) setEditingSessionDataCounts(counts);
+    });
+    return () => {
+      active = false;
+    };
+  }, [editingSession]);
 
   const openCellModal = (cell: PlannerCell, sessionId: string | null = null): void => {
     setSelectedCell(cell);
@@ -1187,6 +1201,14 @@ export function PlannerPage() {
               </label>
             </div>
             </details>
+            {editingSession &&
+            selectedTaskId !== editingSession.taskId &&
+            editingSessionDataCounts &&
+            sessionDataTotal(editingSessionDataCounts) > 0 ? (
+              <p className="notice compact" role="status">
+                Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada.
+              </p>
+            ) : null}
             {notice ? <p className="notice" role="status">{notice}</p> : null}
             <div className="inline-form">
               <button type="button" className="btn secondary" onClick={() => void closePlannerModal()}>
@@ -1325,6 +1347,41 @@ export function PlannerPage() {
             }}
           >
             Quitar sesión
+          </button>
+        </div>
+      </Modal>
+      <Modal
+        open={sessionPendingDragMove !== null}
+        title="Mover sesión"
+        onClose={() => {
+          if (!isBusy) setSessionPendingDragMove(null);
+        }}
+      >
+        <p>La sesión se moverá al bloque donde la soltaste.</p>
+        {sessionPendingDragMove && sessionDataTotal(sessionPendingDragMove.counts) > 0 ? (
+          <p className="notice compact" role="status">
+            Esta sesión tiene comentarios o evaluación guardados. Si continúas, esos datos seguirán existiendo pero podrían quedar sin la sesión asociada en la fecha original.
+          </p>
+        ) : null}
+        <div className="inline-form">
+          <button type="button" className="btn secondary" disabled={isBusy} onClick={() => setSessionPendingDragMove(null)}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={isBusy}
+            onClick={() => {
+              if (sessionPendingDragMove) {
+                void moveSessionToTarget(
+                  sessionPendingDragMove.session.id,
+                  sessionPendingDragMove.targetDate,
+                  sessionPendingDragMove.targetSlotId
+                );
+              }
+            }}
+          >
+            Mover sesión
           </button>
         </div>
       </Modal>

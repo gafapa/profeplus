@@ -67,7 +67,7 @@ export function buildTodaySlots({
 
   const sessionsBySubjectSlot = new Map<string, TaskSession[]>();
   for (const session of taskSessions) {
-    if (session.date !== selectedDate) continue;
+    if (session.date !== selectedDate || session.status === "cancelled") continue;
     const key = session.subjectId + ":" + session.scheduleSlotId;
     const sessions = sessionsBySubjectSlot.get(key) ?? [];
     sessions.push(session);
@@ -112,26 +112,11 @@ export function buildTodaySlots({
           const sessionsForClass = plannedSessions.filter(
             (session) => session.classId === link.classId
           );
+          const sessionsToEmit = sessionsForClass.length > 0 ? sessionsForClass : [undefined];
 
-          if (sessionsForClass.length > 0) {
-            for (const session of sessionsForClass) {
-              slots.push({
-                key: baseKey + ":" + session.taskId,
-                classId: link.classId,
-                className: classGroupById.get(link.classId)?.name ?? "Curso sin nombre",
-                subjectId: subject.id,
-                subjectName: subject.name,
-                slotId: block.id,
-                startTime: block.startTime,
-                endTime: block.endTime,
-                kind: "recurring",
-                taskId: session.taskId,
-                taskTitle: taskById.get(session.taskId)?.title
-              });
-            }
-          } else {
+          for (const session of sessionsToEmit) {
             slots.push({
-              key: baseKey,
+              key: session ? baseKey + ":" + session.taskId : baseKey,
               classId: link.classId,
               className: classGroupById.get(link.classId)?.name ?? "Curso sin nombre",
               subjectId: subject.id,
@@ -139,7 +124,8 @@ export function buildTodaySlots({
               slotId: block.id,
               startTime: block.startTime,
               endTime: block.endTime,
-              kind: "recurring"
+              kind: "recurring",
+              ...(session ? { taskId: session.taskId, taskTitle: taskById.get(session.taskId)?.title } : {})
             });
           }
         }

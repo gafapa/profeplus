@@ -87,8 +87,8 @@ test("reassigning a task on a session with recorded data warns before replacing 
   const dialog = page.getByRole("dialog", { name: "Editar sesión" });
   await expect(dialog).toBeVisible();
 
-  page.once("dialog", (nativeDialog) => nativeDialog.accept());
   await dialog.getByLabel("Tarea").selectOption("task-2");
+  await expect(dialog.getByText(/comentarios o evaluación guardados/)).toBeVisible();
   await dialog.getByRole("button", { name: "Guardar sesión", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByText("Sesión guardada.", { exact: true })).toBeVisible();
@@ -156,6 +156,46 @@ test("rescheduling a session with recorded data warns inline and proceeds withou
   await expect(page.getByText("Sesión reprogramada.", { exact: true })).toBeVisible();
 
   const sessions = await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    return db.taskSessions.toArray();
+  });
+  expect(sessions).toHaveLength(1);
+  expect(sessions[0]).toMatchObject({ date: "2026-09-09", scheduleSlotId: "slot-2", status: "moved" });
+});
+
+test("dragging a session with recorded data onto another slot warns and proceeds only on confirm", async ({ page }) => {
+  await seedBase(page);
+  await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    await db.taskSessions.put({ id: "session-1", taskId: "task-1", subjectId: "subject-math", classId: "class-a", date: "2026-09-08", scheduleSlotId: "slot-1", status: "planned" });
+    await db.taskDailyEvaluationSettings.put({ id: "setting-1", taskId: "task-1", subjectId: "subject-math", classId: "class-a", date: "2026-09-08", scheduleSlotId: "slot-1", generalComment: "Buen trabajo" });
+  });
+
+  await page.goto("/planner?date=2026-09-08&classId=class-a&subjectId=subject-math");
+  const sourceCard = page.getByText("Calentamiento", { exact: true });
+  const targetCell = page.getByRole("button", { name: "Programar tarea el 9 de septiembre de 2026, 09:00 - 09:50", exact: true });
+  await sourceCard.dragTo(targetCell);
+
+  const dragDialog = page.getByRole("dialog", { name: "Mover sesión" });
+  await expect(dragDialog).toBeVisible();
+  await expect(dragDialog.getByText(/comentarios o evaluación guardados/)).toBeVisible();
+
+  await dragDialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(dragDialog).toBeHidden();
+
+  let sessions = await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    return db.taskSessions.toArray();
+  });
+  expect(sessions[0]).toMatchObject({ date: "2026-09-08", scheduleSlotId: "slot-1" });
+
+  await sourceCard.dragTo(targetCell);
+  await expect(dragDialog).toBeVisible();
+  await dragDialog.getByRole("button", { name: "Mover sesión", exact: true }).click();
+  await expect(dragDialog).toBeHidden();
+  await expect(page.getByText("Sesión reprogramada.", { exact: true })).toBeVisible();
+
+  sessions = await page.evaluate(async () => {
     const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
     return db.taskSessions.toArray();
   });

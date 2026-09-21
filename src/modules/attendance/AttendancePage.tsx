@@ -703,6 +703,18 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [selectedSubjectSlot, selectedUnitToAssignId, taskSubjectLinks, tasks]);
 
+  const slotSessionsForSelectedSlot = useMemo(() => {
+    if (!selectedSubjectSlot) {
+      return [];
+    }
+    return filterTaskSessionsByAcademicContext(taskSessions, {
+      classId: selectedSubjectSlot.classId,
+      subjectId: selectedSubjectSlot.subjectId
+    }).filter(
+      (session) => session.date === selectedDate && session.scheduleSlotId === selectedSubjectSlot.slotId
+    );
+  }, [selectedDate, selectedSubjectSlot, taskSessions]);
+
   const availableTasksToAssign = useMemo(() => {
     if (!selectedSubjectSlot || !selectedUnitToAssignId) {
       return [];
@@ -716,32 +728,22 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         )
         .map((link) => link.taskId)
     );
-    const currentSlotSessions = filterTaskSessionsByAcademicContext(taskSessions, {
-      classId: selectedSubjectSlot.classId,
-      subjectId: selectedSubjectSlot.subjectId
-    }).filter(
-      (session) => session.date === selectedDate && session.scheduleSlotId === selectedSubjectSlot.slotId
-    );
-    const assignedToCurrentSlot = new Set(currentSlotSessions.map((session) => session.taskId));
-    const currentTaskId = currentSlotSessions[0]?.taskId ?? "";
+    // Every linked task is selectable, even one already assigned elsewhere in this slot -
+    // a period can now hold several tasks at once, and picking an assigned one just switches to it.
     return tasks
-      .filter((task) => linkedTaskIds.has(task.id) && (!assignedToCurrentSlot.has(task.id) || task.id === currentTaskId))
+      .filter((task) => linkedTaskIds.has(task.id))
       .sort((a, b) => a.title.localeCompare(b.title));
-  }, [selectedDate, selectedSubjectSlot, selectedUnitToAssignId, taskSessions, taskSubjectLinks, tasks]);
+  }, [selectedSubjectSlot, selectedUnitToAssignId, taskSubjectLinks, tasks]);
 
   const taskSessionForSelectedSlot = useMemo(() => {
-    if (!selectedSubjectSlot) {
+    if (slotSessionsForSelectedSlot.length === 0) {
       return null;
     }
     return (
-      filterTaskSessionsByAcademicContext(taskSessions, {
-        classId: selectedSubjectSlot.classId,
-        subjectId: selectedSubjectSlot.subjectId
-      }).find(
-        (session) => session.date === selectedDate && session.scheduleSlotId === selectedSubjectSlot.slotId
-      ) ?? null
+      slotSessionsForSelectedSlot.find((session) => session.taskId === selectedTaskToAssignId) ??
+      slotSessionsForSelectedSlot[0]
     );
-  }, [selectedDate, selectedSubjectSlot, taskSessions]);
+  }, [selectedTaskToAssignId, slotSessionsForSelectedSlot]);
 
   const taskForSelectedSlot = useMemo(
     () => tasks.find((task) => task.id === taskSessionForSelectedSlot?.taskId) ?? null,
@@ -1475,8 +1477,20 @@ export function AttendancePage({ mode }: AttendancePageProps) {
     if (!selectedSubjectSlot || !taskId) {
       return;
     }
-    const occupied = taskSessionForSelectedSlot;
-    if (occupied && occupied.taskId !== taskId) {
+    // A slot can now hold several tasks at once. Check first whether `taskId` already has its
+    // own session here - if so, just switch to it; never delete a different stacked task's data.
+    const existingForTask = slotSessionsForSelectedSlot.find((session) => session.taskId === taskId);
+    if (existingForTask) {
+      setSelectedTaskId(taskId);
+      setSelectedTaskToAssignId(taskId);
+      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
+      return;
+    }
+
+    // Only replace the session for the task currently shown in the picker - not an arbitrary
+    // other session stacked in this same slot.
+    const occupied = slotSessionsForSelectedSlot.find((session) => session.taskId === selectedTaskToAssignId) ?? null;
+    if (occupied) {
       await db.transaction(
         "rw",
         db.tables,
@@ -1514,22 +1528,10 @@ export function AttendancePage({ mode }: AttendancePageProps) {
         }
       );
       setSelectedTaskId(taskId);
+      setSelectedTaskToAssignId(taskId);
       setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
       setTaskNotice("Tarea cambiada en esta hora.");
       await loadMetadata();
-      return;
-    }
-    const duplicate = taskSessions.some(
-      (session) =>
-        session.taskId === taskId &&
-        session.classId === selectedSubjectSlot.classId &&
-        session.subjectId === selectedSubjectSlot.subjectId &&
-        session.date === selectedDate &&
-        session.scheduleSlotId === selectedSubjectSlot.slotId
-    );
-    if (duplicate) {
-      setSelectedTaskId(taskId);
-      setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
       return;
     }
 
@@ -1543,6 +1545,7 @@ export function AttendancePage({ mode }: AttendancePageProps) {
       status: "planned"
     });
     setSelectedTaskId(taskId);
+    setSelectedTaskToAssignId(taskId);
     setSelectedTaskSessionSlotId(selectedSubjectSlot.slotId);
     setTaskNotice("Tarea asignada a la clase.");
     await loadMetadata();
