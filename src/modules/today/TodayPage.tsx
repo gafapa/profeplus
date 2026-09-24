@@ -871,10 +871,13 @@ export function TodayPage() {
   const plannerLink = selectedSlot
     ? `/planner?date=${selectedDate}&classId=${encodeURIComponent(selectedSlot.classId)}&subjectId=${encodeURIComponent(selectedSlot.subjectId)}&slotId=${encodeURIComponent(selectedSlot.slotId)}`
     : "/planner";
-  const isClassSessionSaved =
+  const isAttendanceSaved =
     students.length > 0 &&
     attendanceEntries.length === students.length &&
-    !hasUnsavedChanges &&
+    !hasAttendanceChanges;
+  const isClassSessionSaved =
+    isAttendanceSaved &&
+    !hasWorkChanges &&
     (!selectedSession || selectedSession.status === "done");
 
   return (
@@ -1199,11 +1202,17 @@ export function TodayPage() {
                         ? "Guardando clase..."
                         : isClassSessionSaved
                           ? "Clase guardada"
-                          : attendanceEntries.length === 0
-                            ? "Confirmar y cerrar clase"
-                            : "Guardar cambios de la clase"}
+                          : isAttendanceSaved
+                            ? "Guardar registro de esta tarea"
+                            : attendanceEntries.length === 0
+                              ? "Confirmar y cerrar clase"
+                              : "Guardar cambios de la clase"}
                     </button>
-                    <span className="today-save-scope">Incluye asistencia, observaciones y trabajo.</span>
+                    <span className="today-save-scope">
+                      {isAttendanceSaved && !isClassSessionSaved
+                        ? "La asistencia de esta hora ya está guardada. Esto guarda el registro de esta tarea."
+                        : "Incluye asistencia, observaciones y trabajo."}
+                    </span>
                   </div>
                 </div>
               </section>

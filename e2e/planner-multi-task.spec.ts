@@ -202,3 +202,45 @@ test("dragging a session with recorded data onto another slot warns and proceeds
   expect(sessions).toHaveLength(1);
   expect(sessions[0]).toMatchObject({ date: "2026-09-09", scheduleSlotId: "slot-2", status: "moved" });
 });
+
+test("closing one stacked task's class does not ask to retake attendance for the other", async ({ page }) => {
+  await seedBase(page);
+  await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    await db.taskSessions.put({ id: "session-1", taskId: "task-1", subjectId: "subject-math", classId: "class-a", date: "2026-09-08", scheduleSlotId: "slot-1", status: "planned" });
+    await db.taskSessions.put({ id: "session-2", taskId: "task-2", subjectId: "subject-math", classId: "class-a", date: "2026-09-08", scheduleSlotId: "slot-1", status: "planned" });
+  });
+
+  await page.goto("/today?date=2026-09-08&classId=class-a");
+  const slotList = page.locator(".today-slot-list");
+  await expect(slotList.getByText("Calentamiento", { exact: true })).toBeVisible();
+  await expect(slotList.getByText("Tarea principal", { exact: true })).toBeVisible();
+
+  await slotList.getByText("Calentamiento", { exact: true }).click();
+  await page.getByRole("button", { name: "Ausente para Alba Ejemplo", exact: true }).click();
+  const closeButton = page.locator(".today-close-session");
+  await expect(closeButton).toHaveText("Confirmar y cerrar clase");
+  await closeButton.click();
+  await expect(closeButton).toHaveText("Clase guardada");
+  await expect(closeButton).toBeDisabled();
+
+  await slotList.getByText("Tarea principal", { exact: true }).click();
+  await expect(page.getByRole("button", { name: "Ausente para Alba Ejemplo", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(closeButton).toHaveText("Guardar registro de esta tarea");
+  await expect(closeButton).toBeEnabled();
+  await expect(page.getByText("La asistencia de esta hora ya está guardada.", { exact: false })).toBeVisible();
+
+  await closeButton.click();
+  await expect(closeButton).toHaveText("Clase guardada");
+
+  const records = await page.evaluate(async () => {
+    const { db } = await import(/* @vite-ignore */ "/src/shared/db/database.ts");
+    return { sessions: await db.taskSessions.toArray(), attendance: await db.attendanceEntries.toArray() };
+  });
+  expect(records.sessions.map((session) => session.status).sort()).toEqual(["done", "done"]);
+  expect(records.attendance).toHaveLength(1);
+  expect(records.attendance[0]).toMatchObject({ studentId: "student-1", status: "absent" });
+
+  await slotList.getByText("Calentamiento", { exact: true }).click();
+  await expect(closeButton).toHaveText("Clase guardada");
+});
